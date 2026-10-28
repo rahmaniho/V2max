@@ -120,7 +120,9 @@ data class Subscription(
     var download: Long = 0L,
     var total: Long = 0L,
     var expireAt: Long = 0L,
-    var lastError: String = ""
+    var lastError: String = "",
+    /** اشتراک داخلی برنامه (منبع رایگان عمومی) */
+    var builtIn: Boolean = false
 ) {
     val usedBytes: Long get() = upload + download
 
@@ -152,10 +154,16 @@ data class BackupPayload(
 /** تنظیمات برنامه */
 data class AppSettings(
     var routingMode: RoutingMode = RoutingMode.SMART,
-    var autoConnectOnOpen: Boolean = false,
+    var autoConnectOnOpen: Boolean = true,
     var autoConnectOnBoot: Boolean = false,
     var smartFailover: Boolean = true,
     var autoUpdateSubs: Boolean = true,
+
+    /** منابع رایگان عمومی به‌صورت پیش‌فرض به لیست اشتراک‌ها اضافه شوند */
+    var useFreeSources: Boolean = true,
+
+    /** در هر بار باز شدن برنامه، همه‌ی اشتراک‌ها به‌روزرسانی و بهترین سرور انتخاب شود */
+    var autoRefreshOnOpen: Boolean = true,
 
     /** تکه‌تکه‌سازی TLS برای عبور از فیلترینگ DPI */
     var fragment: Boolean = true,
@@ -196,6 +204,16 @@ data class TunnelUiState(
     val isActive: Boolean get() = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
 }
 
+/** وضعیت همگام‌سازی اشتراک‌ها (به‌روزرسانی خودکار) */
+data class SyncState(
+    val running: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    val message: String = ""
+) {
+    val progress: Float get() = if (total <= 0) 0f else (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+}
+
 /** وضعیت اسکن هوشمند */
 data class ScanState(
     val running: Boolean = false,
@@ -205,7 +223,8 @@ data class ScanState(
     val phase: String = "",
     val bestName: String = "",
     val message: String = "",
-    val finished: Boolean = false
+    val finished: Boolean = false,
+    val finishedAt: Long = 0L
 ) {
     val progress: Float get() = if (total <= 0) 0f else (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
 }

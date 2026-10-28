@@ -35,6 +35,7 @@ fun AppRoot(vm: AppViewModel) {
     val selectedId by vm.selectedId.collectAsStateWithLifecycle()
     val tunnel by vm.tunnel.collectAsStateWithLifecycle()
     val scan by vm.scan.collectAsStateWithLifecycle()
+    val sync by vm.sync.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
@@ -116,6 +117,7 @@ fun AppRoot(vm: AppViewModel) {
                         selectedId = selectedId,
                         tunnel = tunnel,
                         scan = scan,
+                        sync = sync,
                         settings = settings,
                         onToggle = { vm.toggleConnection() },
                         onSmart = { vm.requestSmartConnect(null) },
@@ -151,13 +153,15 @@ fun AppRoot(vm: AppViewModel) {
                         servers = servers,
                         subs = subs,
                         scan = scan,
+                        sync = sync,
                         busy = busy,
                         onAdd = { name, url -> vm.addSubscription(name, url) },
                         onRefresh = { vm.refreshSubscription(it) },
                         onRefreshAll = { vm.refreshAllSubscriptions() },
                         onDelete = { vm.removeSubscription(it) },
                         onSmartScan = { vm.requestSmartConnect(it) },
-                        onImportText = { vm.importText(it) }
+                        onImportText = { vm.importText(it) },
+                        onAddFreeSources = { vm.addFreeSources() }
                     )
 
                     Tab.SETTINGS -> SettingsScreen(
@@ -167,6 +171,7 @@ fun AppRoot(vm: AppViewModel) {
                         onChange = { block -> vm.updateSettings(block) },
                         onClearAll = { vm.resetData() },
                         onOpenPerApp = { showPerApp = true },
+                        onSetFreeSources = { vm.setFreeSourcesEnabled(it) },
                         onBackup = { exportLauncher.launch("v2max-backup.json") },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
                     )

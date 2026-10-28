@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import ir.v2max.app.core.ConfigBuilder
+import ir.v2max.app.core.Failover
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.Repo
@@ -36,6 +37,12 @@ class V2maxVpnService : VpnService() {
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
 
+        /** فاصله‌ی بررسی سلامت اتصال */
+        private const val HEALTH_INTERVAL_MS = 15_000L
+
+        /** حداکثر تعداد جابه‌جایی خودکار در یک نشست */
+        private const val MAX_FAILOVERS = 10
+
         @Volatile
         var running: Boolean = false
             private set
@@ -53,6 +60,7 @@ class V2maxVpnService : VpnService() {
     private var totalDown = 0L
     private var failoverAttempts = 0
     private var connectToken = 0
+    private var failoverPending = false
 
     override fun onCreate() {
         super.onCreate()
@@ -104,16 +112,24 @@ class V2maxVpnService : VpnService() {
     private fun connect(serverId: String) {
         connectJob?.cancel()
         val token = ++connectToken
-        connectJob = scope.launch { doConnect(serverId, token) }
+        val isFailover = failoverPending
+        failoverPending = false
+        connectJob = scope.launch { doConnect(serverId, token, isFailover) }
     }
 
-    private suspend fun doConnect(serverId: String, token: Int) {
+    private suspend fun doConnect(serverId: String, token: Int, isFailover: Boolean = false) {
         try {
             val server = Repo.serverById(serverId) ?: Repo.servers.value.firstOrNull()
             ?: throw IllegalStateException("هیچ سروری انتخاب نشده است")
 
             currentServer = server
             Repo.setSelected(server.id)
+
+            if (isFailover) {
+                Log.i(TAG, "failover: connecting to ${server.endpoint}")
+            } else {
+                Failover.reset()
+            }
 
             publish(
                 TunnelUiState(
@@ -122,7 +138,7 @@ class V2maxVpnService : VpnService() {
                     serverName = server.displayName(),
                     serverProto = server.proto.label,
                     ping = server.bestPing(),
-                    message = "در حال اتصال…"
+                    message = if (isFailover) "تغییر خودکار به سرور جایگزین…" else "در حال اتصال…"
                 )
             )
 
@@ -168,7 +184,8 @@ class V2maxVpnService : VpnService() {
             connectedAt = System.currentTimeMillis()
             totalUp = 0
             totalDown = 0
-            failoverAttempts = 0
+            if (!isFailover) failoverAttempts = 0
+            Failover.markWorking(server.id)
 
             publish(
                 TunnelUiState(
@@ -198,6 +215,21 @@ class V2maxVpnService : VpnService() {
             if (t is kotlinx.coroutines.CancellationException) return
             if (token != connectToken) return
             Log.e(TAG, "connect failed", t)
+
+            // اگر همین تلاشِ جایگزینی شکست خورد، سرور بعدی را امتحان می‌کنیم
+            if (isFailover && failoverAttempts < MAX_FAILOVERS) {
+                val failedId = currentServer?.id.orEmpty()
+                Failover.markFailed(failedId)
+                val next = Failover.findReplacement(failedId)
+                if (next != null) {
+                    failoverAttempts++
+                    failoverPending = true
+                    Log.i(TAG, "failover retry #$failoverAttempts → ${next.endpoint}")
+                    connect(next.id)
+                    return
+                }
+            }
+
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
             fail("اتصال برقرار نشد: $raw")
         }
@@ -285,7 +317,6 @@ class V2maxVpnService : VpnService() {
             val settings = Repo.settings.value
             var lastTick = System.currentTimeMillis()
             var lastHealth = System.currentTimeMillis()
-            var healthFailures = 0
 
             while (isActive) {
                 delay(1000)
@@ -300,49 +331,83 @@ class V2maxVpnService : VpnService() {
                 val elapsed = (now - lastTick).coerceAtLeast(1L)
                 lastTick = now
 
-                val updated = state.copy(
-                    downSpeed = traffic[1] * 1000L / elapsed,
-                    upSpeed = traffic[0] * 1000L / elapsed,
-                    totalDown = totalDown,
-                    totalUp = totalUp,
-                    connectedAt = connectedAt
+                publish(
+                    state.copy(
+                        downSpeed = traffic[1] * 1000L / elapsed,
+                        upSpeed = traffic[0] * 1000L / elapsed,
+                        totalDown = totalDown,
+                        totalUp = totalUp,
+                        connectedAt = connectedAt
+                    )
                 )
-                publish(updated)
 
-                if (now - lastHealth > 45_000L) {
-                    lastHealth = now
-                    val ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(settings.delayTestUrl) }
-                    if (ping > 0) {
-                        healthFailures = 0
-                        publish(Repo.tunnel.value.copy(ping = ping.toInt()))
-                        Repo.setTestResult(
-                            Repo.tunnel.value.serverId,
-                            Repo.serverById(Repo.tunnel.value.serverId)?.tcpPing ?: -1,
-                            ping.toInt()
-                        )
-                    } else {
-                        healthFailures++
-                        if (healthFailures >= 2 && settings.smartFailover) {
-                            val next = pickFailoverServer()
-                            if (next != null && failoverAttempts < 3) {
-                                failoverAttempts++
-                                Log.i(TAG, "failover to ${next.name}")
-                                connect(next.id)
-                                return@launch
-                            }
-                        }
+                if (now - lastHealth < HEALTH_INTERVAL_MS) continue
+                lastHealth = now
+
+                if (withContext(Dispatchers.IO) { !XrayCore.isRunning }) {
+                    Log.w(TAG, "core stopped unexpectedly")
+                    if (settings.smartFailover) {
+                        if (rotate("هسته متوقف شد")) return@launch
+                    }
+                    fail("اتصال قطع شد")
+                    return@launch
+                }
+
+                var ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(settings.delayTestUrl) }
+                if (ping <= 0) {
+                    // یک تلاش دوباره‌ی کوتاه تا لرزش‌های شبکه باعث سوییچ بی‌مورد نشوند
+                    delay(1500)
+                    if (!isActive) break
+                    ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(settings.delayTestUrl) }
+                }
+                if (ping > 0) {
+                    publish(Repo.tunnel.value.copy(ping = ping.toInt()))
+                    Repo.setTestResult(
+                        Repo.tunnel.value.serverId,
+                        Repo.serverById(Repo.tunnel.value.serverId)?.tcpPing ?: -1,
+                        ping.toInt()
+                    )
+                } else {
+                    Log.w(TAG, "health check failed → failover")
+                    // یک شکست کافی است تا کاربر بدون معطلی به سرور سالم منتقل شود
+                    if (settings.smartFailover) {
+                        if (rotate("سرور فعلی پاسخ نمی‌دهد")) return@launch
+                        fail("سرور فعلی از دسترس خارج شد و جایگزینی پیدا نشد")
+                        return@launch
                     }
                 }
             }
         }
     }
 
-    private fun pickFailoverServer(): ServerConfig? {
-        val currentId = currentServer?.id
-        return Repo.servers.value
-            .filter { it.id != currentId && it.bestPing() > 0 }
-            .minByOrNull { it.bestPing() }
-            ?: Repo.servers.value.firstOrNull { it.id != currentId }
+    /**
+     * جابه‌جایی به سرور جایگزین.
+     * @return true اگر فرمان اتصال به سرور جدید صادر شده باشد
+     */
+    private suspend fun rotate(reason: String): Boolean {
+        val currentId = currentServer?.id ?: Repo.tunnel.value.serverId
+        Failover.markFailed(currentId)
+
+        if (failoverAttempts >= MAX_FAILOVERS) {
+            Log.w(TAG, "failover limit reached")
+            return false
+        }
+
+        publish(
+            Repo.tunnel.value.copy(
+                message = "$reason؛ در حال یافتن سرور جایگزین…",
+                downSpeed = 0,
+                upSpeed = 0
+            )
+        )
+
+        val next = Failover.findReplacement(currentId) ?: return false
+
+        failoverAttempts++
+        Log.i(TAG, "failover #$failoverAttempts → ${next.endpoint} ($reason)")
+        failoverPending = true
+        connect(next.id)
+        return true
     }
 
     // -------------------------------------------------------------- teardown

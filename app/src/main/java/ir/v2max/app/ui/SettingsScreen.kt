@@ -46,6 +46,7 @@ fun SettingsScreen(
     onChange: ((AppSettings) -> AppSettings) -> Unit,
     onClearAll: () -> Unit,
     onOpenPerApp: () -> Unit = {},
+    onSetFreeSources: (Boolean) -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {}
 ) {
@@ -115,6 +116,22 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
+                title = "به‌روزرسانی خودکار در شروع",
+                subtitle = "در هر بار باز شدن برنامه، همه‌ی اشتراک‌ها تازه می‌شوند و بهترین سرور انتخاب می‌شود",
+                checked = settings.autoRefreshOnOpen
+            ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "منابع رایگان عمومی",
+                subtitle = "افزودن خودکار چند مجموعه‌ی عمومی کانفیگ (بدون نیاز به اشتراک شخصی)",
+                checked = settings.useFreeSources
+            ) { value -> onSetFreeSources(value) }
+        }
+
+        item {
+            SettingSwitch(
                 title = "اتصال خودکار هنگام باز شدن برنامه",
                 subtitle = "به محض ورود به V2max، اتصال برقرار می‌شود",
                 checked = settings.autoConnectOnOpen
@@ -132,7 +149,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سوییچ خودکار سرور",
-                subtitle = "اگر سرور فعلی قطع شد، به‌طور خودکار سرور سالم جایگزین می‌شود",
+                subtitle = "اگر سرور فعلی قطع شد، بلافاصله سرور سالمِ جایگزین انتخاب و متصل می‌شود",
                 checked = settings.smartFailover
             ) { value -> onChange { it.copy(smartFailover = value) } }
         }

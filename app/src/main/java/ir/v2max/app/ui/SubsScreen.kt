@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
+import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.util.Format
@@ -54,13 +55,15 @@ fun SubsScreen(
     servers: List<ServerConfig>,
     subs: List<Subscription>,
     scan: ScanState,
+    sync: SyncState,
     busy: Boolean,
     onAdd: (String, String) -> Unit,
     onRefresh: (String) -> Unit,
     onRefreshAll: () -> Unit,
     onDelete: (String) -> Unit,
     onSmartScan: (String) -> Unit,
-    onImportText: (String) -> Unit
+    onImportText: (String) -> Unit,
+    onAddFreeSources: () -> Unit = {}
 ) {
     var showAdd by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
@@ -96,6 +99,8 @@ fun SubsScreen(
                 )
             }
         }
+
+        item { SyncBanner(sync) }
 
         item { ScanBanner(scan) }
 
@@ -192,6 +197,37 @@ fun SubsScreen(
             }
         }
 
+        item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "منابع رایگان عمومی",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = V2.TextPrimary
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            "چند مجموعه‌ی عمومی کانفیگ که به‌طور خودکار به‌روزرسانی می‌شوند",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = V2.TextMuted
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    GhostButton(
+                        text = "افزودن",
+                        modifier = Modifier.width(92.dp),
+                        onClick = onAddFreeSources
+                    )
+                }
+            }
+        }
+
         if (subs.isNotEmpty()) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -273,13 +309,27 @@ private fun SubscriptionCard(
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        sub.name.ifBlank { "اشتراک" },
-                        style = MaterialTheme.typography.titleSmall,
-                        color = V2.TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            sub.name.ifBlank { "اشتراک" },
+                            style = MaterialTheme.typography.titleSmall,
+                            color = V2.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (sub.builtIn) {
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(V2.Sky.copy(alpha = 0.14f))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("رایگان", color = V2.Sky, fontSize = 10.sp)
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(2.dp))
                     Text(
                         sub.url,

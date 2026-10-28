@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
+import ir.v2max.app.data.SyncState
 import ir.v2max.app.util.Format
 
 /** پس‌زمینه‌ی گرادیانی برنامه */
@@ -341,6 +342,58 @@ fun ScanBanner(scan: ScanState) {
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+            }
+        }
+    }
+}
+
+/** نوار پیشرفت همگام‌سازی خودکار اشتراک‌ها */
+@Composable
+fun SyncBanner(sync: SyncState) {
+    AnimatedVisibility(visible = sync.running) {
+        GlassCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        color = V2.Sky,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        sync.message.ifBlank { "همگام‌سازی منابع…" },
+                        style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                        color = V2.TextPrimary,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (sync.total > 0) {
+                        Text(
+                            "${Format.number(sync.done)}/${Format.number(sync.total)}",
+                            color = V2.TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+                if (sync.total > 0) {
+                    Spacer(Modifier.height(10.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(V2.SurfaceHigh)
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(sync.progress.coerceIn(0f, 1f))
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(Brush.horizontalGradient(listOf(V2.Sky, V2.Mint)))
+                        )
+                    }
                 }
             }
         }

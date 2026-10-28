@@ -37,6 +37,7 @@ object Repo {
 
     val tunnel = MutableStateFlow(TunnelUiState())
     val scan = MutableStateFlow(ScanState())
+    val sync = MutableStateFlow(SyncState())
 
     @Volatile
     private var loaded = false
@@ -65,20 +66,32 @@ object Repo {
         if (json.isNullOrBlank()) emptyList() else gson.fromJson<List<T>>(json, type) ?: emptyList()
     }.getOrDefault(emptyList())
 
+    @Volatile
+    private var persistSuspended = false
+
+    /** در زمان به‌روزرسانی انبوه، نوشتن روی دیسک را موقتاً متوقف می‌کند */
+    fun suspendPersist(suspended: Boolean) {
+        persistSuspended = suspended
+    }
+
     /** ذخیره‌ی فوری روی دیسک */
     fun persistNow() {
         persistServers()
+        persistSubs()
     }
 
     private fun persistServers() {
+        if (persistSuspended) return
         prefs?.edit()?.putString(KEY_SERVERS, gson.toJson(_servers.value))?.apply()
     }
 
     private fun persistSubs() {
+        if (persistSuspended) return
         prefs?.edit()?.putString(KEY_SUBS, gson.toJson(_subs.value))?.apply()
     }
 
     private fun persistSettings() {
+        if (persistSuspended) return
         prefs?.edit()?.putString(KEY_SETTINGS, gson.toJson(_settings.value))?.apply()
     }
 
@@ -248,6 +261,112 @@ object Repo {
         _subs.value = _subs.value.filterNot { it.id == id }
         persistSubs()
         removeServersOfSubscription(id)
+    }
+
+    /** منابع رایگان داخلی را به لیست اشتراک‌ها اضافه می‌کند */
+    @Synchronized
+    fun ensureBuiltInSources(): Int {
+        val known = _subs.value.map { it.url.trim().trimEnd('/') }.toHashSet()
+        val toAdd = PublicSources.ALL.filter { it.url.trim().trimEnd('/') !in known }.map {
+            Subscription(name = it.name, url = it.url, builtIn = true)
+        }
+        if (toAdd.isEmpty()) return 0
+        _subs.value = _subs.value + toAdd
+        persistSubs()
+        return toAdd.size
+    }
+
+    /** حذف کانفیگ‌ها و اشتراک‌های منابع رایگان داخلی */
+    @Synchronized
+    fun removeBuiltInSources() {
+        val ids = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
+        if (ids.isEmpty()) return
+        _subs.value = _subs.value.filterNot { it.id in ids }
+        _servers.value = _servers.value.filterNot { it.subId in ids }
+        persistSubs()
+        persistServers()
+        if (serverById(_selectedId.value) == null) {
+            setSelected(_servers.value.firstOrNull()?.id.orEmpty())
+        }
+    }
+
+    fun builtInSummary(): Pair<Int, Int> {
+        val subs = _subs.value.filter { it.builtIn }
+        val ids = subs.map { it.id }.toHashSet()
+        return subs.size to _servers.value.count { it.subId in ids }
+    }
+
+    /**
+     * حذف تکراری‌های سراسری بین همه‌ی اشتراک‌ها.
+     * از هر گروه، کانفیگ علاقه‌مندی/سالم‌تر نگه داشته می‌شود.
+     */
+    @Synchronized
+    fun dedupeAllServers(): Int {
+        val all = _servers.value
+        if (all.size < 2) return 0
+        val keep = LinkedHashMap<String, ServerConfig>()
+        all.forEach { cfg ->
+            val key = cfg.fingerprint()
+            val current = keep[key]
+            if (current == null) {
+                keep[key] = cfg
+            } else {
+                val better = when {
+                    cfg.favorite != current.favorite -> if (cfg.favorite) cfg else current
+                    else -> {
+                        val a = cfg.bestPing()
+                        val b = current.bestPing()
+                        when {
+                            a > 0 && (b <= 0 || a < b) -> cfg
+                            else -> current
+                        }
+                    }
+                }
+                keep[key] = better
+            }
+        }
+        if (keep.size == all.size) return 0
+        val removed = all.size - keep.size
+        val survivors = keep.values.toList()
+        _servers.value = survivors
+        persistServers()
+        if (survivors.none { it.id == _selectedId.value }) {
+            setSelected(survivors.firstOrNull()?.id.orEmpty())
+        }
+        return removed
+    }
+
+    /**
+     * محدود کردن حجم داده‌ها: اگر تعداد کانفیگ‌های منابع رایگان از حد گذشت،
+     * ضعیف‌ترین/قدیمی‌ترین آن‌ها حذف می‌شوند.
+     */
+    @Synchronized
+    fun trimBuiltInServers(maxTotal: Int = 3000): Int {
+        val all = _servers.value
+        if (all.size <= maxTotal) return 0
+        val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
+        val now = System.currentTimeMillis()
+        val removable = all
+            .filter { it.subId in builtInIds && !it.favorite && it.id != _selectedId.value }
+            .sortedWith(
+                compareBy<ServerConfig> { if (it.bestPing() > 0) 1 else 0 }
+                    .thenByDescending { now - it.testedAt }
+                    .thenByDescending { it.addedAt }
+            )
+        val toRemove = (all.size - maxTotal).coerceAtMost(removable.size)
+        if (toRemove <= 0) return 0
+        val removeIds = removable.take(toRemove).map { it.id }.toHashSet()
+        _servers.value = all.filterNot { it.id in removeIds }
+        persistServers()
+        return toRemove
+    }
+
+    /** بهترین سرورهای سالم و تازه‌تست‌شده (برای سوییچ سریع) */
+    fun healthyServers(maxAgeMs: Long = 30 * 60 * 1000L): List<ServerConfig> {
+        val now = System.currentTimeMillis()
+        return _servers.value
+            .filter { it.bestPing() > 0 && now - it.testedAt <= maxAgeMs }
+            .sortedBy { it.bestPing() }
     }
 
     // ---------------------------------------------------------------- settings

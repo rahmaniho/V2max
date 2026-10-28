@@ -14,8 +14,8 @@ import java.util.concurrent.TimeUnit
 object SubscriptionFetcher {
 
     private val client: OkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(18, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(22, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
@@ -34,9 +34,49 @@ object SubscriptionFetcher {
         val ok: Boolean get() = error.isEmpty()
     }
 
+    /**
+     * آدرس‌های جایگزین برای منابع گیت‌هابی.
+     * چون raw.githubusercontent.com در ایران معمولاً مسدود/کند است،
+     * اگر اتصال مستقیم شکست بخورد از آینه‌ی jsDelivr استفاده می‌شود.
+     */
+    fun mirrorsFor(url: String): List<String> {
+        val out = ArrayList<String>()
+        out.add(url)
+        val clean = url.trim()
+        val prefix = "https://raw.githubusercontent.com/"
+        if (clean.startsWith(prefix)) {
+            val rest = clean.removePrefix(prefix).split('/')
+            if (rest.size >= 4) {
+                val owner = rest[0]
+                val repo = rest[1]
+                val branch = rest[2]
+                val path = rest.drop(3).joinToString("/")
+                out.add("https://cdn.jsdelivr.net/gh/$owner/$repo@$branch/$path")
+                out.add("https://ghproxy.net/$prefix$owner/$repo/$branch/$path")
+            }
+        }
+        return out
+    }
+
     suspend fun fetch(url: String): Result = withContext(Dispatchers.IO) {
         val cleaned = url.trim()
         if (cleaned.isEmpty()) return@withContext Result(error = "آدرس اشتراک خالی است")
+
+        var last = Result(error = "دریافت اشتراک ناموفق بود")
+        val candidates = mirrorsFor(cleaned)
+        for ((index, candidate) in candidates.withIndex()) {
+            val result = fetchOnce(candidate)
+            if (result.ok) return@withContext result
+            last = result
+            if (index < candidates.size - 1) {
+                kotlinx.coroutines.delay(if (index == 0) 600 else 1200)
+            }
+        }
+        last
+    }
+
+    private suspend fun fetchOnce(url: String): Result = withContext(Dispatchers.IO) {
+        val cleaned = url.trim()
         try {
             val request = Request.Builder()
                 .url(cleaned)

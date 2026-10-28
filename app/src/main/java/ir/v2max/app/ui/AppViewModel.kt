@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.AppSettings
+import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.HealthScanner
@@ -14,11 +15,16 @@ import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.util.Format
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -29,6 +35,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val selectedId = Repo.selectedId
     val tunnel = Repo.tunnel
     val scan = Repo.scan
+    val sync = Repo.sync
 
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
@@ -41,25 +48,58 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingServerId: String? = null
     private var pendingSmartScan = false
+    private val syncMutex = kotlinx.coroutines.sync.Mutex()
 
     init {
-        viewModelScope.launch {
-            delay(2500)
-            if (Repo.settings.value.autoUpdateSubs) {
-                val stale = Repo.subs.value.any {
-                    it.url.isNotBlank() && System.currentTimeMillis() - it.updatedAt > 6 * 60 * 60 * 1000L
-                }
-                if (stale) refreshAllSubscriptions(silent = true)
+        viewModelScope.launch { startup() }
+    }
+
+    /**
+     * جریان شروع برنامه:
+     *  ۱) منابع رایگان داخلی ساخته می‌شوند
+     *  ۲) اتصال فوری از آخرین سرور سالم (بدون انتظار)
+     *  ۳) به‌روزرسانی همه‌ی اشتراک‌ها به‌صورت موازی
+     *  ۴) اسکن هوشمند و جابه‌جایی به بهترین سرور
+     */
+    private suspend fun startup() {
+        val app = getApplication<Application>()
+        val settings = Repo.settings.value
+
+        if (settings.useFreeSources) Repo.ensureBuiltInSources()
+
+        val needsPermission = VpnService.prepare(app) != null
+        if (settings.autoConnectOnOpen) {
+            if (needsPermission) {
+                // همان ابتدا اجازه‌ی VPN گرفته می‌شود؛ بعد از تأیید، اتصال هوشمند اجرا می‌شود
+                pendingSmartScan = true
+                pendingScanSubId = null
+                _pendingVpnRequest.value = true
+            } else {
+                SmartConnect.fastStart(app)
             }
         }
-        viewModelScope.launch {
-            delay(400)
-            val s = Repo.settings.value
-            if (s.autoConnectOnOpen && Repo.servers.value.isNotEmpty() && !Repo.tunnel.value.isActive) {
-                requestConnect(null)
-            } else {
-                SmartConnect.refreshSelectedIfNeeded(getApplication())
-            }
+
+        if (settings.autoRefreshOnOpen) {
+            delay(500)
+            syncAll(announce = false)
+
+            if (Repo.servers.value.isEmpty()) return
+            if (needsPermission) return
+
+            val lastScan = Repo.scan.value.finishedAt
+            val scannedRecently = lastScan > 0 && System.currentTimeMillis() - lastScan < 90_000L
+            if (scannedRecently) return
+
+            val hasCache = Repo.servers.value.any { it.bestPing() > 0 }
+            SmartConnect.scanAndConnect(
+                app,
+                autoConnect = settings.autoConnectOnOpen,
+                limit = if (hasCache) 600 else 300
+            )
+        } else if (settings.autoConnectOnOpen && !Repo.tunnel.value.isActive && !needsPermission) {
+            SmartConnect.scanAndConnect(app, autoConnect = true, limit = 400)
+        } else {
+            SmartConnect.refreshSelectedIfNeeded(app)
         }
     }
 
@@ -227,37 +267,121 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun refreshAllSubscriptions(silent: Boolean = false) {
-        val list = Repo.subs.value
-        if (list.isEmpty()) {
+        if (Repo.subs.value.isEmpty()) {
             if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
         }
         viewModelScope.launch {
-            _busy.value = true
-            var updated = 0
-            list.forEach { sub ->
-                val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url) }
-                if (result.ok) {
-                    result.configs.forEach { it.subId = sub.id }
-                    Repo.replaceSubscriptionServers(sub.id, result.configs)
-                    Repo.updateSubscription(
-                        sub.copy(
-                            updatedAt = System.currentTimeMillis(),
-                            count = result.configs.size,
-                            upload = result.upload,
-                            download = result.download,
-                            total = result.total,
-                            expireAt = result.expireAt,
-                            lastError = ""
-                        )
-                    )
-                    updated++
-                } else {
-                    Repo.updateSubscription(sub.copy(lastError = result.error))
-                }
+            val (updated, configs) = syncAll(announce = !silent)
+            if (!silent) {
+                showMessage(
+                    if (updated == 0) "به‌روزرسانی ناموفق بود؛ اتصال اینترنت را بررسی کنید"
+                    else "${Format.number(updated)} منبع به‌روزرسانی شد · ${Format.number(configs)} کانفیگ"
+                )
             }
-            _busy.value = false
-            if (!silent) showMessage("${Format.number(updated)} اشتراک به‌روزرسانی شد")
+        }
+    }
+
+    /**
+     * دریافت موازی همه‌ی اشتراک‌ها (حداکثر ۶ درخواست همزمان)، حذف تکراری‌ها
+     * و ذخیره‌ی نتیجه.
+     * @return (تعداد منابع موفق، تعداد کل کانفیگ‌ها)
+     */
+    private suspend fun syncAll(announce: Boolean): Pair<Int, Int> = syncMutex.withLock {
+        val targets = Repo.subs.value
+        if (targets.isEmpty()) return@withLock 0 to Repo.servers.value.size
+
+        Repo.sync.value = ir.v2max.app.data.SyncState(
+            running = true,
+            done = 0,
+            total = targets.size,
+            message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
+        )
+
+        val semaphore = Semaphore(6)
+        val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val okCount = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // نوشتن انبوه روی دیسک موقتاً متوقف می‌شود تا همگام‌سازی سریع بماند
+        Repo.suspendPersist(true)
+        try {
+        coroutineScope {
+            targets.map { sub ->
+                async(Dispatchers.IO) {
+                    val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url) }
+                    if (result.ok) {
+                        val cap = PublicSources.forUrl(sub.url)?.maxConfigs ?: 400
+                        val trimmed = result.configs.take(cap)
+                        trimmed.forEach { it.subId = sub.id }
+                        Repo.replaceSubscriptionServers(sub.id, trimmed)
+                        Repo.updateSubscription(
+                            sub.copy(
+                                updatedAt = System.currentTimeMillis(),
+                                count = trimmed.size,
+                                upload = result.upload,
+                                download = result.download,
+                                total = result.total,
+                                expireAt = result.expireAt,
+                                lastError = ""
+                            )
+                        )
+                        okCount.incrementAndGet()
+                    } else {
+                        Repo.updateSubscription(sub.copy(lastError = result.error))
+                    }
+                    val d = doneCount.incrementAndGet()
+                    Repo.sync.value = Repo.sync.value.copy(
+                        done = d,
+                        message = "دریافت منابع (${Format.number(d)}/${Format.number(targets.size)})"
+                    )
+                }
+            }.awaitAll()
+        }
+
+        } finally {
+            Repo.suspendPersist(false)
+        }
+
+        val removed = Repo.dedupeAllServers()
+        Repo.trimBuiltInServers()
+        Repo.persistNow()
+        val total = Repo.servers.value.size
+        Repo.sync.value = ir.v2max.app.data.SyncState(
+            running = false,
+            done = targets.size,
+            total = targets.size,
+            message = "${Format.number(okCount.get())} منبع به‌روزرسانی شد · ${Format.number(total)} کانفیگ" +
+                if (removed > 0) " (${Format.number(removed)} تکراری حذف شد)" else ""
+        )
+        if (announce) showMessage(Repo.sync.value.message)
+        okCount.get() to total
+    }
+
+    // ------------------------------------------------------- منابع رایگان
+
+    fun addFreeSources() {
+        val added = Repo.ensureBuiltInSources()
+        if (added == 0) {
+            showMessage("منابع رایگان از قبل اضافه شده‌اند")
+            return
+        }
+        updateSettings { it.copy(useFreeSources = true) }
+        showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        viewModelScope.launch {
+            syncAll(announce = false)
+            launchSmartConnect(null)
+        }
+    }
+
+    fun setFreeSourcesEnabled(enabled: Boolean) {
+        updateSettings { it.copy(useFreeSources = enabled) }
+        if (enabled) {
+            val added = Repo.ensureBuiltInSources()
+            if (added > 0) viewModelScope.launch { syncAll(announce = false) }
+            showMessage(if (added > 0) "${Format.number(added)} منبع رایگان فعال شد" else "منابع رایگان فعال است")
+        } else {
+            Repo.removeBuiltInSources()
+            showMessage("منابع رایگان غیرفعال و حذف شد")
         }
     }
 

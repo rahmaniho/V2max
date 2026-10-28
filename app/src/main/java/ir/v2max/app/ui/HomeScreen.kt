@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.ScanState
+import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
@@ -59,6 +60,7 @@ fun HomeScreen(
     selectedId: String,
     tunnel: TunnelUiState,
     scan: ScanState,
+    sync: SyncState,
     settings: AppSettings,
     onToggle: () -> Unit,
     onSmart: () -> Unit,
@@ -122,6 +124,8 @@ fun HomeScreen(
                 )
             }
         }
+
+        item { SyncBanner(sync) }
 
         item { ScanBanner(scan) }
 

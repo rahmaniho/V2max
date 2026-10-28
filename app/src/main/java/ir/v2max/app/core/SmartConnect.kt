@@ -4,6 +4,7 @@ import android.content.Context
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.net.HealthScanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -22,11 +23,20 @@ object SmartConnect {
     suspend fun scanAndConnect(
         context: Context,
         autoConnect: Boolean = true,
-        subscriptionId: String? = null
+        subscriptionId: String? = null,
+        limit: Int = 0
     ): ServerConfig? = scanMutex.withLock {
-        val servers = withContext(Dispatchers.Default) {
+        val all = withContext(Dispatchers.Default) {
             Repo.servers.value.filter { subscriptionId == null || it.subId == subscriptionId }
         }
+        // اولویت‌بندی: علاقه‌مندی‌ها، سپس سرورهایی که قبلاً سالم بوده‌اند
+        val servers = if (limit > 0 && all.size > limit) {
+            all.sortedWith(
+                compareByDescending<ServerConfig> { it.favorite }
+                    .thenByDescending { it.bestPing() > 0 }
+                    .thenBy { if (it.bestPing() > 0) it.bestPing() else Int.MAX_VALUE }
+            ).take(limit)
+        } else all
         if (servers.isEmpty()) {
             Repo.scan.value = ScanState(
                 running = false,
@@ -83,6 +93,7 @@ object SmartConnect {
             total = outcome.testedCount,
             bestName = best?.displayName().orEmpty(),
             phase = "پایان",
+            finishedAt = System.currentTimeMillis(),
             message = when {
                 best == null -> outcome.message
                 else -> "بهترین سرور: ${best.displayName()} (${best.bestPing()}ms)"
@@ -90,9 +101,22 @@ object SmartConnect {
         )
 
         if (best != null) {
-            Repo.setSelected(best.id)
-            if (autoConnect) {
-                TunnelController.start(context, best.id)
+            val tunnel = Repo.tunnel.value
+            val current = Repo.serverById(tunnel.serverId)
+            val connected = tunnel.status == TunnelStatus.CONNECTED
+            val sameAsRunning = connected && current?.id == best.id
+            // اتصال فعلی تقریباً هم‌سطح بهترین است؛ برای جلوگیری از قطعی سوییچ نمی‌کنیم
+            val keepCurrent = autoConnect && connected && current != null &&
+                !sameAsRunning && current.bestPing() > 0 &&
+                current.bestPing() <= best.bestPing() * 1.35f
+
+            when {
+                sameAsRunning -> Repo.setSelected(best.id)
+                keepCurrent -> Unit
+                else -> {
+                    Repo.setSelected(best.id)
+                    if (autoConnect) TunnelController.start(context, best.id)
+                }
             }
         }
         return@withLock best
@@ -121,6 +145,20 @@ object SmartConnect {
         } else {
             scanAndConnect(context, autoConnect = true)
         }
+    }
+
+    /**
+     * شروع سریع: اگر سرور سالم و تازه‌ای داریم همین حالا وصل می‌شویم
+     * تا کاربر منتظر اسکن کامل نماند.
+     */
+    fun fastStart(context: Context): Boolean {
+        if (Repo.tunnel.value.isActive) return true
+        val candidate = Repo.healthyServers(20 * 60 * 1000L).firstOrNull()
+            ?: Repo.selectedServer()?.takeIf { it.bestPing() > 0 }
+        candidate ?: return false
+        Repo.setSelected(candidate.id)
+        TunnelController.start(context, candidate.id)
+        return true
     }
 
     /** بررسی دوره‌ای سلامت سرور انتخابی (برای اجرا هنگام باز شدن برنامه) */
