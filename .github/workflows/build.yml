@@ -1,0 +1,73 @@
+name: Build V2max APK
+
+on:
+  push:
+    branches:
+      - main
+      - "arena/**"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  LIBV2RAY_VERSION: v26.10.21
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Cache Xray core (libv2ray.aar)
+        uses: actions/cache@v4
+        with:
+          path: app/libs/libv2ray.aar
+          key: libv2ray-${{ env.LIBV2RAY_VERSION }}
+
+      - name: Download Xray core
+        run: |
+          mkdir -p app/libs
+          if [ ! -s app/libs/libv2ray.aar ]; then
+            curl -fL --retry 3 -o app/libs/libv2ray.aar \
+              "https://github.com/2dust/AndroidLibXrayLite/releases/download/${{ env.LIBV2RAY_VERSION }}/libv2ray.aar"
+          fi
+          ls -la app/libs
+
+      - name: Restore signing keystore
+        uses: actions/cache@v4
+        with:
+          path: |
+            keystore.jks
+            keystore.properties
+          key: v2max-keystore-v1
+
+      - name: Create signing keystore if needed
+        run: |
+          if [ ! -f keystore.jks ]; then
+            keytool -genkeypair -v -keystore keystore.jks -alias v2max \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass v2max123 -keypass v2max123 \
+              -dname "CN=V2max, OU=Mobile, O=V2max, L=Tehran, C=IR"
+            printf 'storeFile=keystore.jks\nstorePassword=v2max123\nkeyAlias=v2max\nkeyPassword=v2max123\n' > keystore.properties
+          fi
+
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2max-apk
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error

@@ -1,0 +1,6 @@
+-keep class libv2ray.** { *; }
+-keep class go.** { *; }
+-keep class com.google.gson.** { *; }
+-keepclassmembers class ir.v2max.app.data.** { *; }
+-dontwarn libv2ray.**
+-dontwarn go.**
