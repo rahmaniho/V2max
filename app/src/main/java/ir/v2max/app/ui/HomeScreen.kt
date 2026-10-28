@@ -213,6 +213,14 @@ fun HomeScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (selected != null && selected.reachCount() > 0) {
+                            Spacer(Modifier.height(5.dp))
+                            PingTargetsRow(
+                                selected.googlePing,
+                                selected.instagramPing,
+                                selected.youtubePing
+                            )
+                        }
                     }
                     Spacer(Modifier.width(8.dp))
                     PingBadge(selected?.bestPing() ?: -1)

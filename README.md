@@ -216,7 +216,12 @@ app/src/main/java/ir/v2max/app/
 ## 🙏 قدردانی
 
 - هسته‌ی [Xray-core](https://github.com/XTLS/Xray-core) و کتابخانه‌ی [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)
-- الهام‌گرفته از [v2rayNG](https://github.com/2dust/v2rayNG)
+- الهام‌گرفته از [v2rayNG](https://github.com/2dust/v2rayNG) و [MahsaNG](https://github.com/GFW-knocker/MahsaNG)
+- تکنیک‌های فرگمنت TLS و پارامترهای پیشنهادی از پروژه‌های
+  [gfw_resist_tls_proxy](https://github.com/GFW-knocker/gfw_resist_tls_proxy) و
+  [gfw_resist_HTTPS_proxy](https://github.com/GFW-knocker/gfw_resist_HTTPS_proxy)
+- الگوی «کاوش موازی و انتخاب سریع‌ترین گره» با الهام از معماری
+  [OpenVPN](https://github.com/OpenVPN/openvpn) و [Pritunl](https://github.com/pritunl/pritunl)
 - فونت [Vazirmatn](https://github.com/rastikerdar/vazirmatn) (مجوز SIL OFL 1.1)
 
 ## 📄 مجوز

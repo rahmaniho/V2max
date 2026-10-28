@@ -106,8 +106,10 @@ object SmartConnect {
         }
 
         // حذف سرورهایی که به هیچ مقصدی پاسخ ندادند
+        // محافظ: اگر هیچ سروری سالم نبود یعنی مشکل از شبکه‌ی کاربر است، پس چیزی حذف نمی‌شود
         var removed = 0
-        if (settings.dropDeadServers && outcome.deadIds.isNotEmpty()) {
+        val safeToPrune = outcome.qualified.isNotEmpty() || outcome.best != null
+        if (settings.dropDeadServers && safeToPrune && outcome.deadIds.isNotEmpty()) {
             val protected = Repo.servers.value
                 .filter { it.id in outcome.deadIds && it.favorite }
                 .map { it.id }
