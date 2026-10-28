@@ -65,6 +65,11 @@ object Repo {
         if (json.isNullOrBlank()) emptyList() else gson.fromJson<List<T>>(json, type) ?: emptyList()
     }.getOrDefault(emptyList())
 
+    /** ذخیره‌ی فوری روی دیسک */
+    fun persistNow() {
+        persistServers()
+    }
+
     private fun persistServers() {
         prefs?.edit()?.putString(KEY_SERVERS, gson.toJson(_servers.value))?.apply()
     }
@@ -168,13 +173,23 @@ object Repo {
     }
 
     @Synchronized
-    fun setTestResult(id: String, tcpPing: Int, realPing: Int, testedAt: Long = System.currentTimeMillis()) {
+    /**
+     * ثبت نتیجه‌ی تست یک سرور.
+     * در زمان اسکن انبوه با persist=false فراخوانی می‌شود و در پایان با [persistNow] یک‌جا ذخیره می‌گردد.
+     */
+    fun setTestResult(
+        id: String,
+        tcpPing: Int,
+        realPing: Int,
+        testedAt: Long = System.currentTimeMillis(),
+        persist: Boolean = true
+    ) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) return
         list[idx] = list[idx].copy(tcpPing = tcpPing, realPing = realPing, testedAt = testedAt)
         _servers.value = list
-        persistServers()
+        if (persist) persistServers()
     }
 
     @Synchronized

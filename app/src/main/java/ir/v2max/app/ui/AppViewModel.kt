@@ -44,6 +44,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         viewModelScope.launch {
+            delay(2500)
+            if (Repo.settings.value.autoUpdateSubs) {
+                val stale = Repo.subs.value.any {
+                    it.url.isNotBlank() && System.currentTimeMillis() - it.updatedAt > 6 * 60 * 60 * 1000L
+                }
+                if (stale) refreshAllSubscriptions(silent = true)
+            }
+        }
+        viewModelScope.launch {
             delay(400)
             val s = Repo.settings.value
             if (s.autoConnectOnOpen && Repo.servers.value.isNotEmpty() && !Repo.tunnel.value.isActive) {
@@ -217,10 +226,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun refreshAllSubscriptions() {
+    fun refreshAllSubscriptions(silent: Boolean = false) {
         val list = Repo.subs.value
         if (list.isEmpty()) {
-            showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
+            if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
         }
         viewModelScope.launch {
@@ -248,7 +257,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             _busy.value = false
-            showMessage("${Format.number(updated)} اشتراک به‌روزرسانی شد")
+            if (!silent) showMessage("${Format.number(updated)} اشتراک به‌روزرسانی شد")
         }
     }
 

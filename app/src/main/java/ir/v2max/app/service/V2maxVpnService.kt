@@ -177,7 +177,8 @@ class V2maxVpnService : VpnService() {
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) return
             Log.e(TAG, "connect failed", t)
-            fail(t.message ?: t.javaClass.simpleName)
+            val raw = (t.message ?: t.javaClass.simpleName).take(180)
+            fail("اتصال برقرار نشد: $raw")
         }
     }
 

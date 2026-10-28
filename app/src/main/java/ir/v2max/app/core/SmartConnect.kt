@@ -50,11 +50,11 @@ object SmartConnect {
                 servers = servers,
                 settings = settings,
                 onTcp = { cfg, ping ->
-                    Repo.setTestResult(cfg.id, ping, -1)
+                    Repo.setTestResult(cfg.id, ping, -1, persist = false)
                 },
                 onReal = { cfg, delay ->
                     val current = Repo.serverById(cfg.id)
-                    Repo.setTestResult(cfg.id, current?.tcpPing ?: -1, delay)
+                    Repo.setTestResult(cfg.id, current?.tcpPing ?: -1, delay, persist = false)
                 },
                 onPhase = { phase, done, total ->
                     Repo.scan.value = Repo.scan.value.copy(phase = phase, done = done, total = total)
@@ -71,6 +71,8 @@ object SmartConnect {
             )
             return@withLock null
         }
+
+        Repo.persistNow()
 
         val best = outcome.best
         Repo.scan.value = Repo.scan.value.copy(

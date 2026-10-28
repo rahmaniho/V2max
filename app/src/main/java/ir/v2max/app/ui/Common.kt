@@ -24,7 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -369,7 +369,7 @@ fun PulsingDot(color: Color, size: Int = 8) {
 
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("خانه", Icons.Filled.Home),
-    SERVERS("سرورها", Icons.Filled.List),
+    SERVERS("سرورها", Icons.AutoMirrored.Filled.List),
     SUBS("اشتراک", Icons.Filled.Refresh),
     SETTINGS("تنظیمات", Icons.Filled.Settings)
 }

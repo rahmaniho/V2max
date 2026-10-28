@@ -336,14 +336,14 @@ private fun SubscriptionCard(
                     )
                     Spacer(Modifier.weight(1f))
                     Text(
-                        if (sub.expireAt > 0) "انقضا: ${Format.date(sub.expireAt * 1000)}" else "آخرین به‌روزرسانی: ${Format.date(sub.updatedAt)}",
+                        if (sub.expireAt > 0) "انقضا: ${Format.dateOnly(sub.expireAt * 1000)}" else "آخرین به‌روزرسانی: ${Format.dateOnly(sub.updatedAt)}",
                         fontSize = 10.5.sp,
                         color = V2.TextMuted
                     )
                 }
             } else {
                 Text(
-                    "آخرین به‌روزرسانی: ${Format.date(sub.updatedAt)}",
+                    "آخرین به‌روزرسانی: ${Format.dateOnly(sub.updatedAt)}",
                     fontSize = 10.5.sp,
                     color = V2.TextMuted
                 )
