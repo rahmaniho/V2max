@@ -139,8 +139,20 @@ class V2maxVpnService : VpnService() {
             tun = fd
 
             XrayCore.init(applicationContext)
-            val config = ConfigBuilder.vpnConfig(server, settings)
-            XrayCore.start(config, fd.fd)
+
+            // اگر کانفیگ با تنظیمات فعلی بالا نیامد (مثلاً فرگمنت روی این هسته پشتیبانی نشود)
+            // یک‌بار بدون فرگمنت تلاش می‌کنیم تا اتصال کاربر قطع نشود.
+            try {
+                XrayCore.start(ConfigBuilder.vpnConfig(server, settings), fd.fd)
+            } catch (first: Throwable) {
+                if (settings.fragment) {
+                    Log.w(TAG, "start with fragment failed, retrying without fragment", first)
+                    XrayCore.stop()
+                    XrayCore.start(ConfigBuilder.vpnConfig(server, settings.copy(fragment = false)), fd.fd)
+                } else {
+                    throw first
+                }
+            }
 
             if (!XrayCore.isRunning) {
                 throw IllegalStateException("هسته نتوانست اجرا شود")
