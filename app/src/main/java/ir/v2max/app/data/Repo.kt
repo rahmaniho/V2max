@@ -263,6 +263,32 @@ object Repo {
 
     // ------------------------------------------------------------------- misc
 
+    // --------------------------------------------------------- backup/restore
+
+    fun exportBackup(): String = gson.toJson(
+        BackupPayload(
+            servers = _servers.value,
+            subs = _subs.value,
+            settings = _settings.value,
+            selectedId = _selectedId.value
+        )
+    )
+
+    @Synchronized
+    fun restoreBackup(json: String): Boolean {
+        val payload = runCatching { gson.fromJson(json, BackupPayload::class.java) }.getOrNull()
+            ?: return false
+        if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
+        _servers.value = payload.servers
+        _subs.value = payload.subs
+        _settings.value = payload.settings
+        persistServers()
+        persistSubs()
+        persistSettings()
+        setSelected(payload.selectedId.ifBlank { payload.servers.firstOrNull()?.id.orEmpty() })
+        return true
+    }
+
     fun resetEverything() {
         _servers.value = emptyList()
         _subs.value = emptyList()

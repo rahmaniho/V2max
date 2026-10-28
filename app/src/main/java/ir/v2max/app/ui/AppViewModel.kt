@@ -319,6 +319,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Repo.updateSettings(block)
     }
 
+    fun exportBackup(): String = Repo.exportBackup()
+
+    fun importBackup(text: String) {
+        if (Repo.restoreBackup(text)) {
+            showMessage("پشتیبان با موفقیت بازیابی شد")
+        } else {
+            showMessage("فایل پشتیبان معتبر نیست")
+        }
+    }
+
     fun resetData() {
         TunnelController.stop(getApplication())
         Repo.resetEverything()

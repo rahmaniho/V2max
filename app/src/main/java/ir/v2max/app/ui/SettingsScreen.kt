@@ -44,7 +44,10 @@ fun SettingsScreen(
     coreVersion: String,
     appVersion: String,
     onChange: ((AppSettings) -> AppSettings) -> Unit,
-    onClearAll: () -> Unit
+    onClearAll: () -> Unit,
+    onOpenPerApp: () -> Unit = {},
+    onBackup: () -> Unit = {},
+    onRestore: () -> Unit = {}
 ) {
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
@@ -134,6 +137,19 @@ fun SettingsScreen(
             ) { value -> onChange { it.copy(smartFailover = value) } }
         }
 
+        item {
+            SettingValue(
+                title = "پروکسی برنامه‌به‌برنامه",
+                subtitle = when (settings.perAppMode) {
+                    ir.v2max.app.data.PerAppMode.OFF -> "همه‌ی برنامه‌ها از تانل عبور می‌کنند"
+                    ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> "فقط برنامه‌های انتخاب‌شده"
+                    ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> "به‌جز برنامه‌های انتخاب‌شده"
+                },
+                value = if (settings.perAppMode == ir.v2max.app.data.PerAppMode.OFF) "تنظیم"
+                else "${Format.number(settings.perAppPackages.size)} برنامه"
+            ) { onOpenPerApp() }
+        }
+
         item { GroupTitle("شبکه") }
 
         item {
@@ -176,6 +192,19 @@ fun SettingsScreen(
                 subtitle = "نمایش سرعت دانلود/آپلود و پینگ روی نوتیفیکیشن دائمی",
                 checked = settings.showSpeedInNotification
             ) { value -> onChange { it.copy(showSpeedInNotification = value) } }
+        }
+
+        item { GroupTitle("پشتیبان و بازیابی") }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) {
+                    GhostButton(text = "پشتیبان‌گیری", modifier = Modifier.fillMaxWidth()) { onBackup() }
+                }
+                Box(Modifier.weight(1f)) {
+                    GhostButton(text = "بازیابی", modifier = Modifier.fillMaxWidth()) { onRestore() }
+                }
+            }
         }
 
         item { GroupTitle("درباره") }

@@ -220,13 +220,48 @@ class V2maxVpnService : VpnService() {
         }
 
         // خود برنامه از تانل خارج می‌شود تا سوکت‌های هسته در حلقه نیفتند
-        runCatching { builder.addDisallowedApplication(packageName) }
+        applyPerAppRules(builder, settings)
 
         return try {
             builder.establish()
         } catch (t: Throwable) {
             Log.e(TAG, "establish failed", t)
             null
+        }
+    }
+
+    /** اعمال قوانین پروکسی برنامه‌به‌برنامه */
+    private fun applyPerAppRules(builder: Builder, settings: AppSettings) {
+        val selected = settings.perAppPackages.filter { it.isNotBlank() }
+        when (settings.perAppMode) {
+            ir.v2max.app.data.PerAppMode.OFF -> {
+                runCatching { builder.addDisallowedApplication(packageName) }
+            }
+
+            ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> {
+                if (selected.isEmpty()) {
+                    runCatching { builder.addDisallowedApplication(packageName) }
+                } else {
+                    var added = 0
+                    selected.forEach { pkg ->
+                        if (pkg == packageName) return@forEach
+                        runCatching {
+                            builder.addAllowedApplication(pkg)
+                            added++
+                        }
+                    }
+                    if (added == 0) {
+                        runCatching { builder.addDisallowedApplication(packageName) }
+                    }
+                }
+            }
+
+            ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> {
+                runCatching { builder.addDisallowedApplication(packageName) }
+                selected.forEach { pkg ->
+                    runCatching { builder.addDisallowedApplication(pkg) }
+                }
+            }
         }
     }
 

@@ -1,6 +1,8 @@
 package ir.v2max.app.ui
 
-import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -38,7 +40,34 @@ fun AppRoot(vm: AppViewModel) {
 
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
+    var showPerApp by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { output ->
+                    output.write(vm.exportBackup().toByteArray())
+                }
+            }
+            vm.showMessage("فایل پشتیبان ذخیره شد")
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val text = runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
+            if (text.isNullOrBlank()) vm.showMessage("خواندن فایل ناموفق بود") else vm.importBackup(text)
+        }
+    }
+
+    BackHandler(enabled = showPerApp) { showPerApp = false }
 
     LaunchedEffect(message) {
         if (message.isNotBlank()) {
@@ -62,8 +91,10 @@ fun AppRoot(vm: AppViewModel) {
                 }
             },
             bottomBar = {
-                Box(Modifier.navigationBarsPadding()) {
-                    BottomBar(tab) { tab = it }
+                if (!showPerApp) {
+                    Box(Modifier.navigationBarsPadding()) {
+                        BottomBar(tab) { tab = it }
+                    }
                 }
             }
         ) { padding ->
@@ -73,7 +104,13 @@ fun AppRoot(vm: AppViewModel) {
                     .padding(padding)
                     .statusBarsPadding()
             ) {
-                when (tab) {
+                if (showPerApp) {
+                    PerAppScreen(
+                        settings = settings,
+                        onBack = { showPerApp = false },
+                        onChange = { block -> vm.updateSettings(block) }
+                    )
+                } else when (tab) {
                     Tab.HOME -> HomeScreen(
                         servers = servers,
                         selectedId = selectedId,
@@ -128,7 +165,10 @@ fun AppRoot(vm: AppViewModel) {
                         coreVersion = remember { vm.coreVersion() },
                         appVersion = BuildConfig.VERSION_NAME,
                         onChange = { block -> vm.updateSettings(block) },
-                        onClearAll = { vm.resetData() }
+                        onClearAll = { vm.resetData() },
+                        onOpenPerApp = { showPerApp = true },
+                        onBackup = { exportLauncher.launch("v2max-backup.json") },
+                        onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
                     )
                 }
             }

@@ -38,6 +38,8 @@
 - پشتیبانی IPv6 (اختیاری)، تنظیم MTU
 - اتصال خودکار هنگام باز شدن برنامه و پس از روشن شدن گوشی
 - تایل تنظیمات سریع (Quick Settings) برای اتصال/قطع بدون باز کردن برنامه
+- **پروکسی برنامه‌به‌برنامه (Split Tunneling)**: فقط برنامه‌های دلخواه از تانل عبور کنند یا برنامه‌های خاصی (مثل بانک‌ها) مستثنی شوند
+- **پشتیبان‌گیری و بازیابی** کامل (سرورها، اشتراک‌ها و تنظیمات) در یک فایل JSON
 
 ### رابط کاربری
 - کاملاً فارسی، راست‌به‌چپ، با فونت **Vazirmatn**
@@ -139,11 +141,11 @@ app/src/main/java/ir/v2max/app/
 │   ├── SubscriptionFetcher.kt دریافت اشتراک با OkHttp
 │   └── HealthScanner.kt       اسکن دو مرحله‌ای سلامت
 ├── service/
-│   ├── V2maxVpnService.kt     VpnService + چرخه‌ی عمر هسته + آمار ترافیک
+│   ├── V2maxVpnService.kt     VpnService + چرخه‌ی عمر هسته + آمار ترافیک + split tunneling
 │   ├── Notifier.kt            نوتیفیکیشن دائمی
 │   ├── V2maxTileService.kt    تایل تنظیمات سریع
 │   └── BootReceiver.kt        اتصال خودکار پس از بوت
-└── ui/                        Compose: Theme, Common, Home, Servers, Subs, Settings
+└── ui/                        Compose: Theme, Common, Home, Servers, Subs, Settings, PerApp
 ```
 
 ---

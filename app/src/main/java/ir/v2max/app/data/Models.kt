@@ -127,6 +127,28 @@ data class Subscription(
     fun usedPercent(): Float = if (total <= 0L) 0f else (usedBytes.toFloat() / total.toFloat()).coerceIn(0f, 1f)
 }
 
+/** حالت پروکسی برنامه‌به‌برنامه */
+enum class PerAppMode {
+    /** همه‌ی برنامه‌ها از تانل عبور می‌کنند */
+    OFF,
+
+    /** فقط برنامه‌های انتخاب‌شده از تانل عبور می‌کنند */
+    ONLY_SELECTED,
+
+    /** همه به‌جز برنامه‌های انتخاب‌شده از تانل عبور می‌کنند */
+    EXCEPT_SELECTED
+}
+
+/** بسته‌ی پشتیبان */
+data class BackupPayload(
+    val version: Int = 1,
+    val createdAt: Long = System.currentTimeMillis(),
+    val servers: List<ServerConfig> = emptyList(),
+    val subs: List<Subscription> = emptyList(),
+    val settings: AppSettings = AppSettings(),
+    val selectedId: String = ""
+)
+
 /** تنظیمات برنامه */
 data class AppSettings(
     var routingMode: RoutingMode = RoutingMode.SMART,
@@ -148,7 +170,11 @@ data class AppSettings(
     var delayTestUrl: String = "https://www.gstatic.com/generate_204",
 
     var showSpeedInNotification: Boolean = true,
-    var dynamicColor: Boolean = false
+    var dynamicColor: Boolean = false,
+
+    // پروکسی برنامه‌به‌برنامه
+    var perAppMode: PerAppMode = PerAppMode.OFF,
+    var perAppPackages: List<String> = emptyList()
 )
 
 enum class TunnelStatus { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING, ERROR }
