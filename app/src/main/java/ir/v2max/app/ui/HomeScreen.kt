@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -66,6 +68,7 @@ fun HomeScreen(
     onSmart: () -> Unit,
     onOpenSubs: () -> Unit,
     onOpenServers: () -> Unit,
+    onRestart: () -> Unit,
     coreVersion: String
 ) {
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
@@ -210,6 +213,14 @@ fun HomeScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (selected != null && selected.reachCount() > 0) {
+                            Spacer(Modifier.height(5.dp))
+                            PingTargetsRow(
+                                selected.googlePing,
+                                selected.instagramPing,
+                                selected.youtubePing
+                            )
+                        }
                     }
                     Spacer(Modifier.width(8.dp))
                     PingBadge(selected?.bestPing() ?: -1)
@@ -232,10 +243,19 @@ fun HomeScreen(
                 )
                 GhostButton(
                     text = "سرورها",
-                    modifier = Modifier.width(118.dp),
+                    modifier = Modifier.width(104.dp),
                     onClick = onOpenServers
                 )
             }
+        }
+
+        item {
+            // ری‌استارت: پاک کردن نتایج قبلی و اجرای دوباره‌ی کل چرخه‌ی جستجو
+            RestartButton(
+                running = scan.running,
+                enabled = servers.isNotEmpty(),
+                onClick = onRestart
+            )
         }
 
         if (servers.isEmpty()) {
@@ -262,6 +282,40 @@ fun HomeScreen(
             )
             Spacer(Modifier.height(6.dp))
         }
+    }
+}
+
+@Composable
+private fun RestartButton(running: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp)
+            .clip(shape)
+            .background(V2.Surface.copy(alpha = 0.65f))
+            .border(1.dp, if (running) V2.Amber.copy(alpha = 0.5f) else V2.Stroke, shape)
+            .clickable(enabled = enabled && !running) { onClick() },
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (running) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                color = V2.Amber,
+                strokeWidth = 2.dp
+            )
+            Spacer(Modifier.width(8.dp))
+        } else {
+            Text("⟳", color = V2.Sky, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            text = if (running) "در حال جستجوی دوباره…" else "ری‌استارت و جستجوی دوباره‌ی سرورها",
+            color = if (running) V2.Amber else V2.TextSecondary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 

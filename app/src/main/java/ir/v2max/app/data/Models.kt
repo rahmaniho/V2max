@@ -77,15 +77,45 @@ data class ServerConfig(
 
     var tcpPing: Int = -1,
     var realPing: Int = -1,
+
+    /** تأخیر واقعی نسبت به گوگل (ms) */
+    var googlePing: Int = -1,
+
+    /** تأخیر واقعی نسبت به اینستاگرام (ms) */
+    var instagramPing: Int = -1,
+
+    /** تأخیر واقعی نسبت به یوتیوب (ms) */
+    var youtubePing: Int = -1,
+
     var testedAt: Long = 0L,
     var addedAt: Long = System.currentTimeMillis()
 ) {
     val endpoint: String get() = "$address:$port"
 
-    fun bestPing(): Int = when {
-        realPing > 0 -> realPing
-        tcpPing > 0 -> tcpPing
-        else -> -1
+    /** تعداد مقصدهایی که سرور به آن‌ها پاسخ داده است (۰ تا ۳) */
+    fun reachCount(): Int {
+        var n = 0
+        if (googlePing > 0) n++
+        if (instagramPing > 0) n++
+        if (youtubePing > 0) n++
+        return n
+    }
+
+    /** آیا آدرس قابل استفاده است (حذف آدرس‌های محلی/نامعتبر داخل کانفیگ‌ها) */
+    fun hasUsableEndpoint(): Boolean {
+        val a = address.trim().lowercase()
+        if (a.isEmpty() || port !in 1..65535) return false
+        if (a == "localhost" || a == "0.0.0.0" || a == "::" || a == "::1") return false
+        if (a.startsWith("127.")) return false
+        if (a == "[::1]") return false
+        return true
+    }
+
+    fun bestPing(): Int {
+        val candidates = listOf(googlePing, instagramPing, youtubePing, realPing)
+            .filter { it > 0 }
+        if (candidates.isNotEmpty()) return candidates.min()
+        return if (tcpPing > 0) tcpPing else -1
     }
 
     fun displayName(): String = name.ifBlank { endpoint }
@@ -172,6 +202,15 @@ data class AppSettings(
     var mtu: Int = 1500,
     var ipv6: Boolean = false,
 
+    /** بررسی همزمان پینگ گوگل، اینستاگرام و یوتیوب پیش از اتصال */
+    var multiPing: Boolean = true,
+
+    /** حذف سرورهایی که به هیچ‌کدام از مقصدها پاسخ نمی‌دهند */
+    var dropDeadServers: Boolean = true,
+
+    /** شدت فرگمنت TLS (الهام‌گرفته از MahsaNG / gfw_resist_tls_proxy) */
+    var fragmentProfile: FragmentProfile = FragmentProfile.BALANCED,
+
     var remoteDns: String = "https://1.1.1.1/dns-query",
     var domesticDns: String = "178.22.122.100",
     var vpnDns: String = "1.1.1.1",
@@ -184,6 +223,25 @@ data class AppSettings(
     var perAppMode: PerAppMode = PerAppMode.OFF,
     var perAppPackages: List<String> = emptyList()
 )
+
+/**
+ * پروفایل تکه‌تکه‌سازی TLS.
+ * طبق تجربه‌های پروژه‌ی MahsaNG/gfw_resist_tls_proxy، تعداد تکه‌ها و فاصله‌ی زمانی
+ * بین آن‌ها روی هر اپراتور متفاوت است؛ چند پروفایل آماده در دسترس کاربر قرار می‌گیرد.
+ */
+enum class FragmentProfile(val label: String, val packets: String, val length: String, val delay: String, val maxSplit: String) {
+    LIGHT("سبک (ایرانسل)", "tlshello", "20-60", "2-6", "40"),
+    BALANCED("متعادل", "tlshello", "50-100", "10-20", "80"),
+    AGGRESSIVE("قوی (همراه اول)", "tlshello", "80-200", "15-30", "200");
+
+    companion object {
+        fun fromName(name: String?): FragmentProfile =
+            entries.firstOrNull { it.name == name } ?: BALANCED
+    }
+}
+
+/** یک مقصد سنجش کیفیت اتصال */
+data class PingTarget(val name: String, val url: String)
 
 enum class TunnelStatus { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING, ERROR }
 
@@ -202,6 +260,15 @@ data class TunnelUiState(
     val message: String = ""
 ) {
     val isActive: Boolean get() = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
+}
+
+/** مقصدهای پیش‌فرض سنجش پینگ */
+object PingTargets {
+    val GOOGLE = PingTarget("گوگل", "https://www.gstatic.com/generate_204")
+    val INSTAGRAM = PingTarget("اینستاگرام", "https://www.instagram.com/")
+    val YOUTUBE = PingTarget("یوتیوب", "https://www.youtube.com/generate_204")
+
+    val ALL = listOf(GOOGLE, INSTAGRAM, YOUTUBE)
 }
 
 /** وضعیت همگام‌سازی اشتراک‌ها (به‌روزرسانی خودکار) */

@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,6 +113,72 @@ fun SettingsScreen(
                 subtitle = "تکه‌تکه کردن بسته‌های TLS برای عبور از سیستم‌های DPI",
                 checked = settings.fragment
             ) { value -> onChange { it.copy(fragment = value) } }
+        }
+
+        item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        "شدت فرگمنت TLS",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = V2.TextPrimary
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "تعداد تکه‌ها و فاصله‌ی زمانی بین آن‌ها. اگر اتصال برقرار نشد یا کند بود، پروفایل دیگری را امتحان کنید.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = V2.TextMuted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ir.v2max.app.data.FragmentProfile.entries.forEach { profile ->
+                            val active = settings.fragmentProfile == profile
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(
+                                        1.dp,
+                                        if (active) V2.Mint.copy(alpha = 0.6f) else V2.Stroke,
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .background(if (active) V2.Mint.copy(alpha = 0.08f) else Color.Transparent)
+                                    .clickable { onChange { it.copy(fragmentProfile = profile) } }
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    profile.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (active) V2.Mint else V2.TextSecondary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    "تکه ${profile.maxSplit} · تأخیر ${profile.delay}",
+                                    fontSize = 10.sp,
+                                    color = V2.TextMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item {
+            SettingSwitch(
+                title = "پینگ چندمقصدی (گوگل، اینستاگرام، یوتیوب)",
+                subtitle = "پیش از اتصال، سرور با هر سه مقصد سنجیده می‌شود و بهترین‌ها انتخاب می‌شوند",
+                checked = settings.multiPing
+            ) { value -> onChange { it.copy(multiPing = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "حذف سرورهای بدون پاسخ",
+                subtitle = "سرورهایی که در تست‌ها به هیچ مقصدی وصل نمی‌شوند از فهرست پاک می‌شوند",
+                checked = settings.dropDeadServers
+            ) { value -> onChange { it.copy(dropDeadServers = value) } }
         }
 
         item {

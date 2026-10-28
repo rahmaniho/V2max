@@ -599,10 +599,13 @@ object ConfigBuilder {
         }
 
         // ---- fragment (عبور از DPI)
+        // تعداد تکه‌ها و فاصله‌ی زمانی از پروفایل انتخاب‌شده می‌آید
+        // (الهام‌گرفته از MahsaNG و gfw_resist_tls_proxy)
         if (settings.fragment && security in listOf("tls", "reality") && network != "hysteria") {
             val existing = ss.getAsJsonObject("finalmask")
             val mask = existing ?: JsonObject().also { ss.add("finalmask", it) }
             if (!mask.has("tcp")) {
+                val profile = settings.fragmentProfile
                 mask.add(
                     "tcp", JsonArray().apply {
                         add(
@@ -612,11 +615,11 @@ object ConfigBuilder {
                                     "settings", JsonObject().apply {
                                         addProperty(
                                             "packets",
-                                            if (security == "reality") "1-3" else "tlshello"
+                                            if (security == "reality") "1-3" else profile.packets
                                         )
-                                        addProperty("length", "50-100")
-                                        addProperty("delay", "10-20")
-                                        addProperty("maxSplit", "10")
+                                        addProperty("length", profile.length)
+                                        addProperty("delay", profile.delay)
+                                        addProperty("maxSplit", profile.maxSplit)
                                     }
                                 )
                             }

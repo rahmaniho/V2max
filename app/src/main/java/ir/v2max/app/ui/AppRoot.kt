@@ -123,6 +123,7 @@ fun AppRoot(vm: AppViewModel) {
                         onSmart = { vm.requestSmartConnect(null) },
                         onOpenSubs = { tab = Tab.SUBS },
                         onOpenServers = { tab = Tab.SERVERS },
+                        onRestart = { vm.restartScan() },
                         coreVersion = remember { vm.coreVersion() }
                     )
 
