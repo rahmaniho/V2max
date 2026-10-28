@@ -30,8 +30,8 @@ Unable to strip the following libraries, packaging them as they are: libandroidx
 > Task :app:checkKotlinGradlePluginConfigurationErrors SKIPPED
 > Task :app:generateReleaseBuildConfig
 > Task :app:expandReleaseL8ArtProfileWildcards
-> Task :app:generateReleaseResValues
 > Task :app:checkReleaseAarMetadata
+> Task :app:generateReleaseResValues
 > Task :app:mapReleaseSourceSetPaths
 > Task :app:generateReleaseResources
 > Task :app:packageReleaseResources
@@ -41,32 +41,29 @@ Unable to strip the following libraries, packaging them as they are: libandroidx
 > Task :app:mergeReleaseResources
 > Task :app:processReleaseMainManifest
 > Task :app:processReleaseManifest
+> Task :app:processReleaseManifestForPackage
 > Task :app:javaPreCompileRelease
 > Task :app:mergeReleaseStartupProfile
 > Task :app:mergeReleaseShaders
 > Task :app:compileReleaseShaders NO-SOURCE
-> Task :app:processReleaseManifestForPackage
-> Task :app:desugarReleaseFileDependencies
-> Task :app:processReleaseResources
-> Task :app:mergeExtDexRelease
 > Task :app:generateReleaseAssets UP-TO-DATE
 > Task :app:mergeReleaseAssets
+> Task :app:processReleaseResources
 > Task :app:extractReleaseVersionControlInfo
+> Task :app:desugarReleaseFileDependencies
+> Task :app:compressReleaseAssets
+> Task :app:compileReleaseKotlin
+> Task :app:mergeExtDexRelease
+> Task :app:compileReleaseJavaWithJavac
+> Task :app:dexBuilderRelease
+> Task :app:processReleaseJavaRes
+> Task :app:mergeReleaseGlobalSynthetics
 > Task :app:collectReleaseDependencies
 > Task :app:sdkReleaseDependencyData
 > Task :app:validateSigningRelease
 > Task :app:writeReleaseAppMetadata
 > Task :app:writeReleaseSigningConfigVersions
 > Task :app:optimizeReleaseResources
-> Task :app:compressReleaseAssets
-
-> Task :app:compileReleaseKotlin
-w: file:///home/runner/work/V2max/V2max/app/src/main/java/ir/v2max/app/ui/Common.kt:372:36 'val Icons.Filled.List: ImageVector' is deprecated. Use the AutoMirrored version at Icons.AutoMirrored.Filled.List.
-
-> Task :app:compileReleaseJavaWithJavac
-> Task :app:dexBuilderRelease
-> Task :app:processReleaseJavaRes
-> Task :app:mergeReleaseGlobalSynthetics
 > Task :app:mergeReleaseJavaResource
 > Task :app:mergeDexRelease
 > Task :app:l8DexDesugarLibRelease
@@ -74,7 +71,7 @@ w: file:///home/runner/work/V2max/V2max/app/src/main/java/ir/v2max/app/ui/Common
 > Task :app:packageRelease
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:assembleRelease
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_3-1793208350317.json
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_3-1793208732055.json
 
-BUILD SUCCESSFUL in 3m 29s
+BUILD SUCCESSFUL in 2m 43s
 48 actionable tasks: 48 executed
