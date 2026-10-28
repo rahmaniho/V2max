@@ -60,15 +60,26 @@
 
 ## 📦 دریافت APK
 
+### ⬇️ دانلود مستقیم (سریع‌ترین راه)
+
+آخرین نسخه‌ی امضاشده همیشه در بخش **Releases** آماده است:
+
+| فایل | مناسب برای |
+|---|---|
+| [app-universal-release.apk](https://github.com/rahmaniho/V2max/releases/latest/download/app-universal-release.apk) | همه‌ی گوشی‌ها (اگر مطمئن نیستید همین را بگیرید) |
+| [app-arm64-v8a-release.apk](https://github.com/rahmaniho/V2max/releases/latest/download/app-arm64-v8a-release.apk) | اکثر گوشی‌های امروزی — حجم کمتر |
+| [app-armeabi-v7a-release.apk](https://github.com/rahmaniho/V2max/releases/latest/download/app-armeabi-v7a-release.apk) | گوشی‌های قدیمی‌تر ۳۲ بیتی |
+| [app-x86_64-release.apk](https://github.com/rahmaniho/V2max/releases/latest/download/app-x86_64-release.apk) | شبیه‌سازها |
+
+پس از دانلود، فایل را نصب کنید (اجازه‌ی «نصب از منابع ناشناس» لازم است)،
+برنامه را باز کنید و یک‌بار اجازه‌ی VPN را تأیید کنید. همین.
+
 ### روش ۱ — ساخت خودکار (GitHub Actions)
-با هر push روی مخزن، فایل APK به‌صورت خودکار ساخته می‌شود:
+با هر push روی مخزن، APK ساخته و به‌طور خودکار در همان Release منتشر می‌شود:
 
 1. به تب **Actions** در گیت‌هاب بروید
 2. آخرین اجرای موفق `Build V2max APK` را باز کنید
 3. از بخش **Artifacts** فایل `v2max-apk` را دانلود و نصب کنید
-
-> خروجی شامل سه فایل است: `app-arm64-v8a-release.apk` (برای اکثر گوشی‌های امروزی)،
-> `app-armeabi-v7a-release.apk` (گوشی‌های قدیمی‌تر) و `app-universal-release.apk`.
 
 ### روش ۲ — ساخت روی کامپیوتر
 پیش‌نیاز: **JDK 17** و **Android SDK** (کامپایل‌Sdk 35).
