@@ -11,6 +11,9 @@ on:
 env:
   LIBV2RAY_VERSION: v26.10.21
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -63,7 +66,23 @@ jobs:
           fi
 
       - name: Build release APK
-        run: gradle --no-daemon assembleRelease
+        run: |
+          set -o pipefail
+          gradle --no-daemon assembleRelease 2>&1 | tee build.log
+
+      - name: Publish build log (for diagnostics)
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f build.log ]; then
+            tail -n 400 build.log > build_tail.log
+            mv build_tail.log build.log
+            git config user.name "v2max-ci"
+            git config user.email "ci@v2max.local"
+            git add -f build.log
+            git commit -m "ci: build log [skip ci]" || true
+            git push origin HEAD:${{ github.ref_name }} || true
+          fi
 
       - name: Upload APKs
         uses: actions/upload-artifact@v4
