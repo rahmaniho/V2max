@@ -34,16 +34,42 @@ Unable to strip the following libraries, packaging them as they are: libandroidx
 > Task :app:checkReleaseAarMetadata
 > Task :app:mapReleaseSourceSetPaths
 > Task :app:generateReleaseResources
+> Task :app:packageReleaseResources
+> Task :app:createReleaseCompatibleScreenManifests
+> Task :app:extractDeepLinksRelease
+> Task :app:parseReleaseLocalResources
+> Task :app:mergeReleaseResources
+> Task :app:processReleaseMainManifest
+> Task :app:processReleaseManifest
+> Task :app:javaPreCompileRelease
+> Task :app:mergeReleaseStartupProfile
+> Task :app:mergeReleaseShaders
+> Task :app:processReleaseManifestForPackage
+> Task :app:desugarReleaseFileDependencies
+> Task :app:processReleaseResources
+> Task :app:mergeExtDexRelease
+> Task :app:compileReleaseShaders NO-SOURCE
+> Task :app:generateReleaseAssets UP-TO-DATE
+> Task :app:mergeReleaseAssets
+> Task :app:extractReleaseVersionControlInfo
+> Task :app:collectReleaseDependencies
+> Task :app:sdkReleaseDependencyData
+> Task :app:validateSigningRelease
+> Task :app:writeReleaseAppMetadata
+> Task :app:writeReleaseSigningConfigVersions
+> Task :app:optimizeReleaseResources
+> Task :app:compressReleaseAssets
 
-> Task :app:mergeReleaseResources FAILED
-ERROR: /home/runner/work/V2max/V2max/app/src/main/res/font/OFL.txt: Resource and asset merger: The file name must end with .xml, .ttf, .ttc or .otf
-gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_3-1793207922678.json
+> Task :app:compileReleaseKotlin FAILED
+e: file:///home/runner/work/V2max/V2max/app/src/main/java/ir/v2max/app/ui/Common.kt:353:18 Type 'androidx.compose.runtime.State<kotlin.Float>' has no method 'getValue(Nothing?, KProperty0<*>)', so it cannot serve as a delegate.
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_3-1793208117837.json
 
 FAILURE: Build failed with an exception.
 
 * What went wrong:
-Execution failed for task ':app:mergeReleaseResources'.
-> /home/runner/work/V2max/V2max/app/src/main/res/font/OFL.txt: Error: The file name must end with .xml, .ttf, .ttc or .otf
+Execution failed for task ':app:compileReleaseKotlin'.
+> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
+   > Compilation error. See log for more details
 
 * Try:
 > Run with --stacktrace option to get the stack trace.
@@ -51,5 +77,5 @@ Execution failed for task ':app:mergeReleaseResources'.
 > Run with --scan to get full insights.
 > Get more help at https://help.gradle.org.
 
-BUILD FAILED in 1m 25s
-15 actionable tasks: 15 executed
+BUILD FAILED in 1m 44s
+38 actionable tasks: 38 executed
