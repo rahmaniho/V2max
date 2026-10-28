@@ -20,6 +20,51 @@ object PublicSources {
 
     val ALL: List<PublicSource> = listOf(
         PublicSource(
+            name = "🏅 MohammadBahemmat (تست‌شده)",
+            url = "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/Tested.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🥇 SoliSpirit (SolVPN)",
+            url = "https://raw.githubusercontent.com/SoliSpirit/SolVPN/main/all_configs.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🧪 lm705 (فقط زنده‌ها)",
+            url = "https://raw.githubusercontent.com/lm705/vair/main/all_alive.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "📡 milad (V2RayCFGDumper)",
+            url = "https://raw.githubusercontent.com/miladtahanian/V2RayCFGDumper/main/sub.txt",
+            maxConfigs = 120
+        ),
+        PublicSource(
+            name = "🇮🇷 مرتضی (ایرانسل)",
+            url = "https://raw.githubusercontent.com/morteza-v2/free-v2ray-irancell-config/main/Sub1.txt",
+            maxConfigs = 120
+        ),
+        PublicSource(
+            name = "🇮🇷 ALIILAPRO (v2rayNG-Config)",
+            url = "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/server.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌐 barry-far (Sub2)",
+            url = "https://raw.githubusercontent.com/barry-far/v2ray-config/main/Sub2.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌐 hans-thomas",
+            url = "https://raw.githubusercontent.com/hans-thomas/v2ray-subscription/master/servers.txt",
+            maxConfigs = 100
+        ),
+        PublicSource(
+            name = "🌐 pornnewbee (VLESS)",
+            url = "https://raw.githubusercontent.com/pornnewbee/free-vless-VPN/main/vless.txt",
+            maxConfigs = 100
+        ),
+        PublicSource(
             name = "🇮🇷 الاراپلاس",
             url = "https://sb.elaraplus.ir/s/djMsMTk3OSwxNzgyNTU1Nzg111b8170c24",
             maxConfigs = 150

@@ -400,6 +400,43 @@ fun SyncBanner(sync: SyncState) {
     }
 }
 
+/** ردیف نشانگر پینگ گوگل/اینستاگرام/یوتیوب یک سرور */
+@Composable
+fun PingTargetsRow(google: Int, instagram: Int, youtube: Int) {
+    if (google <= 0 && instagram <= 0 && youtube <= 0) return
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TargetChip("G", google)
+        TargetChip("IG", instagram)
+        TargetChip("YT", youtube)
+    }
+}
+
+@Composable
+private fun TargetChip(label: String, ping: Int) {
+    val color = when {
+        ping <= 0 -> V2.TextMuted.copy(alpha = 0.55f)
+        ping < 300 -> V2.Mint
+        ping < 700 -> V2.Amber
+        else -> V2.Red
+    }
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.12f))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+    ) {
+        Text(
+            text = "$label ${if (ping > 0) Format.number(ping) else "—"}",
+            color = color,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
 /** نشانگر نقطه‌ی چشمک‌زن (برای وضعیت در حال اتصال) */
 @Composable
 fun PulsingDot(color: Color, size: Int = 8) {

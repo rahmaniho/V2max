@@ -37,8 +37,14 @@ class V2maxVpnService : VpnService() {
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
 
-        /** فاصله‌ی بررسی سلامت اتصال */
-        private const val HEALTH_INTERVAL_MS = 15_000L
+        /** هر چند ثانیه یک‌بار کیفیت اتصال سنجیده می‌شود (پایش هر ثانیه‌ای) */
+        private const val PROBE_INTERVAL_MS = 2_000L
+
+        /** چند شکست پیاپی یعنی «اتصال عملاً مرده است» */
+        private const val FAIL_THRESHOLD = 2
+
+        /** سقف زمان انتظار پیش از جایگزینی اجباری */
+        private const val MAX_FAIL_RESILIENCE = 15
 
         /** حداکثر تعداد جابه‌جایی خودکار در یک نشست */
         private const val MAX_FAILOVERS = 10
@@ -314,9 +320,10 @@ class V2maxVpnService : VpnService() {
     private fun startMonitor() {
         monitorJob?.cancel()
         monitorJob = scope.launch {
-            val settings = Repo.settings.value
             var lastTick = System.currentTimeMillis()
-            var lastHealth = System.currentTimeMillis()
+            var lastProbe = System.currentTimeMillis()
+            var probeIndex = 0
+            var failures = 0
 
             while (isActive) {
                 delay(1000)
@@ -341,40 +348,73 @@ class V2maxVpnService : VpnService() {
                     )
                 )
 
-                if (now - lastHealth < HEALTH_INTERVAL_MS) continue
-                lastHealth = now
+                if (now - lastProbe < PROBE_INTERVAL_MS) continue
+                lastProbe = now
 
+                // اگر هسته از کار افتاده باشد، اتصال بدون دخالت کاربر بازسازی می‌شود
                 if (withContext(Dispatchers.IO) { !XrayCore.isRunning }) {
                     Log.w(TAG, "core stopped unexpectedly")
-                    if (settings.smartFailover) {
-                        if (rotate("هسته متوقف شد")) return@launch
+                    if (Repo.settings.value.smartFailover) {
+                        if (rotate("بازسازی هسته")) return@launch
                     }
                     fail("اتصال قطع شد")
                     return@launch
                 }
 
-                var ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(settings.delayTestUrl) }
-                if (ping <= 0) {
-                    // یک تلاش دوباره‌ی کوتاه تا لرزش‌های شبکه باعث سوییچ بی‌مورد نشوند
-                    delay(1500)
-                    if (!isActive) break
-                    ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(settings.delayTestUrl) }
+                // پینگ چرخشی روی مقصدهای مختلف تا کیفیت واقعی اینترنت سنجیده شود
+                val targets = Repo.settings.value.let {
+                    if (it.multiPing) ir.v2max.app.data.PingTargets.ALL
+                    else listOf(ir.v2max.app.data.PingTargets.GOOGLE)
                 }
+                val target = targets[probeIndex % targets.size]
+                probeIndex++
+
+                val ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(target.url) }
+
                 if (ping > 0) {
-                    publish(Repo.tunnel.value.copy(ping = ping.toInt()))
+                    if (failures > 0) Log.i(TAG, "connection recovered after $failures failures")
+                    failures = 0
                     Repo.setTestResult(
                         Repo.tunnel.value.serverId,
                         Repo.serverById(Repo.tunnel.value.serverId)?.tcpPing ?: -1,
                         ping.toInt()
                     )
-                } else {
-                    Log.w(TAG, "health check failed → failover")
-                    // یک شکست کافی است تا کاربر بدون معطلی به سرور سالم منتقل شود
-                    if (settings.smartFailover) {
-                        if (rotate("سرور فعلی پاسخ نمی‌دهد")) return@launch
-                        fail("سرور فعلی از دسترس خارج شد و جایگزینی پیدا نشد")
+                    publish(
+                        Repo.tunnel.value.copy(
+                            ping = ping.toInt(),
+                            message = "متصل"
+                        )
+                    )
+                    continue
+                }
+
+                failures++
+                Log.w(TAG, "probe on ${target.name} failed ($failures)")
+
+                if (!Repo.settings.value.smartFailover) continue
+
+                // مقصد گوگل معیار اصلی است؛ افت اینستاگرام/یوتیوب تنها به‌تنهایی
+                // باعث جابه‌جایی نمی‌شود تا اتصال بی‌دلیل عوض نشود
+                val critical = target.url == ir.v2max.app.data.PingTargets.GOOGLE.url
+                val threshold = if (critical) FAIL_THRESHOLD else FAIL_THRESHOLD + 2
+
+                if (failures == threshold) {
+                    publish(
+                        Repo.tunnel.value.copy(message = "کیفیت شبکه افت کرد؛ در حال یافتن مسیر بهتر…")
+                    )
+                    if (rotate("سرور فعلی پاسخ نمی‌دهد")) return@launch
+                } else if (failures >= MAX_FAIL_RESILIENCE) {
+                    // تلاش نهایی: کاوش گسترده؛ اگر چیزی نبود اتصال را قطع نمی‌کنیم
+                    val replacement = Failover.probeAsync(limit = 120)
+                        ?: Failover.findReplacement(currentServer?.id)
+                    if (replacement != null) {
+                        failoverAttempts++
+                        failoverPending = true
+                        Log.i(TAG, "hard switch → ${replacement.endpoint}")
+                        connect(replacement.id)
                         return@launch
                     }
+                    failures = threshold
                 }
             }
         }

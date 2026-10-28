@@ -119,7 +119,7 @@ object Repo {
         val current = _servers.value.toMutableList()
         val known = current.map { it.fingerprint() }.toHashSet()
         var added = 0
-        incoming.forEach { cfg ->
+        incoming.filter { it.hasUsableEndpoint() }.forEach { cfg ->
             val key = cfg.fingerprint()
             if (known.add(key)) {
                 current.add(cfg)
@@ -144,7 +144,7 @@ object Repo {
         val byKey = existing.associateBy { it.fingerprint() }
         val merged = mutableListOf<ServerConfig>()
         val seen = HashSet<String>()
-        incoming.forEach { cfg ->
+        incoming.filter { it.hasUsableEndpoint() }.forEach { cfg ->
             val key = cfg.fingerprint()
             if (!seen.add(key)) return@forEach
             val old = byKey[key]
@@ -154,6 +154,9 @@ object Repo {
                     cfg.favorite = old.favorite
                     cfg.tcpPing = old.tcpPing
                     cfg.realPing = old.realPing
+                    cfg.googlePing = old.googlePing
+                    cfg.instagramPing = old.instagramPing
+                    cfg.youtubePing = old.youtubePing
                     cfg.testedAt = old.testedAt
                     cfg.addedAt = old.addedAt
                     cfg
@@ -203,6 +206,38 @@ object Repo {
         list[idx] = list[idx].copy(tcpPing = tcpPing, realPing = realPing, testedAt = testedAt)
         _servers.value = list
         if (persist) persistServers()
+    }
+
+    /** ثبت نتیجه‌ی پینگ چندگانه (گوگل/اینستاگرام/یوتیوب) */
+    @Synchronized
+    fun setMultiPing(
+        id: String,
+        google: Int,
+        instagram: Int,
+        youtube: Int,
+        persist: Boolean = false
+    ) {
+        val list = _servers.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        list[idx] = list[idx].copy(
+            googlePing = google,
+            instagramPing = instagram,
+            youtubePing = youtube,
+            realPing = google,
+            testedAt = System.currentTimeMillis()
+        )
+        _servers.value = list
+        if (persist) persistServers()
+    }
+
+    /** پاک‌کردن همه‌ی نتایج تست (برای «ری‌استارت جستجو») */
+    @Synchronized
+    fun clearTestResults() {
+        _servers.value = _servers.value.map {
+            it.copy(tcpPing = -1, realPing = -1, googlePing = -1, instagramPing = -1, youtubePing = -1, testedAt = 0L)
+        }
+        persistServers()
     }
 
     @Synchronized

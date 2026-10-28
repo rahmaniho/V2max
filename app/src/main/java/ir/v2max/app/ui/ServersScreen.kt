@@ -311,6 +311,10 @@ private fun ServerRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (server.reachCount() > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    PingTargetsRow(server.googlePing, server.instagramPing, server.youtubePing)
+                }
             }
             Spacer(Modifier.width(8.dp))
             PingBadge(server.bestPing(), compact = true)
