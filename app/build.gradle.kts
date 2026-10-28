@@ -1,3 +1,5 @@
+import java.io.File
+import java.net.URI
 import java.util.Properties
 
 plugins {
@@ -27,8 +29,8 @@ val downloadLibV2ray by tasks.registering {
         }
         target.parentFile?.mkdirs()
         logger.lifecycle("Downloading $libV2rayUrl ...")
-        val tmp = java.io.File(target.parentFile, "libv2ray.aar.part")
-        java.net.URI(libV2rayUrl).toURL().openStream().use { input ->
+        val tmp = File(target.parentFile, "libv2ray.aar.part")
+        URI(libV2rayUrl).toURL().openStream().use { input ->
             tmp.outputStream().use { output -> input.copyTo(output) }
         }
         if (tmp.length() < 1_000_000L) {
