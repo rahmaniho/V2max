@@ -12,8 +12,9 @@ data class PublicSource(
 
 object PublicSources {
 
-    private val byUrl: Map<String, PublicSource> =
+    private val byUrl: Map<String, PublicSource> by lazy {
         ALL.associateBy { it.url.trim().trimEnd('/') }
+    }
 
     fun forUrl(url: String): PublicSource? = byUrl[url.trim().trimEnd('/')]
 
