@@ -22,6 +22,25 @@ object ConfigBuilder {
     private const val TAG_DNS_MODULE = "dns-module"
     private const val TAG_DNS_DOMESTIC = "dns-domestic"
 
+    /** شبکه‌های خصوصی/محلی که باید مستقیم باز شوند */
+    private val PRIVATE_CIDRS = listOf(
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "255.255.255.255/32",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8"
+    )
+
     // ------------------------------------------------------------------ public
 
     /** کانفیگ سبک فقط برای تست تأخیر واقعی (بدون inbound) */
@@ -212,10 +231,14 @@ object ConfigBuilder {
             }
         )
 
-        // 4) آدرس‌های خصوصی و محلی مستقیم
+        // 4) آدرس‌های خصوصی و محلی مستقیم (بدون نیاز به فایل geoip)
         rules.add(
             JsonObject().apply {
-                add("ip", JsonArray().apply { add("geoip:private") })
+                add(
+                    "ip", JsonArray().apply {
+                        PRIVATE_CIDRS.forEach { add(it) }
+                    }
+                )
                 addProperty("outboundTag", TAG_DIRECT)
             }
         )
