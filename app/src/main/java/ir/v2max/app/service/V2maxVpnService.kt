@@ -52,6 +52,7 @@ class V2maxVpnService : VpnService() {
     private var totalUp = 0L
     private var totalDown = 0L
     private var failoverAttempts = 0
+    private var connectToken = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -102,10 +103,11 @@ class V2maxVpnService : VpnService() {
 
     private fun connect(serverId: String) {
         connectJob?.cancel()
-        connectJob = scope.launch { doConnect(serverId) }
+        val token = ++connectToken
+        connectJob = scope.launch { doConnect(serverId, token) }
     }
 
-    private suspend fun doConnect(serverId: String) {
+    private suspend fun doConnect(serverId: String, token: Int) {
         try {
             val server = Repo.serverById(serverId) ?: Repo.servers.value.firstOrNull()
             ?: throw IllegalStateException("هیچ سروری انتخاب نشده است")
@@ -143,6 +145,12 @@ class V2maxVpnService : VpnService() {
             if (!XrayCore.isRunning) {
                 throw IllegalStateException("هسته نتوانست اجرا شود")
             }
+            if (token != connectToken) {
+                // در این فاصله درخواست جدیدی آمده است؛ این تلاش منقضی شده
+                XrayCore.stop()
+                closeTun()
+                return
+            }
 
             running = true
             connectedAt = System.currentTimeMillis()
@@ -176,6 +184,7 @@ class V2maxVpnService : VpnService() {
             startMonitor()
         } catch (t: Throwable) {
             if (t is kotlinx.coroutines.CancellationException) return
+            if (token != connectToken) return
             Log.e(TAG, "connect failed", t)
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
             fail("اتصال برقرار نشد: $raw")

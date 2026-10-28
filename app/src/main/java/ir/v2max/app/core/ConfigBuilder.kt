@@ -552,7 +552,9 @@ object ConfigBuilder {
                     "tlsSettings", JsonObject().apply {
                         addProperty("serverName", sni)
                         addProperty("allowInsecure", server.allowInsecure)
-                        addProperty("fingerprint", server.fingerprint.ifBlank { "chrome" })
+                        if (server.fingerprint.isNotBlank()) {
+                            addProperty("fingerprint", server.fingerprint)
+                        }
                         if (alpnList.isNotEmpty()) {
                             add("alpn", JsonArray().apply { alpnList.forEach { add(it) } })
                         }
