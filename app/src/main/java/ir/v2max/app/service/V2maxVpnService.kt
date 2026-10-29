@@ -128,6 +128,34 @@ class V2maxVpnService : VpnService() {
             .ifBlank { Repo.selectedId.value }
             .ifBlank { Repo.servers.value.firstOrNull()?.id.orEmpty() }
 
+        // اگر برنامه از تایل/بوت/همیشه‌روشن اجرا شده و هیچ نتیجه‌ی تازه‌ای نداریم،
+        // ابتدا چرخه‌ی کامل تست اجرا می‌شود و بعد اتصال برقرار می‌گردد.
+        val settings = Repo.settings.value
+        val hasFreshResults = Repo.servers.value.any {
+            it.bestPing() > 0 && System.currentTimeMillis() - it.testedAt < 10 * 60 * 1000L
+        }
+        if (settings.requireFullTest && !hasFreshResults && Repo.servers.value.isNotEmpty()) {
+            publish(
+                Repo.tunnel.value.copy(
+                    status = TunnelStatus.CONNECTING,
+                    message = "اجرای تست کامل پیش از اتصال…"
+                )
+            )
+            scope.launch {
+                runCatching {
+                    ir.v2max.app.core.SmartConnect.scanAndConnect(
+                        applicationContext,
+                        autoConnect = false
+                    )
+                }
+                val best = Repo.healthyServers(15 * 60 * 1000L).firstOrNull()
+                    ?: Repo.serverById(serverId)
+                if (best != null) connect(best.id)
+                else fail("هیچ سرور سالمی پیدا نشد. اتصال اینترنت را بررسی کنید.")
+            }
+            return START_STICKY
+        }
+
         connect(serverId)
         return START_STICKY
     }
@@ -196,7 +224,11 @@ class V2maxVpnService : VpnService() {
             closeTun()
 
             val baseSettings = Repo.settings.value
-            val fd = establishTun(baseSettings)
+            val ladder = buildPenetrationLadder(baseSettings)
+
+            // MTU رابط TUN با MTU پیشنهادی همان شبکه تنظیم می‌شود (جلوگیری از تکه‌شدن بی‌مورد)
+            val tunSettings = baseSettings.copy(mtu = ladder.firstOrNull()?.mtu ?: baseSettings.mtu)
+            val fd = establishTun(tunSettings)
                 ?: throw IllegalStateException("دسترسی VPN داده نشده است. دوباره تلاش کنید.")
 
             tun = fd
@@ -204,7 +236,7 @@ class V2maxVpnService : VpnService() {
             XrayCore.init(applicationContext)
 
             // ---- نردبان نفوذ: پروفایل‌های فرگمنت به‌ترتیب امتحان می‌شوند تا تانل واقعاً بالا بیاید
-            val attempts = buildPenetrationLadder(baseSettings)
+            val attempts = ladder
             var working: AppSettings? = null
             var lastError: Throwable? = null
 
