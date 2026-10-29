@@ -160,6 +160,12 @@ class V2maxVpnService : VpnService() {
         return START_STICKY
     }
 
+    /** اگر کاربر برنامه را از فهرست اخیر پاک کرد، تانل نباید قطع شود */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "task removed, keeping tunnel")
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onRevoke() {
         Log.i(TAG, "VPN permission revoked")
         stopTunnel()
@@ -338,6 +344,11 @@ class V2maxVpnService : VpnService() {
             if (t is kotlinx.coroutines.CancellationException) return
             if (token != connectToken) return
             Log.e(TAG, "connect failed", t)
+
+            // اگر اتصال اولیه هم شکست خورد، به‌جای تسلیم شدن، سرور بعدی امتحان می‌شود
+            if (!isFailover && Repo.settings.value.smartFailover && failoverAttempts < MAX_FAILOVERS) {
+                if (rotate("اتصال با این سرور برقرار نشد")) return
+            }
 
             // اگر همین تلاشِ جایگزینی شکست خورد، سرور بعدی را امتحان می‌کنیم
             if (isFailover && failoverAttempts < MAX_FAILOVERS) {
