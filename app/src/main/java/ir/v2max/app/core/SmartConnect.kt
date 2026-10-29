@@ -5,6 +5,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
+import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -19,6 +20,21 @@ import kotlinx.coroutines.withContext
 object SmartConnect {
 
     private val scanMutex = Mutex()
+    private val probeMutex = Mutex()
+
+    /** بررسی عمیق شبکه (اپراتور، DNS، DPI، تأخیر/لرزش) و انتشار نتیجه برای رابط کاربری */
+    suspend fun assessNetwork(context: Context, force: Boolean = false) {
+        if (!Repo.settings.value.deepProbe) return
+        probeMutex.withLock {
+            if (!force && Repo.network.value.fresh) return@withLock
+            Repo.scan.value = Repo.scan.value.copy(
+                phase = "بررسی عمیق شبکه‌ی اپراتور",
+                message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
+            )
+            val result = runCatching { CarrierProbe.assess(context) }.getOrNull() ?: return@withLock
+            Repo.network.value = result
+        }
+    }
 
     /** اسکن کامل + حذف سرورهای مرده + انتخاب بهترین + (اختیاری) اتصال */
     suspend fun scanAndConnect(
@@ -54,6 +70,9 @@ object SmartConnect {
             phase = "شروع اسکن هوشمند",
             message = "در حال بررسی ${servers.size} کانفیگ"
         )
+
+        // پیش از هر تستی، شبکه‌ی اپراتور بررسی می‌شود تا فرگمنت/MTU درست انتخاب شود
+        assessNetwork(context)
 
         val settings = Repo.settings.value
         val outcome = try {
@@ -163,8 +182,17 @@ object SmartConnect {
         return@withLock best
     }
 
-    /** اتصال سریع: اگر سرور انتخاب‌شده سالم است وصل شو، وگرنه اسکن کن */
+    /**
+     * اتصال: اگر «تست کامل پیش از اتصال» فعال باشد، هیچ اتصالی پیش از پایان همه‌ی تست‌ها
+     * (بررسی شبکه + TCP + سه پینگ) انجام نمی‌شود.
+     */
     suspend fun quickConnect(context: Context) {
+        val settings = Repo.settings.value
+        if (settings.requireFullTest) {
+            scanAndConnect(context, autoConnect = true)
+            return
+        }
+
         val selected = Repo.selectedServer()
         val fresh = selected != null &&
             selected.bestPing() > 0 &&
@@ -185,6 +213,26 @@ object SmartConnect {
             TunnelController.start(context, candidate.id)
         } else {
             scanAndConnect(context, autoConnect = true)
+        }
+    }
+
+    /**
+     * اتصال به یک سرور مشخص با تست پیش از اتصال:
+     * اگر همان سرور سالم بود وصل می‌شود، وگرنه چرخه‌ی کامل اجرا و بهترین انتخاب می‌شود.
+     */
+    suspend fun connectVerified(context: Context, serverId: String): Boolean {
+        val server = Repo.serverById(serverId) ?: return false
+        return if (Repo.settings.value.requireFullTest) {
+            scanAndConnect(context, autoConnect = true) != null
+        } else {
+            val tcp = HealthScanner.tcpPing(server)
+            Repo.setTestResult(server.id, tcp, -1)
+            if (tcp > 0) {
+                TunnelController.start(context, serverId)
+                true
+            } else {
+                scanAndConnect(context, autoConnect = true) != null
+            }
         }
     }
 

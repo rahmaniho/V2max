@@ -205,6 +205,18 @@ data class AppSettings(
     /** بررسی همزمان پینگ گوگل، اینستاگرام و یوتیوب پیش از اتصال */
     var multiPing: Boolean = true,
 
+    /** بررسی عمیق شبکه‌ی اپراتور (DNS/DPI/تأخیر/لرزش) پیش از هر تست */
+    var deepProbe: Boolean = true,
+
+    /** هیچ اتصالی پیش از پایان کامل همه‌ی تست‌ها برقرار نمی‌شود */
+    var requireFullTest: Boolean = true,
+
+    /** تنظیم خودکار شدت فرگمنت بر اساس شبکه‌ی اپراتور */
+    var autoTuneFragment: Boolean = true,
+
+    /** بررسی خودکار نسخه‌ی جدید برنامه */
+    var autoUpdateCheck: Boolean = true,
+
     /** حذف سرورهایی که به هیچ‌کدام از مقصدها پاسخ نمی‌دهند */
     var dropDeadServers: Boolean = true,
 
@@ -260,6 +272,71 @@ data class TunnelUiState(
     val message: String = ""
 ) {
     val isActive: Boolean get() = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
+}
+
+/** خانواده‌ی اپراتور/شبکه‌ی دستگاه */
+enum class CarrierFamily(val label: String) {
+    MCI("همراه اول"),
+    IRANCELL("ایرانسل"),
+    RIGHTEL("رایتل"),
+    TCI("مخابرات"),
+    WIFI("وای‌فای"),
+    OTHER("نامشخص");
+
+    companion object {
+        fun detect(mccMnc: String, operatorName: String, wifi: Boolean): CarrierFamily {
+            if (wifi) return WIFI
+            val name = operatorName.lowercase()
+            return when {
+                mccMnc == "43211" || name.contains("mci") || operatorName.contains("همراه") -> MCI
+                mccMnc == "43235" || name.contains("irancell") || name.contains("mtn") -> IRANCELL
+                mccMnc == "43220" || name.contains("rightel") || name.contains("رایتل") -> RIGHTEL
+                mccMnc == "43214" || name.contains("tci") || operatorName.contains("مخابرات") -> TCI
+                else -> OTHER
+            }
+        }
+    }
+}
+
+/**
+ * نتیجه‌ی بررسی عمیق شبکه‌ی دستگاه پیش از اتصال.
+ * برنامه با این اطلاعات می‌فهمد شبکه‌ی فعلی چقدر سالم است، کدام مقصدها مسدود شده‌اند
+ * و برای عبور از DPI کدام پروفایل فرگمنت مناسب‌تر است.
+ */
+data class NetworkAssessment(
+    val carrier: CarrierFamily = CarrierFamily.OTHER,
+    val carrierName: String = "",
+    val mccMnc: String = "",
+    val netType: String = "",
+    val signalDbm: Int = 0,
+    val ipv6: Boolean = false,
+    val latencyMs: Int = -1,
+    val jitterMs: Int = -1,
+    val lossPercent: Int = 0,
+    val dnsBlocked: Boolean = false,
+    val dpiDetected: Boolean = false,
+    val blockedHosts: List<String> = emptyList(),
+    val reachableAnchors: Int = 0,
+    val totalAnchors: Int = 0,
+    val recommendedFragment: FragmentProfile = FragmentProfile.BALANCED,
+    val recommendedMtu: Int = 1500,
+    val score: Int = 0,
+    val message: String = "",
+    val assessedAt: Long = 0L
+) {
+    val fresh: Boolean
+        get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt < 10 * 60 * 1000L
+}
+
+/** اطلاعات نسخه‌ی جدید منتشرشده */
+data class UpdateInfo(
+    val version: String = "",
+    val notes: String = "",
+    val pageUrl: String = "",
+    val apkUrl: String = "",
+    val publishedAt: String = ""
+) {
+    val hasUpdate: Boolean get() = version.isNotBlank()
 }
 
 /** مقصدهای پیش‌فرض سنجش پینگ */

@@ -117,3 +117,18 @@ jobs:
             --notes-file release-notes.md --latest
           gh release upload "$TAG" app/build/outputs/apk/release/*.apk --clobber
           echo "released to $TAG"
+
+          # نسخه‌ی شماره‌دار (برای بررسی به‌روزرسانی داخل برنامه)؛ فقط یک‌بار ساخته می‌شود
+          if [ -n "$VERSION" ]; then
+            VTAG="v$VERSION"
+            if ! gh release view "$VTAG" >/dev/null 2>&1; then
+              head -3 release-notes.md > version-notes.md
+              gh release create "$VTAG" \
+                --title "V2max $VERSION" \
+                --notes-file version-notes.md
+              gh release upload "$VTAG" app/build/outputs/apk/release/*.apk
+              echo "created versioned release $VTAG"
+            else
+              echo "versioned release $VTAG already exists"
+            fi
+          fi

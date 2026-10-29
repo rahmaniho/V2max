@@ -68,10 +68,50 @@ class V2maxVpnService : VpnService() {
     private var connectToken = 0
     private var failoverPending = false
 
+    /** شبکه عوض شده و باید سریع دوباره سنجیده شود */
+    @Volatile
+    private var networkChanged = false
+
+    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
+
     override fun onCreate() {
         super.onCreate()
         Repo.init(this)
         Notifier.ensureChannel(this)
+        registerNetworkWatcher()
+    }
+
+    /** با تغییر شبکه (وای‌فای ↔ داده) بلافاصله کیفیت دوباره سنجیده می‌شود */
+    private fun registerNetworkWatcher() {
+        runCatching {
+            val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return
+            val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: android.net.Network) {
+                    networkChanged = true
+                }
+
+                override fun onLost(network: android.net.Network) {
+                    networkChanged = true
+                }
+
+                override fun onCapabilitiesChanged(
+                    network: android.net.Network,
+                    caps: android.net.NetworkCapabilities
+                ) {
+                    networkChanged = true
+                }
+            }
+            cm.registerDefaultNetworkCallback(callback)
+            networkCallback = callback
+        }
+    }
+
+    private fun unregisterNetworkWatcher() {
+        runCatching {
+            val cm = getSystemService(android.net.ConnectivityManager::class.java)
+            networkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        }
+        networkCallback = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -88,8 +128,42 @@ class V2maxVpnService : VpnService() {
             .ifBlank { Repo.selectedId.value }
             .ifBlank { Repo.servers.value.firstOrNull()?.id.orEmpty() }
 
+        // اگر برنامه از تایل/بوت/همیشه‌روشن اجرا شده و هیچ نتیجه‌ی تازه‌ای نداریم،
+        // ابتدا چرخه‌ی کامل تست اجرا می‌شود و بعد اتصال برقرار می‌گردد.
+        val settings = Repo.settings.value
+        val hasFreshResults = Repo.servers.value.any {
+            it.bestPing() > 0 && System.currentTimeMillis() - it.testedAt < 10 * 60 * 1000L
+        }
+        if (settings.requireFullTest && !hasFreshResults && Repo.servers.value.isNotEmpty()) {
+            publish(
+                Repo.tunnel.value.copy(
+                    status = TunnelStatus.CONNECTING,
+                    message = "اجرای تست کامل پیش از اتصال…"
+                )
+            )
+            scope.launch {
+                runCatching {
+                    ir.v2max.app.core.SmartConnect.scanAndConnect(
+                        applicationContext,
+                        autoConnect = false
+                    )
+                }
+                val best = Repo.healthyServers(15 * 60 * 1000L).firstOrNull()
+                    ?: Repo.serverById(serverId)
+                if (best != null) connect(best.id)
+                else fail("هیچ سرور سالمی پیدا نشد. اتصال اینترنت را بررسی کنید.")
+            }
+            return START_STICKY
+        }
+
         connect(serverId)
         return START_STICKY
+    }
+
+    /** اگر کاربر برنامه را از فهرست اخیر پاک کرد، تانل نباید قطع شود */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "task removed, keeping tunnel")
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onRevoke() {
@@ -100,6 +174,7 @@ class V2maxVpnService : VpnService() {
 
     override fun onDestroy() {
         Log.i(TAG, "service destroyed")
+        unregisterNetworkWatcher()
         monitorJob?.cancel()
         connectJob?.cancel()
         XrayCore.stop()
@@ -154,30 +229,78 @@ class V2maxVpnService : VpnService() {
             XrayCore.stop()
             closeTun()
 
-            val settings = Repo.settings.value
-            val fd = establishTun(settings)
+            val baseSettings = Repo.settings.value
+            val ladder = buildPenetrationLadder(baseSettings)
+
+            // MTU رابط TUN با MTU پیشنهادی همان شبکه تنظیم می‌شود (جلوگیری از تکه‌شدن بی‌مورد)
+            val tunSettings = baseSettings.copy(mtu = ladder.firstOrNull()?.mtu ?: baseSettings.mtu)
+            val fd = establishTun(tunSettings)
                 ?: throw IllegalStateException("دسترسی VPN داده نشده است. دوباره تلاش کنید.")
 
             tun = fd
 
             XrayCore.init(applicationContext)
 
-            // اگر کانفیگ با تنظیمات فعلی بالا نیامد (مثلاً فرگمنت روی این هسته پشتیبانی نشود)
-            // یک‌بار بدون فرگمنت تلاش می‌کنیم تا اتصال کاربر قطع نشود.
-            try {
-                XrayCore.start(ConfigBuilder.vpnConfig(server, settings), fd.fd)
-            } catch (first: Throwable) {
-                if (settings.fragment) {
-                    Log.w(TAG, "start with fragment failed, retrying without fragment", first)
+            // ---- نردبان نفوذ: پروفایل‌های فرگمنت به‌ترتیب امتحان می‌شوند تا تانل واقعاً بالا بیاید
+            val attempts = ladder
+            var working: AppSettings? = null
+            var lastError: Throwable? = null
+
+            for ((index, attempt) in attempts.withIndex()) {
+                if (token != connectToken) {
                     XrayCore.stop()
-                    XrayCore.start(ConfigBuilder.vpnConfig(server, settings.copy(fragment = false)), fd.fd)
-                } else {
-                    throw first
+                    closeTun()
+                    return
+                }
+                val label = when {
+                    !attempt.fragment -> "بدون فرگمنت"
+                    else -> attempt.profile.label
+                }
+                publish(
+                    Repo.tunnel.value.copy(
+                        status = TunnelStatus.CONNECTING,
+                        message = "تلاش ${index + 1} از ${attempts.size}: $label"
+                    )
+                )
+                val settings = baseSettings.copy(
+                    fragment = attempt.fragment,
+                    fragmentProfile = attempt.profile,
+                    mtu = attempt.mtu
+                )
+                try {
+                    if (XrayCore.isRunning) XrayCore.stop()
+                    XrayCore.start(ConfigBuilder.vpnConfig(server, settings), fd.fd)
+                    if (!XrayCore.isRunning) throw IllegalStateException("هسته اجرا نشد")
+
+                    // اعتبارسنجی واقعی: تا وقتی ترافیک از تانل عبور نکند، «وصل» حساب نمی‌شود
+                    val verify = withContext(Dispatchers.IO) {
+                        XrayCore.measureDelay(settings.delayTestUrl)
+                    }
+                    if (verify <= 0) {
+                        throw IllegalStateException("تانل بالا آمد ولی ترافیک عبور نکرد")
+                    }
+                    working = settings
+                    Log.i(TAG, "tunnel established with $label (${verify}ms)")
+                    break
+                } catch (t: Throwable) {
+                    lastError = t
+                    Log.w(TAG, "penetration attempt '$label' failed: ${t.message}")
+                    runCatching { XrayCore.stop() }
                 }
             }
 
-            if (!XrayCore.isRunning) {
-                throw IllegalStateException("هسته نتوانست اجرا شود")
+            val settings = working ?: run {
+                throw IllegalStateException(
+                    "هیچ ترکیبی از تنظیمات از شبکه عبور نکرد: " +
+                        (lastError?.message ?: "خطای ناشناخته")
+                )
+            }
+
+            // اگر پروفایل کاری با تنظیمات قبلی تفاوت داشت، برای بارهای بعد ذخیره می‌شود
+            if (settings.fragmentProfile != baseSettings.fragmentProfile || settings.mtu != baseSettings.mtu) {
+                Repo.updateSettings {
+                    it.copy(fragmentProfile = settings.fragmentProfile, mtu = settings.mtu)
+                }
             }
             if (token != connectToken) {
                 // در این فاصله درخواست جدیدی آمده است؛ این تلاش منقضی شده
@@ -222,6 +345,11 @@ class V2maxVpnService : VpnService() {
             if (token != connectToken) return
             Log.e(TAG, "connect failed", t)
 
+            // اگر اتصال اولیه هم شکست خورد، به‌جای تسلیم شدن، سرور بعدی امتحان می‌شود
+            if (!isFailover && Repo.settings.value.smartFailover && failoverAttempts < MAX_FAILOVERS) {
+                if (rotate("اتصال با این سرور برقرار نشد")) return
+            }
+
             // اگر همین تلاشِ جایگزینی شکست خورد، سرور بعدی را امتحان می‌کنیم
             if (isFailover && failoverAttempts < MAX_FAILOVERS) {
                 val failedId = currentServer?.id.orEmpty()
@@ -239,6 +367,42 @@ class V2maxVpnService : VpnService() {
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
             fail("اتصال برقرار نشد: $raw")
         }
+    }
+
+    /** یک پله از نردبان تلاش برای عبور از شبکه */
+    private data class Attempt(
+        val fragment: Boolean,
+        val profile: ir.v2max.app.data.FragmentProfile,
+        val mtu: Int
+    )
+
+    /**
+     * ساخت نردبان نفوذ بر اساس نتیجه‌ی بررسی عمیق شبکه:
+     * ابتدا پروفایل پیشنهادی همان اپراتور، بعد گزینه‌های جایگزین و در آخر بدون فرگمنت.
+     */
+    private fun buildPenetrationLadder(settings: AppSettings): List<Attempt> {
+        val assessment = Repo.network.value
+        val mtu = if (settings.mtu in 1280..1500) settings.mtu
+        else assessment.recommendedMtu.coerceIn(1280, 1500)
+
+        if (!settings.fragment) {
+            return listOf(Attempt(false, settings.fragmentProfile, mtu))
+        }
+
+        val preferred = when {
+            settings.autoTuneFragment && assessment.fresh -> assessment.recommendedFragment
+            else -> settings.fragmentProfile
+        }
+        val order = LinkedHashSet<ir.v2max.app.data.FragmentProfile>()
+        order.add(preferred)
+        if (settings.autoTuneFragment && assessment.fresh) order.add(settings.fragmentProfile)
+        ir.v2max.app.data.FragmentProfile.entries.forEach { order.add(it) }
+
+        val attempts = ArrayList<Attempt>()
+        order.take(3).forEach { attempts.add(Attempt(true, it, mtu)) }
+        // آخرین راه: بدون فرگمنت (بعضی شبکه‌ها/سرورها با فرگمنت سازگار نیستند)
+        attempts.add(Attempt(false, settings.fragmentProfile, mtu))
+        return attempts
     }
 
     private fun establishTun(settings: AppSettings): ParcelFileDescriptor? {
@@ -348,6 +512,12 @@ class V2maxVpnService : VpnService() {
                     )
                 )
 
+                if (networkChanged) {
+                    // شبکه عوض شده؛ همان لحظه کیفیت را دوباره بسنج
+                    networkChanged = false
+                    lastProbe = 0
+                    failures = 0
+                }
                 if (now - lastProbe < PROBE_INTERVAL_MS) continue
                 lastProbe = now
 

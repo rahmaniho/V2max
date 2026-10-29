@@ -19,6 +19,7 @@ object Repo {
     private const val KEY_SUBS = "subs_v1"
     private const val KEY_SETTINGS = "settings_v1"
     private const val KEY_SELECTED = "selected_v1"
+    private const val KEY_LAST_UPDATE_CHECK = "last_update_check_v1"
 
     private val gson = Gson()
     private var prefs: SharedPreferences? = null
@@ -38,6 +39,8 @@ object Repo {
     val tunnel = MutableStateFlow(TunnelUiState())
     val scan = MutableStateFlow(ScanState())
     val sync = MutableStateFlow(SyncState())
+    val network = MutableStateFlow(NetworkAssessment())
+    val update = MutableStateFlow(UpdateInfo())
 
     @Volatile
     private var loaded = false
@@ -402,6 +405,15 @@ object Repo {
         return _servers.value
             .filter { it.bestPing() > 0 && now - it.testedAt <= maxAgeMs }
             .sortedBy { it.bestPing() }
+    }
+
+    // ------------------------------------------------------- update check meta
+
+    fun lastUpdateCheck(): Long =
+        prefs?.getLong(KEY_LAST_UPDATE_CHECK, 0L) ?: 0L
+
+    fun markUpdateChecked() {
+        prefs?.edit()?.putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())?.apply()
     }
 
     // ---------------------------------------------------------------- settings

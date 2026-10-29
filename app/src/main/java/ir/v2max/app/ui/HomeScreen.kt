@@ -48,11 +48,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.AppSettings
+import ir.v2max.app.data.NetworkAssessment
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
+import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.util.Format
 import kotlinx.coroutines.delay
 
@@ -63,12 +65,17 @@ fun HomeScreen(
     tunnel: TunnelUiState,
     scan: ScanState,
     sync: SyncState,
+    network: NetworkAssessment,
+    update: UpdateInfo,
     settings: AppSettings,
     onToggle: () -> Unit,
     onSmart: () -> Unit,
     onOpenSubs: () -> Unit,
     onOpenServers: () -> Unit,
     onRestart: () -> Unit,
+    onRefreshNetwork: () -> Unit,
+    onOpenUpdate: () -> Unit,
+    onDismissUpdate: () -> Unit,
     coreVersion: String
 ) {
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
@@ -127,6 +134,18 @@ fun HomeScreen(
                 )
             }
         }
+
+        if (update.hasUpdate) {
+            item {
+                UpdateBanner(
+                    version = update.version,
+                    onOpen = onOpenUpdate,
+                    onDismiss = onDismissUpdate
+                )
+            }
+        }
+
+        item { NetworkCard(network, onRefreshNetwork) }
 
         item { SyncBanner(sync) }
 

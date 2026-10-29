@@ -20,6 +20,31 @@ object PublicSources {
 
     val ALL: List<PublicSource> = listOf(
         PublicSource(
+            name = "🌍 Au1rxx (فقط تأییدشده‌ها)",
+            url = "https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/v2ray-base64.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌍 SylphNet",
+            url = "https://raw.githubusercontent.com/ProblemTheCode/SylphNet-public/main/sub/sub_plain.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌍 LeilaoMi (ادغام خودکار)",
+            url = "https://raw.githubusercontent.com/LeilaoMi/AutoMergePublicNodes-Optimized/main/output/global.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌍 Pusheen-V2Ray",
+            url = "https://raw.githubusercontent.com/MahanKenway/Pusheen-V2Ray/main/configs/mix_sub.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌍 kort0881 (VLESS)",
+            url = "https://raw.githubusercontent.com/kort0881/vpn-vless-configs-russia/main/output/vless.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
             name = "🏅 MohammadBahemmat (تست‌شده)",
             url = "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/Tested.txt",
             maxConfigs = 150

@@ -48,6 +48,8 @@ fun SettingsScreen(
     onClearAll: () -> Unit,
     onOpenPerApp: () -> Unit = {},
     onSetFreeSources: (Boolean) -> Unit = {},
+    onCheckUpdate: () -> Unit = {},
+    onScanQr: () -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {}
 ) {
@@ -163,6 +165,30 @@ fun SettingsScreen(
                     }
                 }
             }
+        }
+
+        item {
+            SettingSwitch(
+                title = "بررسی عمیق شبکه پیش از اتصال",
+                subtitle = "سنجش DNS، تشخیص DPI، تأخیر و لرزش شبکه‌ی اپراتور و انتخاب خودکار فرگمنت مناسب",
+                checked = settings.deepProbe
+            ) { value -> onChange { it.copy(deepProbe = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "تست کامل قبل از اتصال",
+                subtitle = "تا پایان همه‌ی تست‌ها هیچ اتصالی برقرار نمی‌شود (پایدارتر، کمی کندتر)",
+                checked = settings.requireFullTest
+            ) { value -> onChange { it.copy(requireFullTest = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "تنظیم خودکار شدت فرگمنت",
+                subtitle = "پروفایل مناسب بر اساس شبکه‌ی اپراتور انتخاب و در صورت نیاز خودکار اصلاح می‌شود",
+                checked = settings.autoTuneFragment
+            ) { value -> onChange { it.copy(autoTuneFragment = value) } }
         }
 
         item {
@@ -289,6 +315,32 @@ fun SettingsScreen(
                     GhostButton(text = "بازیابی", modifier = Modifier.fillMaxWidth()) { onRestore() }
                 }
             }
+        }
+
+        item { GroupTitle("به‌روزرسانی برنامه") }
+
+        item {
+            SettingSwitch(
+                title = "بررسی خودکار نسخه‌ی جدید",
+                subtitle = "حداکثر هر ۶ ساعت، نسخه‌ی منتشرشده بررسی و اطلاع داده می‌شود",
+                checked = settings.autoUpdateCheck
+            ) { value -> onChange { it.copy(autoUpdateCheck = value) } }
+        }
+
+        item {
+            SettingValue(
+                title = "بررسی به‌روزرسانی",
+                subtitle = "اگر نسخه‌ی جدیدی منتشر شده باشد، لینک دانلود نمایش داده می‌شود",
+                value = "بررسی"
+            ) { onCheckUpdate() }
+        }
+
+        item {
+            SettingValue(
+                title = "افزودن اشتراک با QR",
+                subtitle = "اسکن کد QR مخزن یا لینک اشتراک با دوربین",
+                value = "اسکن"
+            ) { onScanQr() }
         }
 
         item { GroupTitle("درباره") }

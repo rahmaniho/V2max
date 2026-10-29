@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
+import ir.v2max.app.data.NetworkAssessment
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.util.Format
 
@@ -395,6 +396,102 @@ fun SyncBanner(sync: SyncState) {
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** کارت خلاصه‌ی بررسی عمیق شبکه‌ی اپراتور */
+@Composable
+fun NetworkCard(network: NetworkAssessment, onRefresh: () -> Unit) {
+    if (network.assessedAt == 0L) return
+    GlassCard(Modifier.fillMaxWidth(), onClick = onRefresh) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                network.score >= 70 -> V2.Mint
+                                network.score >= 45 -> V2.Amber
+                                else -> V2.Red
+                            }
+                        )
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "شبکه: ${network.carrier.label}",
+                    style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                    color = V2.TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    "${network.score}/۱۰۰",
+                    color = V2.TextMuted,
+                    fontSize = 11.sp
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                network.message,
+                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                color = V2.TextSecondary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TargetChip("تأخیر", network.latencyMs)
+                if (network.jitterMs >= 0) TargetChip("لرزش", network.jitterMs)
+                TargetChip("افت٪", if (network.lossPercent > 0) network.lossPercent else -1)
+                if (network.dpiDetected) {
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(V2.Red.copy(alpha = 0.14f))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("DPI", color = V2.Red, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** نوار اطلاع‌رسانی نسخه‌ی جدید */
+@Composable
+fun UpdateBanner(version: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
+    GlassCard(Modifier.fillMaxWidth(), onClick = onOpen) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "نسخه‌ی ${version} منتشر شد",
+                    style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                    color = V2.Mint
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "برای دریافت آخرین نسخه ضربه بزنید",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = V2.TextMuted
+                )
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(V2.SurfaceHigh)
+                    .padding(horizontal = 10.dp, vertical = 5.dp)
+                    .clickable { onDismiss() }
+            ) {
+                Text("بعداً", color = V2.TextMuted, fontSize = 11.sp)
             }
         }
     }

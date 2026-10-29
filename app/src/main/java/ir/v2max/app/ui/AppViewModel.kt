@@ -12,6 +12,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser
+import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.util.Format
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val tunnel = Repo.tunnel
     val scan = Repo.scan
     val sync = Repo.sync
+    val network = Repo.network
+    val update = Repo.update
 
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
@@ -70,10 +73,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         if (settings.useFreeSources) Repo.ensureBuiltInSources()
 
+        // ۱) بررسی عمیق شبکه‌ی اپراتور (DNS/DPI/تأخیر) پیش از هر کاری
+        if (settings.deepProbe) SmartConnect.assessNetwork(app, force = true)
+
         if (settings.autoRefreshOnOpen) {
-            delay(400)
+            delay(200)
             syncAll(announce = false)
         }
+
+        // بررسی نسخه‌ی جدید (حداکثر یک‌بار در ۶ ساعت)
+        if (settings.autoUpdateCheck) checkUpdates(manual = false)
 
         if (Repo.servers.value.isEmpty()) return
 
@@ -131,8 +140,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             pendingServerId = serverId
             pendingSmartScan = false
             _pendingVpnRequest.value = true
-        } else {
-            TunnelController.start(app, serverId)
+            return
+        }
+        if (serverId == null) {
+            viewModelScope.launch { SmartConnect.quickConnect(app) }
+            return
+        }
+        // پیش از اتصال، همان سرور تست می‌شود (یا در صورت خرابی، چرخه‌ی کامل اجرا می‌شود)
+        viewModelScope.launch {
+            val ok = SmartConnect.connectVerified(app, serverId)
+            if (!ok) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
         }
     }
 
@@ -481,6 +498,67 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun shareLink(serverId: String): String? {
         val server = Repo.serverById(serverId) ?: return null
         return LinkParser.toLink(server)
+    }
+
+    // ------------------------------------------------------- بررسی به‌روزرسانی
+
+    fun checkUpdates(manual: Boolean = true) {
+        val app = getApplication<Application>()
+        if (!manual) {
+            val last = Repo.lastUpdateCheck()
+            if (System.currentTimeMillis() - last < 6 * 60 * 60 * 1000L) return
+        }
+        viewModelScope.launch {
+            if (manual) showMessage("در حال بررسی نسخه‌ی جدید…")
+            Repo.markUpdateChecked()
+            val info = UpdateChecker.checkForUpdate(app)
+            if (info != null) {
+                Repo.update.value = info
+                if (!manual) showMessage("نسخه‌ی ${info.version} منتشر شده است")
+            } else {
+                Repo.update.value = ir.v2max.app.data.UpdateInfo()
+                if (manual) showMessage("برنامه به‌روز است (نسخه‌ی فعلی)")
+            }
+        }
+    }
+
+    fun dismissUpdate() {
+        Repo.update.value = ir.v2max.app.data.UpdateInfo()
+    }
+
+    fun openUpdatePage() {
+        val info = Repo.update.value
+        val url = info.apkUrl.ifBlank { info.pageUrl }.ifBlank {
+            "https://github.com/rahmaniho/V2max/releases/latest"
+        }
+        runCatching {
+            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<Application>().startActivity(intent)
+        }.onFailure { showMessage("باز کردن صفحه‌ی دانلود ناموفق بود") }
+    }
+
+    // -------------------------------------------------------- بررسی شبکه
+
+    fun refreshNetworkAssessment() {
+        viewModelScope.launch {
+            SmartConnect.assessNetwork(getApplication(), force = true)
+            val n = Repo.network.value
+            showMessage(n.message.ifBlank { "بررسی شبکه انجام شد" })
+        }
+    }
+
+    // ------------------------------------------------------------- QR
+
+    /** افزودن اشتراک از کد QR اسکن‌شده (لینک اشتراک یا لینک کانفیگ) */
+    fun onQrScanned(text: String) {
+        val value = text.trim()
+        if (value.isEmpty()) return
+        when {
+            value.startsWith("http://") || value.startsWith("https://") -> addSubscription("", value)
+            value.contains("://") -> importText(value)
+            else -> showMessage("کد QR شامل لینک معتبری نیست")
+        }
     }
 
     // -------------------------------------------------------------- settings
