@@ -36,12 +36,15 @@ fun AppRoot(vm: AppViewModel) {
     val tunnel by vm.tunnel.collectAsStateWithLifecycle()
     val scan by vm.scan.collectAsStateWithLifecycle()
     val sync by vm.sync.collectAsStateWithLifecycle()
+    val network by vm.network.collectAsStateWithLifecycle()
+    val update by vm.update.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
     var showPerApp by rememberSaveable { mutableStateOf(false) }
+    var showQr by rememberSaveable { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -68,7 +71,10 @@ fun AppRoot(vm: AppViewModel) {
         }
     }
 
-    BackHandler(enabled = showPerApp) { showPerApp = false }
+    val backBlocked = showPerApp || showQr
+    BackHandler(enabled = backBlocked) {
+        if (showQr) showQr = false else showPerApp = false
+    }
 
     LaunchedEffect(message) {
         if (message.isNotBlank()) {
@@ -92,7 +98,7 @@ fun AppRoot(vm: AppViewModel) {
                 }
             },
             bottomBar = {
-                if (!showPerApp) {
+                if (!showPerApp && !showQr) {
                     Box(Modifier.navigationBarsPadding()) {
                         BottomBar(tab) { tab = it }
                     }
@@ -105,7 +111,16 @@ fun AppRoot(vm: AppViewModel) {
                     .padding(padding)
                     .statusBarsPadding()
             ) {
-                if (showPerApp) {
+                if (showQr) {
+                    QrScanScreen(
+                        onBack = { showQr = false },
+                        onScanned = { text ->
+                            showQr = false
+                            vm.onQrScanned(text)
+                            tab = Tab.SUBS
+                        }
+                    )
+                } else if (showPerApp) {
                     PerAppScreen(
                         settings = settings,
                         onBack = { showPerApp = false },
@@ -118,12 +133,17 @@ fun AppRoot(vm: AppViewModel) {
                         tunnel = tunnel,
                         scan = scan,
                         sync = sync,
+                        network = network,
+                        update = update,
                         settings = settings,
                         onToggle = { vm.toggleConnection() },
                         onSmart = { vm.requestSmartConnect(null) },
                         onOpenSubs = { tab = Tab.SUBS },
                         onOpenServers = { tab = Tab.SERVERS },
                         onRestart = { vm.restartScan() },
+                        onRefreshNetwork = { vm.refreshNetworkAssessment() },
+                        onOpenUpdate = { vm.openUpdatePage() },
+                        onDismissUpdate = { vm.dismissUpdate() },
                         coreVersion = remember { vm.coreVersion() }
                     )
 
@@ -162,7 +182,8 @@ fun AppRoot(vm: AppViewModel) {
                         onDelete = { vm.removeSubscription(it) },
                         onSmartScan = { vm.requestSmartConnect(it) },
                         onImportText = { vm.importText(it) },
-                        onAddFreeSources = { vm.addFreeSources() }
+                        onAddFreeSources = { vm.addFreeSources() },
+                        onScanQr = { showQr = true }
                     )
 
                     Tab.SETTINGS -> SettingsScreen(
@@ -174,7 +195,9 @@ fun AppRoot(vm: AppViewModel) {
                         onOpenPerApp = { showPerApp = true },
                         onSetFreeSources = { vm.setFreeSourcesEnabled(it) },
                         onBackup = { exportLauncher.launch("v2max-backup.json") },
-                        onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) }
+                        onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
+                        onCheckUpdate = { vm.checkUpdates(manual = true) },
+                        onScanQr = { showQr = true }
                     )
                 }
             }

@@ -63,7 +63,8 @@ fun SubsScreen(
     onDelete: (String) -> Unit,
     onSmartScan: (String) -> Unit,
     onImportText: (String) -> Unit,
-    onAddFreeSources: () -> Unit = {}
+    onAddFreeSources: () -> Unit = {},
+    onScanQr: () -> Unit = {}
 ) {
     var showAdd by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
@@ -88,6 +89,12 @@ fun SubsScreen(
                         color = V2.TextMuted
                     )
                 }
+                GhostButton(
+                    text = "QR",
+                    modifier = Modifier.width(72.dp),
+                    onClick = onScanQr
+                )
+                Spacer(Modifier.width(8.dp))
                 GhostButton(
                     text = "افزودن",
                     modifier = Modifier.width(104.dp),
