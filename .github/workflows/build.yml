@@ -153,7 +153,8 @@ jobs:
           echo "released to $TAG"
 
           # نسخه‌ی شماره‌دار (برای بررسی به‌روزرسانی داخل برنامه)؛ فقط یک‌بار ساخته می‌شود
-          if [ -n "$VERSION" ]; then
+          # فقط از شاخه‌ی main ساخته می‌شود تا تگ نسخه روی همان کامیت منتشرشده باشد
+          if [ -n "$VERSION" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
             VTAG="v$VERSION"
             if ! gh release view "$VTAG" >/dev/null 2>&1; then
               head -3 release-notes.md > version-notes.md
