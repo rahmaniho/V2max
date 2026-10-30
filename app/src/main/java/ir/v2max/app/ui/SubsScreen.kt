@@ -44,7 +44,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ir.v2max.app.data.Proto
 import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
@@ -489,23 +488,7 @@ private fun fieldColors(): androidx.compose.material3.TextFieldColors =
     unfocusedTextColor = V2.TextPrimary
 )
 
-private fun protoLabel(proto: Proto): String = when (proto) {
-    Proto.HYSTERIA2 -> "Hysteria2"
-    Proto.TUIC -> "TUIC"
-    Proto.ANYTLS -> "AnyTLS"
-    Proto.WIREGUARD -> "WireGuard"
-    Proto.VMESS -> "VMess"
-    Proto.VLESS -> "VLESS"
-    Proto.TROJAN -> "Trojan"
-    Proto.SS -> "Shadowsocks"
-    Proto.SOCKS -> "SOCKS"
-    Proto.HTTP -> "HTTP"
-}
-
-/**
- * انتخابگر منبع آماده: منابع اختصاصی پروتکل‌های هسته‌ی sing-box
- * (Hysteria2/TUIC/AnyTLS/WireGuard) در بالای فهرست و با نشان پروتکل نمایش داده می‌شوند.
- */
+/** انتخابگر منبع آماده: فهرستمنابع عمومی رایگان با امکان افزودن تک‌تک یا همه */
 @Composable
 private fun SourcePickerDialog(
     onDismiss: () -> Unit,
@@ -520,7 +503,7 @@ private fun SourcePickerDialog(
         text = {
             Column {
                 Text(
-                    "منابع اختصاصی پروتکل‌هایی که هسته‌ی Xray پشتیبانی نمی‌کند (Hysteria2، TUIC، AnyTLS، WireGuard) با علامت ⚡ مشخص شده‌اند.",
+                    "منابع عمومی و رایگان کانفیگ که روزانه به‌روزرسانی می‌شوند. هر منبع را جداگانه یا همه را یک‌جا اضافه کنید.",
                     style = MaterialTheme.typography.bodySmall,
                     color = V2.TextMuted
                 )
@@ -551,10 +534,6 @@ private fun SourcePickerDialog(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                val label = source.protocols.joinToString(" · ") { protoLabel(it) }
-                                if (label.isNotBlank()) {
-                                    Text(label, style = MaterialTheme.typography.bodySmall, color = V2.Mint, fontSize = 10.5.sp)
-                                }
                             }
                             TextButton(
                                 enabled = !added,

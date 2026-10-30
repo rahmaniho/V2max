@@ -10,7 +10,6 @@ on:
 
 env:
   LIBV2RAY_VERSION: v26.10.21
-  LIBBOX_VERSION: "1.14.4"
 
 permissions:
   contents: write
@@ -38,7 +37,6 @@ jobs:
         with:
           path: app/libs/libv2ray.aar
           key: libv2ray-${{ env.LIBV2RAY_VERSION }}
-          # libbox عمداً در همین کش قرار نمی‌گیرد
 
       - name: Download Xray core
         run: |
@@ -49,20 +47,6 @@ jobs:
           fi
           ls -la app/libs
 
-      - name: Cache sing-box core (libbox.aar)
-        uses: actions/cache@v4
-        with:
-          path: app/libs/libbox.aar
-          key: libbox-${{ env.LIBBOX_VERSION }}
-
-      - name: Download sing-box core
-        run: |
-          mkdir -p app/libs
-          if [ ! -s app/libs/libbox.aar ]; then
-            curl -fL --retry 3 -o app/libs/libbox.aar \
-              "https://github.com/singbox-android/libbox/releases/download/${{ env.LIBBOX_VERSION }}/libbox.aar"
-          fi
-          ls -la app/libs
 
       - name: Restore signing keystore
         uses: actions/cache@v4

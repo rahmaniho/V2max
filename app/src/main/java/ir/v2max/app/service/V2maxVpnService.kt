@@ -11,9 +11,7 @@ import android.os.PowerManager
 import android.util.Log
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.Failover
-import ir.v2max.app.core.SingBoxCore
 import ir.v2max.app.core.XrayCore
-import ir.v2max.app.net.SocksProbe
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ServerConfig
@@ -78,16 +76,12 @@ class V2maxVpnService : VpnService() {
 
     private var connectedAt = 0L
     private var totalUp = 0L
-    /** آیا اتصال جاری با هسته‌ی sing-box اجرا می‌شود */
-    @Volatile
-    private var usingSingBox = false
-
-    private fun coreRunning(): Boolean = if (usingSingBox) SingBoxCore.isRunning else XrayCore.isRunning
-
-    private fun coreTraffic(): LongArray =
-        if (usingSingBox) SingBoxCore.trafficSinceLastQuery() else XrayCore.trafficSinceLastQuery()
-
     private var totalDown = 0L
+
+    private fun coreRunning(): Boolean = XrayCore.isRunning
+
+    private fun coreTraffic(): LongArray = XrayCore.trafficSinceLastQuery()
+
     private var failoverAttempts = 0
     private var connectToken = 0
     private var failoverPending = false
@@ -235,7 +229,7 @@ class V2maxVpnService : VpnService() {
         unregisterNetworkWatcher()
         monitorJob?.cancel()
         connectJob?.cancel()
-        if (usingSingBox) SingBoxCore.stop() else XrayCore.stop()
+        XrayCore.stop()
         closeTun()
         running = false
         val status = Repo.tunnel.value.status
@@ -289,13 +283,6 @@ class V2maxVpnService : VpnService() {
 
             val baseSettings = Repo.settings.value
 
-            // پروتکل‌های Hysteria2 / TUIC / AnyTLS / WireGuard با هسته‌ی sing-box اجرا می‌شوند
-            if (server.needsSingBox()) {
-                doConnectSingBox(server, baseSettings, token)
-                return
-            }
-
-            usingSingBox = false
             val ladder = buildPenetrationLadder(baseSettings)
 
             // MTU رابط TUN با MTU پیشنهادی همان شبکه تنظیم می‌شود (جلوگیری از تکه‌شدن بی‌مورد)
@@ -482,93 +469,15 @@ class V2maxVpnService : VpnService() {
         if (settings.autoTuneFragment && assessment.fresh) order.add(settings.fragmentProfile)
         ir.v2max.app.data.FragmentProfile.entries.forEach { order.add(it) }
 
+        // ترتیب مثل v2rayNG/MahsaNG: اول همان چیزی که برای این شبکه پیشنهاد شده،
+        // بعد بدون فرگمنت (سریع‌ترین حالت ممکن) و در پایان دو پروفایل دیگر.
         val attempts = ArrayList<Attempt>()
-        order.take(3).forEach { attempts.add(Attempt(true, it, mtu)) }
-        // آخرین راه: بدون فرگمنت (بعضی شبکه‌ها/سرورها با فرگمنت سازگار نیستند)
+        val ordered = order.toList()
+        ordered.firstOrNull()?.let { attempts.add(Attempt(true, it, mtu)) }
+        // بدون فرگمنت زودتر امتحان می‌شود تا اتصال سالم سریع پیدا شود
         attempts.add(Attempt(false, settings.fragmentProfile, mtu))
+        ordered.drop(1).take(2).forEach { attempts.add(Attempt(true, it, mtu)) }
         return attempts
-    }
-
-    /**
-     * اتصال با هسته‌ی sing-box برای پروتکل‌هایی که Xray پشتیبانی نمی‌کند.
-     * TUN توسط همین سرویس ساخته و به هسته تحویل داده می‌شود؛ اعتبارسنجی اتصال با
-     * یک درخواست واقعی از طریق inbound محلی SOCKS انجام می‌شود.
-     */
-    private suspend fun doConnectSingBox(server: ServerConfig, baseSettings: AppSettings, token: Int) {
-        usingSingBox = true
-        SingBoxCore.resetTrafficCounters()
-
-        publish(
-            Repo.tunnel.value.copy(
-                status = TunnelStatus.CONNECTING,
-                message = "آماده‌سازی هسته‌ی ${server.proto.label}…"
-            )
-        )
-
-        val tunSettings = baseSettings.copy(mtu = baseSettings.mtu.coerceIn(1280, 9000))
-
-        val started = try {
-            SingBoxCore.start(
-                context = applicationContext,
-                config = ir.v2max.app.core.SingBoxConfig.vpnConfig(server, tunSettings),
-                vpnService = this,
-                settings = tunSettings,
-                buildTun = {
-                    // این بلوک از داخل خود هسته فراخوانی می‌شود؛ TUN باید همان‌جا ساخته شود
-                    val pfd = establishTun(tunSettings)
-                    if (pfd == null) {
-                        -1
-                    } else {
-                        tun = pfd
-                        pfd.fd
-                    }
-                }
-            )
-        } catch (t: Throwable) {
-            Log.e(TAG, "sing-box start failed", t)
-            false
-        }
-
-        if (token != connectToken) return
-
-        if (!started) {
-            closeTun()
-            usingSingBox = false
-            fail("اجرای هسته‌ی ${server.proto.label} ناموفق بود: ${SingBoxCore.lastError().ifBlank { "خطای ناشناخته" }}")
-            return
-        }
-
-        // اعتبارسنجی واقعی: تا وقتی ترافیک از تانل عبور نکند «وصل» حساب نمی‌شود
-        val delay = SocksProbe.delay(ir.v2max.app.core.SingBoxConfig.SOCKS_PORT, baseSettings.delayTestUrl)
-        if (delay <= 0) {
-            SingBoxCore.stop()
-            closeTun()
-            usingSingBox = false
-            Repo.recordOutcome(server.id, false)
-            if (!rotate("سرور ${server.proto.label} پاسخ نداد")) {
-                fail("اتصال با هسته‌ی ${server.proto.label} برقرار نشد")
-            }
-            return
-        }
-
-        currentServer = server
-        connectedAt = System.currentTimeMillis()
-        Failover.reset()
-        Repo.recordOutcome(server.id, true)
-        Repo.setTestResult(server.id, server.tcpPing, delay.toInt())
-        Repo.pushLatency(delay.toInt())
-        publish(
-            TunnelUiState(
-                status = TunnelStatus.CONNECTED,
-                serverId = server.id,
-                serverName = server.displayName(),
-                serverProto = server.proto.label,
-                ping = delay.toInt(),
-                connectedAt = connectedAt,
-                message = "متصل (${server.proto.label})"
-            )
-        )
-        startMonitor()
     }
 
     private fun establishTun(settings: AppSettings): ParcelFileDescriptor? {
@@ -719,8 +628,7 @@ class V2maxVpnService : VpnService() {
                 probeIndex++
 
                 val ping = withContext(Dispatchers.IO) {
-                    if (usingSingBox) SocksProbe.delay(ir.v2max.app.core.SingBoxConfig.SOCKS_PORT, target.url)
-                    else XrayCore.measureDelay(target.url)
+                    XrayCore.measureDelay(target.url)
                 }
 
                 if (ping > 0) {
@@ -779,6 +687,10 @@ class V2maxVpnService : VpnService() {
      * جابه‌جایی به سرور جایگزین.
      * @return true اگر فرمان اتصال به سرور جدید صادر شده باشد
      */
+    /**
+     * جابه‌جایی به سرور جایگزین.
+     * @return true اگر فرمان اتصال به سرور جدید صادر شده باشد
+     */
     private suspend fun rotate(reason: String): Boolean {
         val currentId = currentServer?.id ?: Repo.tunnel.value.serverId
         Failover.markFailed(currentId)
@@ -819,8 +731,7 @@ class V2maxVpnService : VpnService() {
         }
 
         // توقف همگام تا مطمئن شویم هسته و رابط TUN واقعاً آزاد شده‌اند
-        if (usingSingBox) SingBoxCore.stop() else XrayCore.stop()
-        usingSingBox = false
+        XrayCore.stop()
         closeTun()
         running = false
         Repo.poolSize.value = 0
@@ -832,8 +743,7 @@ class V2maxVpnService : VpnService() {
 
     private fun fail(message: String) {
         running = false
-        if (usingSingBox) SingBoxCore.stop() else XrayCore.stop()
-        usingSingBox = false
+        XrayCore.stop()
 
         // Kill Switch: رابط TUN باز می‌ماند تا هیچ بسته‌ای بیرون از تانل نرود
         val killSwitch = Repo.settings.value.killSwitch && tun != null

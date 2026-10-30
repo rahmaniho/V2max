@@ -55,6 +55,10 @@ object UpdateChecker {
         var bestVersion = ""
         var bestJson: JsonObject? = null
         releases.forEach { json ->
+            // انتشارهای آزمایشی هرگز پیشنهاد نمی‌شوند؛ فقط نسخه‌ی پایدار
+            if (json.get("prerelease")?.asBoolean == true || json.get("draft")?.asBoolean == true) {
+                return@forEach
+            }
             val notes = json.get("body")?.asString.orEmpty()
             val version = normalize(json.get("tag_name")?.asString.orEmpty())
                 .ifBlank { normalize(json.get("name")?.asString.orEmpty()) }
