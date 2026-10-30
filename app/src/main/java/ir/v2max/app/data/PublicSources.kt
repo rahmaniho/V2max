@@ -7,12 +7,7 @@ package ir.v2max.app.data
 data class PublicSource(
     val name: String,
     val url: String,
-    val maxConfigs: Int = 250,
-    /**
-     * پروتکل‌هایی که این منبع مخصوص آن‌هاست.
-     * مجموعه‌ی خالی یعنی منبع ترکیبی است و همه‌ی پروتکل‌ها را در بر می‌گیرد.
-     */
-    val protocols: Set<Proto> = emptySet()
+    val maxConfigs: Int = 250
 )
 
 object PublicSources {
@@ -23,76 +18,21 @@ object PublicSources {
 
     fun forUrl(url: String): PublicSource? = byUrl[url.trim().trimEnd('/')]
 
-    /** منابعی که مخصوص یک پروتکل هستند (برای پروتکل‌هایی که هسته‌ی Xray پشتیبانی نمی‌کند) */
-    fun forProto(proto: Proto): List<PublicSource> = ALL.filter { proto in it.protocols }
-
-    /**
-     * منابع اختصاصی پروتکل‌های هسته‌ی sing-box.
-     * این فایل‌ها به‌صورت خودکار از چند کانال عمومی جمع‌آوری و به‌روزرسانی می‌شوند.
-     */
-    val SING_BOX_SOURCES: List<PublicSource> by lazy {
-        ALL.filter { it.protocols.isNotEmpty() }
-    }
-
     val ALL: List<PublicSource> = listOf(
-        // ------------------------------------------------- sing-box protocols
-        PublicSource(
-            name = "⚡ Hysteria2 (به‌روز روزانه)",
-            url = "https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/hysteria2.txt",
-            maxConfigs = 120,
-            protocols = setOf(Proto.HYSTERIA2)
-        ),
-        PublicSource(
-            name = "⚡ TUIC v5",
-            url = "https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/tuic.txt",
-            maxConfigs = 60,
-            protocols = setOf(Proto.TUIC)
-        ),
-        PublicSource(
-            name = "⚡ AnyTLS",
-            url = "https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/anytls.txt",
-            maxConfigs = 60,
-            protocols = setOf(Proto.ANYTLS)
-        ),
-        PublicSource(
-            name = "⚡ AnyTLS (ShatakVPN)",
-            url = "https://raw.githubusercontent.com/ShatakVPN/ConfigForge-V2Ray/main/configs/anytls.txt",
-            maxConfigs = 60,
-            protocols = setOf(Proto.ANYTLS)
-        ),
-        PublicSource(
-            name = "⚡ WireGuard (کلودفلر/وپس)",
-            url = "https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/wireguard.txt",
-            maxConfigs = 60,
-            protocols = setOf(Proto.WIREGUARD)
-        ),
-        PublicSource(
-            name = "🌍 ShatakVPN (همه پروتکل‌ها)",
-            url = "https://raw.githubusercontent.com/ShatakVPN/ConfigForge-V2Ray/main/configs/all.txt",
-            maxConfigs = 150
-        ),
-        PublicSource(
-            name = "🌍 VpnClashFa (ترکیبی)",
-            url = "https://raw.githubusercontent.com/10ium/VpnClashFaCollector/main/sub/all/mixed.txt",
-            maxConfigs = 200
-        ),
         PublicSource(
             name = "🌍 Au1rxx (فقط تأییدشده‌ها)",
             url = "https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/v2ray-base64.txt",
-            maxConfigs = 150,
-            protocols = setOf(Proto.HYSTERIA2)
+            maxConfigs = 150
         ),
         PublicSource(
             name = "🌍 SylphNet",
             url = "https://raw.githubusercontent.com/ProblemTheCode/SylphNet-public/main/sub/sub_plain.txt",
-            maxConfigs = 150,
-            protocols = setOf(Proto.HYSTERIA2)
+            maxConfigs = 150
         ),
         PublicSource(
             name = "🌍 LeilaoMi (ادغام خودکار)",
             url = "https://raw.githubusercontent.com/LeilaoMi/AutoMergePublicNodes-Optimized/main/output/global.txt",
-            maxConfigs = 150,
-            protocols = setOf(Proto.HYSTERIA2)
+            maxConfigs = 150
         ),
         PublicSource(
             name = "🌍 Pusheen-V2Ray",
@@ -212,8 +152,7 @@ object PublicSources {
         PublicSource(
             name = "🌍 NoMoreWalls",
             url = "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
-            maxConfigs = 150,
-            protocols = setOf(Proto.HYSTERIA2)
+            maxConfigs = 150
         )
     )
 }

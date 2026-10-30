@@ -10,12 +10,7 @@ enum class Proto(val label: String) {
     SS("Shadowsocks"),
     SOCKS("Socks"),
     HTTP("HTTP"),
-    HYSTERIA2("Hysteria2"),
-
-    /** پروتکل‌های مبتنی بر QUIC/سیم‌کشی که هسته‌ی Xray پشتیبانی نمی‌کند (با هسته‌ی sing-box اجرا می‌شوند) */
-    TUIC("TUIC"),
-    ANYTLS("AnyTLS"),
-    WIREGUARD("WireGuard");
+    HYSTERIA2("Hysteria2");
 
     companion object {
         fun fromScheme(scheme: String): Proto? = when (scheme.lowercase()) {
@@ -73,14 +68,6 @@ data class ServerConfig(
     var spiderX: String = "",
     var allowInsecure: Boolean = false,
 
-    // WireGuard
-    var wgPrivateKey: String = "",
-    var wgPublicKey: String = "",
-    var wgAddress: String = "",
-    var wgReserved: String = "",
-    /** کلید مشترک از پیش تعیین‌شده (اختیاری) */
-    var wgPreSharedKey: String = "",
-
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
     var obfsPassword: String = "",
@@ -116,15 +103,6 @@ data class ServerConfig(
 ) {
     val endpoint: String get() = "$address:$port"
 
-    /**
-     * آیا این کانفیگ باید با هسته‌ی sing-box اجرا شود؟
-     * Hysteria2/TUIC/WireGuard/AnyTLS در Xray-core وجود ندارند.
-     */
-    fun needsSingBox(): Boolean = when (proto) {
-        Proto.HYSTERIA2, Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> true
-        else -> false
-    }
-
     /** تعداد مقصدهایی که سرور به آن‌ها پاسخ داده است (۰ تا ۳) */
     fun reachCount(): Int {
         var n = 0
@@ -141,14 +119,7 @@ data class ServerConfig(
         if (a == "localhost" || a == "0.0.0.0" || a == "::" || a == "::1") return false
         if (a.startsWith("127.")) return false
         if (a == "[::1]") return false
-        // اعتبارسنجی سریع اعتبارنامه‌ها تا کانفیگ ناقص حتی به مرحله‌ی تست هم نرسد
-        return when (proto) {
-            Proto.WIREGUARD -> wgPrivateKey.isNotBlank() && wgPublicKey.isNotBlank()
-            Proto.TUIC -> uuid.isNotBlank() && password.isNotBlank()
-            Proto.ANYTLS -> password.isNotBlank() || uuid.isNotBlank()
-            Proto.HYSTERIA2 -> password.isNotBlank()
-            else -> true
-        }
+        return true
     }
 
     /** درصد پایداری بین ۰ تا ۱۰۰ (۱۰۰ = بدون شکست) */
@@ -368,7 +339,10 @@ data class AppSettings(
 enum class FragmentProfile(val label: String, val packets: String, val length: String, val delay: String, val maxSplit: String) {
     LIGHT("سبک (ایرانسل)", "tlshello", "20-60", "2-6", "40"),
     BALANCED("متعادل", "tlshello", "50-100", "10-20", "80"),
-    AGGRESSIVE("قوی (همراه اول)", "tlshello", "80-200", "15-30", "200");
+    AGGRESSIVE("قوی (همراه اول)", "tlshello", "80-200", "15-30", "200"),
+
+    /** تنظیمات پیش‌فرض MahsaNG — برای شبکه‌های بسیار سخت‌گیر */
+    MAHSA("مهسا (MahsaNG)", "tlshello", "100-200", "10-20", "200");
 
     companion object {
         fun fromName(name: String?): FragmentProfile =

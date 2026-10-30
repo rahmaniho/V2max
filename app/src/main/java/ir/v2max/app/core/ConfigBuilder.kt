@@ -524,16 +524,6 @@ object ConfigBuilder {
                     }
                 )
             }
-
-            // این پروتکل‌ها در Xray وجود ندارند و با هسته‌ی sing-box اجرا می‌شوند
-            Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> {
-                o.add(
-                    "settings", JsonObject().apply {
-                        addProperty("address", address)
-                        addProperty("port", port)
-                    }
-                )
-            }
         }
 
         o.add("streamSettings", streamSettings(server, settings))
@@ -565,8 +555,6 @@ object ConfigBuilder {
         Proto.SOCKS -> "socks"
         Proto.HTTP -> "http"
         Proto.HYSTERIA2 -> "hysteria"
-        // این پروتکل‌ها با هسته‌ی sing-box اجرا می‌شوند و به این مسیر نمی‌رسند
-        Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> "direct"
     }
 
     // ------------------------------------------------------------ transport
