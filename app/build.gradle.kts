@@ -46,6 +46,11 @@ tasks.matching { it.name == "preBuild" }.configureEach {
     dependsOn(downloadLibV2ray)
 }
 
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
 android {
     namespace = "ir.v2max.app"
     compileSdk = 35
