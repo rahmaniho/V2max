@@ -35,13 +35,13 @@ class XrayIntegrationTest {
         deleteOnExit()
     }
 
-    private fun validate(config: String) {
+    private fun validate(config: String, label: String = "fixture") {
         val file = configFile(config)
         val process = ProcessBuilder(binary, "run", "-test", "-config", file.absolutePath)
             .redirectErrorStream(true).start()
         assertTrue("Xray config validation timed out", process.waitFor(20, TimeUnit.SECONDS))
         val output = process.inputStream.bufferedReader().readText()
-        assertEquals("Xray rejected generated config: $output", 0, process.exitValue())
+        assertEquals("Xray rejected $label: $output", 0, process.exitValue())
     }
 
     @Test fun `pinned xray accepts configs generated from common v2rayng links`() {
@@ -53,7 +53,7 @@ class XrayIntegrationTest {
             "vless://$uuid@example.org:443?type=grpc&security=tls&serviceName=example&authority=cdn.example.org&mode=multi",
             "vless://$uuid@example.org:443?type=tcp&security=reality&sni=example.org&fp=chrome&pbk=$key&sid=abcd&flow=xtls-rprx-vision",
             "vless://$uuid@example.org:443?type=xhttp&security=tls&host=cdn.example.org&path=%2Fx&mode=packet-up&extra=%7B%22xPaddingBytes%22%3A%22100-200%22%7D",
-            "vless://$uuid@example.org:443?type=kcp&seed=seed&headerType=wechat-video",
+            "vless://$uuid@10.0.0.2:443?type=kcp&seed=seed&headerType=wechat-video",
             "vmess://$uuid@example.org:443?type=grpc&security=tls&serviceName=svc&authority=cdn.example.org",
             "trojan://password@example.org:443?type=ws&security=tls&host=cdn.example.org&path=%2Fws",
             "ss://YWVzLTEyOC1nY206cGFzcw@example.org:443",
@@ -62,8 +62,8 @@ class XrayIntegrationTest {
         links.forEach { link ->
             val cfg = LinkParser.parseLine(link)
             assertNotNull("Could not import ${link.substringBefore("://")}", cfg)
-            validate(ConfigBuilder.testConfig(cfg!!, settings))
-            validate(ConfigBuilder.vpnConfig(cfg, settings))
+            validate(ConfigBuilder.testConfig(cfg!!, settings), "${cfg.proto}/${cfg.network} test")
+            validate(ConfigBuilder.vpnConfig(cfg, settings), "${cfg.proto}/${cfg.network} VPN")
         }
         val primary = LinkParser.parseLine(links.first())!!
         val other = primary.copy(id = "second", address = "10.0.0.2")
@@ -158,7 +158,16 @@ class XrayIntegrationTest {
                 // Xray sniffing routes by the HTTP Host. Keep it identical to the local target.
                 output.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray())
                 output.flush()
-                val body = input.readBytes().toString(Charsets.UTF_8)
+                // Read until the known response body arrives; a proxy need not close immediately.
+                val responseBytes = java.io.ByteArrayOutputStream()
+                try {
+                    while (responseBytes.size() < 8192 && !responseBytes.toString("UTF-8").contains("v2max")) {
+                        val byte = input.read()
+                        if (byte < 0) break
+                        responseBytes.write(byte)
+                    }
+                } catch (_: java.net.SocketTimeoutException) { }
+                val body = responseBytes.toString("UTF-8")
                 assertTrue("Traffic failed ($proto/$network): $body\n${serverLog.readText()}\n${clientLog.readText()}", body.contains("v2max"))
             }
         } finally {
