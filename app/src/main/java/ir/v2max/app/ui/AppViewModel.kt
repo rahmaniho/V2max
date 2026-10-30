@@ -9,6 +9,7 @@ import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
+import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser

@@ -140,9 +140,8 @@ fun RoutingScreen(
                                 newRule = ""
                             }
                         }
-                        GhostButton(text = "چسباندن از کلیپ‌بورد", modifier = Modifier.weight(1f)) {
-                            val text = clipboardText()
-                            if (text.isNotBlank()) newRule = text.trim().take(300)
+                        GhostButton(text = "پاک کردن", modifier = Modifier.weight(1f)) {
+                            newRule = ""
                         }
                     }
                 }
@@ -209,13 +208,4 @@ private fun isValidRule(rule: String): Boolean {
     if (parts[0].lowercase() !in listOf("direct", "proxy", "block", "reject")) return false
     if (parts[1].lowercase() !in listOf("domain", "ip", "port")) return false
     return parts.drop(2).any { it.isNotBlank() }
-}
-
-@Composable
-private fun clipboardText(): String {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val manager = ctx.getSystemService(android.content.ClipboardManager::class.java)
-    val clip = manager?.primaryClip ?: return ""
-    if (clip.itemCount == 0) return ""
-    return clip.getItemAt(0).coerceToText(ctx).toString()
 }
