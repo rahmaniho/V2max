@@ -126,11 +126,13 @@ class V2maxVpnService : VpnService() {
         if (action == ACTION_NEXT) {
             // تغییر فوری به سرور بعدی از فهرست سالم‌ها
             val current = currentServer?.id ?: Repo.tunnel.value.serverId
-            val next = Failover.findReplacement(current)
-            if (next != null) {
-                Failover.markFailed(current)
-                failoverPending = true
-                connect(next.id)
+            scope.launch {
+                val next = Failover.findReplacement(current)
+                if (next != null) {
+                    Failover.markFailed(current)
+                    failoverPending = true
+                    connect(next.id)
+                }
             }
             return START_STICKY
         }

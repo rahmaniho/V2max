@@ -77,8 +77,11 @@ fun ServersScreen(
     onTestAll: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onCopyLink: (String) -> Unit,
     showFlags: Boolean = true,
-    onCopyLink: (String) -> Unit
+    onQrContent: (String) -> String = { "" },
+    onBulkDelete: (List<String>) -> Unit = {},
+    onBulkFavorite: (List<String>, Boolean) -> Unit = { _, _ -> }
 ) {
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(SortMode.FASTEST) }
