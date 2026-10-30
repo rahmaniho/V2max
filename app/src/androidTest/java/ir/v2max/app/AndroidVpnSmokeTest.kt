@@ -58,13 +58,16 @@ class AndroidVpnSmokeTest {
             assertEquals("VPN did not connect: ${Repo.tunnel.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
 
-            // The shell runs outside the VPN app's excluded UID, so this is a TUN datapath test.
-            val command = "toybox timeout 20 toybox wget -q -O - http://198.51.100.1:18081/tun-check 2>&1; " +
-                "status=\$?; printf '\\nWGET_EXIT=%s\\n' \"\$status\""
-            val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
+            // UiAutomation runs the command outside the app UID. It uses Runtime.exec,
+            // not a shell, so the CI runner installs a script for the piped HTTP request.
+            val descriptor = instrumentation.uiAutomation.executeShellCommand("sh /data/local/tmp/v2max-tun-probe.sh")
             val output = descriptor.use { FileInputStream(it.fileDescriptor).bufferedReader().readText() }.trim()
-            assertEquals("No traffic through Android TUN: $output\n${XrayCore.logs().joinToString("\n")}",
-                "v2max-tun-ok\nWGET_EXIT=0", output)
+            val probeUid = output.lineSequence().firstOrNull { it.startsWith("PROBE_UID=") }
+                ?.substringAfter('=')?.trim()?.toIntOrNull()
+            assertTrue("Probe must run outside the VPN app UID: $output",
+                probeUid != null && probeUid != android.os.Process.myUid())
+            assertTrue("No traffic through Android TUN: $output\n${XrayCore.logs().joinToString("\n")}",
+                output.contains(" 200 ") && output.contains("v2max-tun-ok") && output.contains("NC_EXIT=0"))
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)

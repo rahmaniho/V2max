@@ -37,6 +37,18 @@ xray_pid=$!
 
 gradle --no-daemon installDebug installDebugAndroidTest
 adb shell appops set ir.v2max.app.debug ACTIVATE_VPN allow
+# UiAutomation.executeShellCommand uses Runtime.exec rather than a shell, and
+# the Android 11 emulator's toybox does not include wget. Install a small shell
+# script that issues HTTP over netcat from a UID outside the VPN application.
+cat > "$work/tun-probe.sh" <<'SH'
+#!/system/bin/sh
+printf 'PROBE_UID=%s\n' "$(id -u)"
+printf 'GET /tun-check HTTP/1.1\r\nHost: 198.51.100.1:18081\r\nConnection: close\r\n\r\n' | \
+  toybox timeout 20 toybox nc -w 10 -W 10 198.51.100.1 18081 2>&1
+status=$?
+printf '\nNC_EXIT=%s\n' "$status"
+SH
+adb push "$work/tun-probe.sh" /data/local/tmp/v2max-tun-probe.sh
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
 else
