@@ -75,6 +75,7 @@ object XrayCore {
             Seq.setContext(context.applicationContext)
             val assetPath = context.getDir("assets", Context.MODE_PRIVATE).absolutePath
             Libv2ray.initCoreEnv(assetPath, deviceKey(context))
+            GeoAssets.init(context)
             initialized = true
         } catch (t: Throwable) {
             Log.e(TAG, "init failed", t)

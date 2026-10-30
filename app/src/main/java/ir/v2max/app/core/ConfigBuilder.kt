@@ -16,6 +16,7 @@ import ir.v2max.app.data.ServerConfig
 object ConfigBuilder {
 
     private const val TAG_PROXY = "proxy"
+    private const val TAG_BALANCER = "auto"
     private const val TAG_DIRECT = "direct"
     private const val TAG_BLOCK = "block"
     private const val TAG_DNS_OUT = "dns-out"
@@ -98,8 +99,18 @@ object ConfigBuilder {
         return root.toString()
     }
 
-    /** کانفیگ کامل برای اجرای VPN */
-    fun vpnConfig(server: ServerConfig, settings: AppSettings): String {
+    /**
+     * کانفیگ کامل برای اجرای VPN.
+     *
+     * @param pool چند سرور برتر برای «استخر خودکار»؛ اگر بیش از یکی باشد و تنظیم balancer روشن باشد،
+     *             هسته با استراتژی leastPing سالم‌ترین/سریع‌ترین را انتخاب می‌کند و در صورت خرابی
+     *             یکی، بدون قطع اتصال سراغ بعدی می‌رود.
+     */
+    fun vpnConfig(
+        server: ServerConfig,
+        settings: AppSettings,
+        pool: List<ServerConfig> = emptyList()
+    ): String {
         val root = JsonObject()
 
         // ---- log / stats / policy
@@ -152,9 +163,21 @@ object ConfigBuilder {
         }
         root.add("inbounds", JsonArray().apply { add(tun) })
 
+        // ---- استخر سرورها
+        val extra = if (settings.balancer) {
+            pool.filter { it.id != server.id && it.hasUsableEndpoint() }
+                .take((settings.balancerSize - 1).coerceIn(0, 5))
+        } else {
+            emptyList()
+        }
+        val useBalancer = extra.isNotEmpty()
+
         // ---- outbounds
         val outbounds = JsonArray()
         outbounds.add(outbound(server, settings))
+        extra.forEachIndexed { index, cfg ->
+            outbounds.add(outbound(cfg, settings, "proxy-${index + 1}"))
+        }
         outbounds.add(
             JsonObject().apply {
                 addProperty("tag", TAG_DIRECT)
@@ -198,8 +221,20 @@ object ConfigBuilder {
         // ---- dns
         root.add("dns", buildDns(settings))
 
+        // ---- observatory: سنجش مداوم تأخیر اعضای استخر (پیش‌نیاز استراتژی leastPing)
+        if (useBalancer) {
+            root.add(
+                "observatory", JsonObject().apply {
+                    add("subjectSelector", JsonArray().apply { add(TAG_PROXY) })
+                    addProperty("probeUrl", settings.delayTestUrl.ifBlank { "https://www.gstatic.com/generate_204" })
+                    addProperty("probeInterval", "60s")
+                    addProperty("enableConcurrency", true)
+                }
+            )
+        }
+
         // ---- routing
-        root.add("routing", buildRouting(settings))
+        root.add("routing", buildRouting(settings, useBalancer))
 
         return root.toString()
     }
@@ -248,9 +283,10 @@ object ConfigBuilder {
     // -------------------------------------------------------------- routing
 
     /** برای آزمون و پیش‌نمایش: فقط بخش routing کانفیگ */
-    fun routingJson(settings: AppSettings): JsonObject = buildRouting(settings)
+    fun routingJson(settings: AppSettings, useBalancer: Boolean = false): JsonObject =
+        buildRouting(settings, useBalancer)
 
-    private fun buildRouting(settings: AppSettings): JsonObject {
+    private fun buildRouting(settings: AppSettings, useBalancer: Boolean = false): JsonObject {
         val rules = JsonArray()
 
         // 1) پاسخ‌های DNS داخلی از مسیر مستقیم
@@ -267,7 +303,7 @@ object ConfigBuilder {
         rules.add(
             JsonObject().apply {
                 add("inboundTag", JsonArray().apply { add(TAG_DNS_MODULE) })
-                addProperty("outboundTag", TAG_PROXY)
+                setProxyTarget(useBalancer)
             }
         )
 
@@ -292,30 +328,69 @@ object ConfigBuilder {
             }
         )
 
-        // 5) حالت هوشمند: دامنه‌های ایرانی مستقیم
+        // 5) حالت هوشمند: دامنه‌ها و IPهای ایرانی مستقیم (با geoip/geosite در صورت وجود)
         if (settings.routingMode == RoutingMode.SMART) {
+            val domains = JsonArray()
+            val geoTag = if (settings.geoAssets) GeoAssets.geositeTag() else null
+            if (geoTag != null) domains.add("ext:geosite.dat:$geoTag")
+            domains.add("domain:ir")
             rules.add(
                 JsonObject().apply {
-                    add("domain", JsonArray().apply { add("domain:ir") })
+                    add("domain", domains)
                     addProperty("outboundTag", TAG_DIRECT)
                 }
             )
+
+            val ipTag = if (settings.geoAssets) GeoAssets.geoipTag() else null
+            if (ipTag != null) {
+                rules.add(
+                    JsonObject().apply {
+                        add("ip", JsonArray().apply { add("ext:geoip.dat:$ipTag") })
+                        addProperty("outboundTag", TAG_DIRECT)
+                    }
+                )
+            }
         }
 
         // 6) قواعد سفارشی کاربر (ویرایش‌شده در صفحه‌ی مسیریابی)
-        buildCustomRules(settings).forEach { rules.add(it) }
+        buildCustomRules(settings, useBalancer).forEach { rules.add(it) }
 
         val routing = JsonObject()
         routing.addProperty("domainStrategy", "AsIs")
         routing.add("rules", rules)
+
+        // 7) استخر خودکار (balancer): هسته سالم‌ترین سرور را با کمترین تأخیر انتخاب می‌کند
+        if (useBalancer) {
+            routing.add(
+                "balancers", JsonArray().apply {
+                    add(
+                        JsonObject().apply {
+                            addProperty("tag", TAG_BALANCER)
+                            add("selector", JsonArray().apply { add(TAG_PROXY) })
+                            add(
+                                "strategy", JsonObject().apply {
+                                    addProperty("type", "leastPing")
+                                }
+                            )
+                            addProperty("fallbackTag", TAG_PROXY)
+                        }
+                    )
+                }
+            )
+        }
         return routing
+    }
+
+    /** هدف یک قاعده‌ی خروجی: یا بالانسر یا یک outbound مشخص */
+    private fun JsonObject.setProxyTarget(useBalancer: Boolean) {
+        if (useBalancer) addProperty("balancerTag", TAG_BALANCER) else addProperty("outboundTag", TAG_PROXY)
     }
 
     /**
      * قواعد مسیریابی کاربر را به آیتم‌های routing.xray تبدیل می‌کند.
      * خطاهای قالب نادیده گرفته می‌شوند تا یک خط اشتباه کل اتصال را خراب نکند.
      */
-    fun buildCustomRules(settings: AppSettings): List<JsonObject> {
+    fun buildCustomRules(settings: AppSettings, useBalancer: Boolean = false): List<JsonObject> {
         val out = ArrayList<JsonObject>()
         for (raw in settings.customRoutingRules) {
             val line = raw.trim()
@@ -325,7 +400,7 @@ object ConfigBuilder {
             val action = parts[0].lowercase()
             val outbound = when (action) {
                 "direct" -> TAG_DIRECT
-                "proxy" -> TAG_PROXY
+                "proxy" -> if (useBalancer) TAG_BALANCER else TAG_PROXY
                 "block", "reject" -> TAG_BLOCK
                 else -> continue
             }
@@ -344,7 +419,8 @@ object ConfigBuilder {
                 "port" -> rule.addProperty("port", values.joinToString(","))
                 else -> continue
             }
-            rule.addProperty("outboundTag", outbound)
+            if (outbound == TAG_BALANCER) rule.addProperty("balancerTag", outbound)
+            else rule.addProperty("outboundTag", outbound)
             out.add(rule)
         }
         return out
@@ -353,9 +429,9 @@ object ConfigBuilder {
     // ------------------------------------------------------------- outbound
 
     /** تبدیل یک سرور به یک outbound کامل Xray */
-    fun outbound(server: ServerConfig, settings: AppSettings): JsonObject {
+    fun outbound(server: ServerConfig, settings: AppSettings, tag: String = TAG_PROXY): JsonObject {
         val o = JsonObject()
-        o.addProperty("tag", TAG_PROXY)
+        o.addProperty("tag", tag)
         o.addProperty("protocol", protocolName(server))
 
         val address = server.address.trim()

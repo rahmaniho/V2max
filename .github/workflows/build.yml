@@ -71,10 +71,11 @@ jobs:
           gradle --no-daemon testReleaseUnitTest 2>&1 | tee test-out.log
 
       - name: Report test failures
+        if: always()
         run: |
-          if [ -f test-out.log ] && grep -qE "FAILED|tests completed" test-out.log; then
-            grep -E "FAILED|tests completed|error:" test-out.log | head -40 | while IFS= read -r line; do
-              echo "::warning title=tests::$line"
+          if [ -f test-out.log ]; then
+            grep -E "^e: |FAILED|tests completed|AssertionError|Exception|error:" test-out.log | head -40 | while IFS= read -r line; do
+              echo "::error title=tests::$line"
             done
           fi
 

@@ -49,6 +49,7 @@ fun SettingsScreen(
     onOpenPerApp: () -> Unit = {},
     onSetFreeSources: (Boolean) -> Unit = {},
     onCheckUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
     onScanQr: () -> Unit = {},
     onOpenRouting: () -> Unit = {},
     onOpenDiag: () -> Unit = {},
@@ -372,9 +373,17 @@ fun SettingsScreen(
         item {
             SettingValue(
                 title = "بررسی به‌روزرسانی",
-                subtitle = "اگر نسخه‌ی جدیدی منتشر شده باشد، لینک دانلود نمایش داده می‌شود",
+                subtitle = "دانلود و نصب نسخه‌ی جدید از داخل برنامه (با بررسی امضا)",
                 value = "بررسی"
             ) { onCheckUpdate() }
+        }
+
+        item {
+            SettingValue(
+                title = "نصب به‌روزرسانی",
+                subtitle = "اگر نسخه‌ی جدید موجود باشد، مستقیم دانلود و نصب می‌شود",
+                value = "نصب"
+            ) { onInstallUpdate() }
         }
 
         item {
@@ -385,7 +394,57 @@ fun SettingsScreen(
             ) { onScanQr() }
         }
 
+        item { GroupTitle("موتور اتصال") }
+
+        item {
+            SettingSwitch(
+                title = "استخر خودکار سرورها",
+                subtitle = "چند سرور برتر هم‌زمان در تانل قرار می‌گیرند و هسته سریع‌ترین را انتخاب می‌کند؛ قطعی کمتر و سرعت بیشتر",
+                checked = settings.balancer
+            ) { value -> onChange { it.copy(balancer = value) } }
+        }
+
+        item {
+            SettingValue(
+                title = "تعداد سرور در استخر",
+                subtitle = "سرورهای بیشتر = پایداری بالاتر، مصرف تست بیشتر",
+                value = "${settings.balancerSize} سرور"
+            ) {
+                val next = when (settings.balancerSize) {
+                    2 -> 3
+                    3 -> 4
+                    4 -> 5
+                    else -> 2
+                }
+                onChange { it.copy(balancerSize = next) }
+            }
+        }
+
+        item {
+            SettingSwitch(
+                title = "مسیریابی دقیق ایران (geoip/geosite)",
+                subtitle = "دانلود خودکار فایل‌های رسمی؛ دامنه و IPهای ایرانی مستقیم و بدون تانل باز می‌شوند",
+                checked = settings.geoAssets
+            ) { value -> onChange { it.copy(geoAssets = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "صرفه‌جویی باتری",
+                subtitle = "با خاموش بودن صفحه، فاصله‌ی تست‌های سلامت از ۲ ثانیه به ۱۵ ثانیه می‌رسد",
+                checked = settings.batterySaver
+            ) { value -> onChange { it.copy(batterySaver = value) } }
+        }
+
         item { GroupTitle("حریم خصوصی و امنیت") }
+
+        item {
+            SettingSwitch(
+                title = "Kill Switch (مسدودسازی هنگام قطعی)",
+                subtitle = "اگر تانل ناخواسته قطع شود، اینترنت مسدود می‌ماند تا داده‌ای بیرون از تانل نرود؛ با اعلان یا دکمه‌ی «رفع مسدودی» برمی‌گردد",
+                checked = settings.killSwitch
+            ) { value -> onChange { it.copy(killSwitch = value) } }
+        }
 
         item {
             SettingSwitch(

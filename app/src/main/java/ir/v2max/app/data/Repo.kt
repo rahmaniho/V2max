@@ -42,6 +42,28 @@ object Repo {
     val network = MutableStateFlow(NetworkAssessment())
     val update = MutableStateFlow(UpdateInfo())
 
+    /** تاریخچه‌ی تأخیر برای نمودار زنده‌ی صفحه‌ی خانه (آخرین ۶۰ نمونه) */
+    val latencyHistory = MutableStateFlow<List<Int>>(emptyList())
+
+    /** تعداد سرورهای استخر فعال در اتصال جاری */
+    val poolSize = MutableStateFlow(0)
+
+    fun pushLatency(ms: Int) {
+        if (ms <= 0) return
+        val current = latencyHistory.value
+        latencyHistory.value = (current + ms).takeLast(60)
+    }
+
+    fun clearLatencyHistory() {
+        latencyHistory.value = emptyList()
+    }
+
+    /** پیام نتیجه‌ی نصب به‌روزرسانی (از PackageInstaller) */
+    val installMessage = MutableStateFlow("")
+
+    /** پیشرفت دانلود به‌روزرسانی: 0..1 و صفر یعنی غیرفعال */
+    val updateProgress = MutableStateFlow(0f)
+
     @Volatile
     private var loaded = false
 

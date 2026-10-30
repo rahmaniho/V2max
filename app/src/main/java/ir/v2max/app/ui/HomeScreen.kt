@@ -76,6 +76,12 @@ fun HomeScreen(
     onRefreshNetwork: () -> Unit,
     onOpenUpdate: () -> Unit,
     onDismissUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit = {},
+    killSwitchBlocked: Boolean = false,
+    onUnblock: () -> Unit = {},
+    latencySamples: List<Int> = emptyList(),
+    poolSize: Int = 0,
+    updateProgress: Float = 0f,
     coreVersion: String
 ) {
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
@@ -135,14 +141,48 @@ fun HomeScreen(
             }
         }
 
+        if (killSwitchBlocked) {
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            "اینترنت مسدود است (Kill Switch)",
+                            style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                            color = V2.Red
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "تانل قطع شده و برای محافظت از حریم خصوصی، ترافیک مسدود مانده است.",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                            color = V2.TextMuted
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        GhostButton(text = "رفع مسدودی و بازگشت اینترنت", modifier = Modifier.fillMaxWidth()) {
+                            onUnblock()
+                        }
+                    }
+                }
+            }
+        }
+
         if (update.hasUpdate) {
             item {
                 UpdateBanner(
                     version = update.version,
                     onOpen = onOpenUpdate,
-                    onDismiss = onDismissUpdate
+                    onDismiss = onDismissUpdate,
+                    onInstall = onInstallUpdate,
+                    progress = updateProgress
                 )
             }
+        }
+
+        item {
+            LatencyCard(
+                samples = latencySamples,
+                poolSize = poolSize,
+                connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED
+            )
         }
 
         item { NetworkCard(network, onRefreshNetwork) }
