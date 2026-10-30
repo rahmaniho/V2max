@@ -54,7 +54,8 @@ fun SettingsScreen(
     onOpenRouting: () -> Unit = {},
     onOpenDiag: () -> Unit = {},
     onBackup: () -> Unit = {},
-    onRestore: () -> Unit = {}
+    onRestore: () -> Unit = {},
+    onCopyCrashLog: () -> Unit = {}
 ) {
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
@@ -384,6 +385,14 @@ fun SettingsScreen(
                 subtitle = "اگر نسخه‌ی جدید موجود باشد، مستقیم دانلود و نصب می‌شود",
                 value = "نصب"
             ) { onInstallUpdate() }
+        }
+
+        item {
+            SettingValue(
+                title = "گزارش آخرین خطا",
+                subtitle = "اگر برنامه بسته شد، متن خطا اینجا کپی می‌شود تا برای رفع مشکل بفرستید",
+                value = "کپی"
+            ) { onCopyCrashLog() }
         }
 
         item {

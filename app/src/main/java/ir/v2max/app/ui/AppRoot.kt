@@ -428,7 +428,20 @@ fun AppRoot(vm: AppViewModel) {
                         onInstallUpdate = { vm.downloadAndInstallUpdate() },
                         onScanQr = { showQr = true },
                         onOpenRouting = { showRouting = true },
-                        onOpenDiag = { showDiag = true }
+                        onOpenDiag = { showDiag = true },
+                        onCopyCrashLog = {
+                            val log = ir.v2max.app.util.CrashLog.last()
+                            if (log.isBlank()) {
+                                vm.showMessage("گزارش خطایی ثبت نشده است")
+                            } else {
+                                val text = log.take(3000)
+                                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                                clipboard?.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("V2max crash", text)
+                                )
+                                vm.showMessage("گزارش خطا کپی شد؛ برای بررسی بفرستید")
+                            }
+                        }
                     )
                 }
             }

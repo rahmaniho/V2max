@@ -18,6 +18,17 @@ object PublicSources {
 
     fun forUrl(url: String): PublicSource? = byUrl[url.trim().trimEnd('/')]
 
+    /**
+     * منابعی که به‌طور پیش‌فرض فعال می‌شوند.
+     *
+     * نسخه‌های قبلی هر ۲۷ منبع را همزمان می‌گرفتند؛ نتیجه: شروع کند، مصرف حافظه‌ی
+     * زیاد و گاهی بسته‌شدن برنامه روی گوشی‌های ضعیف. حالا فقط چند منبع سبک و
+     * به‌روز به‌صورت پیش‌فرض روشن است و بقیه از دکمه‌ی «منابع» اضافه می‌شوند.
+     */
+    val DEFAULT: List<PublicSource> by lazy { ALL.take(DEFAULT_COUNT) }
+
+    private const val DEFAULT_COUNT = 6
+
     val ALL: List<PublicSource> = listOf(
         PublicSource(
             name = "🌍 Au1rxx (فقط تأییدشده‌ها)",

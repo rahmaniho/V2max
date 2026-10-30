@@ -29,7 +29,7 @@ import kotlin.coroutines.coroutineContext
 object HealthScanner {
 
     private const val TCP_TIMEOUT_MS = 2200
-    private const val TCP_CONCURRENCY = 40
+    private const val TCP_CONCURRENCY = 24
     private const val REAL_CONCURRENCY = 6
     private const val MAX_REAL_TESTS = 24
 

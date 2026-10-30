@@ -236,8 +236,8 @@ data class AppSettings(
     var mtu: Int = 1500,
     var ipv6: Boolean = false,
 
-    /** بررسی همزمان پینگ گوگل، اینستاگرام و یوتیوب پیش از اتصال */
-    var multiPing: Boolean = true,
+    /** بررسی همزمان پینگ گوگل، اینستاگرام و یوتیوب پیش از اتصال (کندتر؛ پیش‌فرض خاموش) */
+    var multiPing: Boolean = false,
 
     /** بررسی عمیق شبکه‌ی اپراتور (DNS/DPI/تأخیر/لرزش) پیش از هر تست */
     var deepProbe: Boolean = true,
@@ -251,8 +251,8 @@ data class AppSettings(
     /** بررسی خودکار نسخه‌ی جدید برنامه */
     var autoUpdateCheck: Boolean = true,
 
-    /** سنجش سرعت دانلود واقعی برای چند سرور برتر */
-    var speedTest: Boolean = true,
+    /** سنجش سرعت دانلود واقعی برای چند سرور برتر (زمان‌بر؛ پیش‌فرض خاموش) */
+    var speedTest: Boolean = false,
 
     /** چند سرور برتر سرعت‌شان سنجیده شود */
     var speedTestCount: Int = 3,

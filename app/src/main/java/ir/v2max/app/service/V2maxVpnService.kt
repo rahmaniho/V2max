@@ -67,7 +67,13 @@ class V2maxVpnService : VpnService() {
             private set
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** هیچ خطایی در کارهای سرویس نباید باعث بسته‌شدن اجباری برنامه شود */
+    private val serviceErrorHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+        ir.v2max.app.util.CrashLog.record(throwable, "vpnService")
+        Log.e(TAG, "unhandled service error", throwable)
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + serviceErrorHandler)
 
     private var tun: ParcelFileDescriptor? = null
     private var currentServer: ServerConfig? = null

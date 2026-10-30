@@ -36,7 +36,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -48,51 +47,27 @@ import ir.v2max.app.data.NetworkAssessment
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.util.Format
 
-/** پس‌زمینه‌ی گرادیانی برنامه */
+/** پس‌زمینه‌ی تخت برنامه (سبک‌تر از گرادیان: هر فریم ارزان‌تر رسم می‌شود) */
 @Composable
 fun AppBackground(content: @Composable () -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    listOf(Color(0xFF081120), V2.Background, V2.BackgroundDeep)
-                )
-            )
-    ) {
-        // هاله‌ی نورانی بالای صفحه
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(320.dp)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(V2.Mint.copy(alpha = 0.10f), Color.Transparent),
-                        radius = 620f
-                    )
-                )
-        )
+    Box(modifier = Modifier.fillMaxSize().background(V2.Background)) {
         content()
     }
 }
 
-/** کارت شیشه‌ای (Glassmorphism) */
+/** کارت تخت و ساده — بدون گرادیان و بلور (سریع‌تر رندر می‌شود) */
 @Composable
 fun GlassCard(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
-    val shape = RoundedCornerShape(22.dp)
+    val shape = RoundedCornerShape(16.dp)
     Box(
         modifier = modifier
             .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(V2.Surface.copy(alpha = 0.96f), Color(0xFF0A121D))
-                )
-            )
-            .border(1.dp, V2.Stroke.copy(alpha = 0.85f), shape)
+            .background(V2.Surface)
+            .border(1.dp, V2.Stroke, shape)
             .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
         content()
@@ -182,15 +157,12 @@ fun PrimaryButton(
     icon: ImageVector? = null,
     onClick: () -> Unit
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
-            .height(54.dp)
+            .height(52.dp)
             .clip(shape)
-            .background(
-                if (enabled) Brush.horizontalGradient(listOf(V2.Mint, Color(0xFF37D6C0)))
-                else Brush.horizontalGradient(listOf(V2.SurfaceHigh, V2.SurfaceHigh))
-            )
+            .background(if (enabled) V2.Mint else V2.SurfaceHigh)
             .clickable(enabled = enabled && !loading) { onClick() }
             .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.Center,
@@ -199,17 +171,17 @@ fun PrimaryButton(
         if (loading) {
             CircularProgressIndicator(
                 modifier = Modifier.size(20.dp),
-                color = Color(0xFF06201A),
+                color = Color(0xFF0B1220),
                 strokeWidth = 2.dp
             )
             Spacer(Modifier.width(10.dp))
         } else if (icon != null) {
-            Icon(icon, contentDescription = null, tint = Color(0xFF06201A), modifier = Modifier.size(20.dp))
+            Icon(icon, contentDescription = null, tint = Color(0xFF0B1220), modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
         }
         Text(
             text = text,
-            color = if (enabled) Color(0xFF06201A) else V2.TextMuted,
+            color = if (enabled) Color(0xFF0B1220) else V2.TextMuted,
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp
         )
@@ -224,12 +196,12 @@ fun GhostButton(
     icon: ImageVector? = null,
     onClick: () -> Unit
 ) {
-    val shape = RoundedCornerShape(18.dp)
+    val shape = RoundedCornerShape(14.dp)
     Row(
         modifier = modifier
-            .height(54.dp)
+            .height(52.dp)
             .clip(shape)
-            .background(V2.Surface.copy(alpha = 0.8f))
+            .background(V2.SurfaceHigh)
             .border(1.dp, V2.Stroke, shape)
             .clickable { onClick() }
             .padding(horizontal = 18.dp),
@@ -330,7 +302,7 @@ fun ScanBanner(scan: ScanState) {
                                 .fillMaxWidth(scan.progress.coerceIn(0f, 1f))
                                 .height(6.dp)
                                 .clip(RoundedCornerShape(50))
-                                .background(Brush.horizontalGradient(listOf(V2.Mint, V2.Sky)))
+                                .background(V2.Mint)
                         )
                     }
                 }
@@ -392,7 +364,7 @@ fun SyncBanner(sync: SyncState) {
                                 .fillMaxWidth(sync.progress.coerceIn(0f, 1f))
                                 .height(6.dp)
                                 .clip(RoundedCornerShape(50))
-                                .background(Brush.horizontalGradient(listOf(V2.Sky, V2.Mint)))
+                                .background(V2.Mint)
                         )
                     }
                 }
@@ -612,15 +584,11 @@ enum class Tab(val label: String, val icon: ImageVector) {
 
 @Composable
 fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
-    val shape = RoundedCornerShape(26.dp)
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp)
-            .clip(shape)
-            .background(Color(0xF20B131E))
-            .border(1.dp, V2.Stroke.copy(alpha = 0.8f), shape)
-            .padding(horizontal = 6.dp, vertical = 6.dp),
+            .background(V2.BackgroundDeep)
+            .padding(horizontal = 4.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -629,10 +597,10 @@ fun BottomBar(current: Tab, onSelect: (Tab) -> Unit) {
             Column(
                 modifier = Modifier
                     .weight(1f)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(if (active) V2.Mint.copy(alpha = 0.12f) else Color.Transparent)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (active) V2.SurfaceHigh else Color.Transparent)
                     .clickable { onSelect(tab) }
-                    .padding(vertical = 8.dp),
+                    .padding(vertical = 7.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(

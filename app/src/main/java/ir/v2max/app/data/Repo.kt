@@ -147,6 +147,22 @@ object Repo {
     }
 
     /**
+     * سقف تعداد کانفیگ‌های نگه‌داری‌شده.
+     *
+     * نگه‌داشتن هزاران کانفیگ، حافظه و زمان ذخیره‌سازی/آزمایش را چند برابر می‌کند و
+     * روی گوشی‌های کم‌حافظه باعث بسته‌شدن برنامه می‌شود. سرورهای موردعلاقه همیشه
+     * می‌مانند و بقیه بر اساس امتیاز (کیفیت) نگه داشته می‌شوند.
+     */
+    private const val MAX_SERVERS = 700
+
+    private fun capped(list: List<ServerConfig>): List<ServerConfig> {
+        if (list.size <= MAX_SERVERS) return list
+        val favorites = list.filter { it.favorite }
+        val rest = list.filterNot { it.favorite }.sortedBy { it.score() }
+        return (favorites + rest.take((MAX_SERVERS - favorites.size).coerceAtLeast(0))).distinctBy { it.id }
+    }
+
+    /**
      * افزودن کانفیگ‌های جدید با حذف تکراری‌ها.
      * @return تعداد کانفیگ‌های افزوده‌شده
      */
@@ -164,7 +180,7 @@ object Repo {
             }
         }
         if (added > 0) {
-            _servers.value = current
+            _servers.value = capped(current)
             persistServers()
             if (_selectedId.value.isBlank()) setSelected(current.lastOrNull()?.id.orEmpty())
         }
@@ -206,7 +222,7 @@ object Repo {
             )
         }
         val others = _servers.value.filter { it.subId != subId }
-        _servers.value = others + merged
+        _servers.value = capped(others + merged)
         persistServers()
         if (serverById(_selectedId.value) == null) {
             setSelected(_servers.value.firstOrNull()?.id.orEmpty())
@@ -344,7 +360,7 @@ object Repo {
     @Synchronized
     fun ensureBuiltInSources(): Int {
         val known = _subs.value.map { it.url.trim().trimEnd('/') }.toHashSet()
-        val toAdd = PublicSources.ALL.filter { it.url.trim().trimEnd('/') !in known }.map {
+        val toAdd = PublicSources.DEFAULT.filter { it.url.trim().trimEnd('/') !in known }.map {
             Subscription(name = it.name, url = it.url, builtIn = true)
         }
         if (toAdd.isEmpty()) return 0
