@@ -112,7 +112,8 @@ object LinkParser {
         val beforeQuery = main.substringBefore("?")
 
         val userInfo = beforeQuery.substringBeforeLast("@", "")
-        val hostPort = beforeQuery.substringAfterLast("@", beforeQuery)
+        // بعضی لینک‌ها مسیر «/» بعد از پورت دارند (anytls://pass@host:port/?...) و باید حذف شود
+        val hostPort = beforeQuery.substringAfterLast("@", beforeQuery).substringBefore("/")
         if (hostPort.isBlank()) return null
 
         val host: String
@@ -222,7 +223,7 @@ object LinkParser {
         val beforeQuery = main.substringBefore("?")
 
         val userInfo = beforeQuery.substringBeforeLast("@", "")
-        val hostPort = beforeQuery.substringAfterLast("@", "")
+        val hostPort = beforeQuery.substringAfterLast("@", "").substringBefore("/")
         if (hostPort.isBlank() || userInfo.isBlank()) return null
 
         val host: String

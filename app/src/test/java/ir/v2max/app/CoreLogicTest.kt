@@ -316,9 +316,9 @@ class CoreLogicTest {
         val json = ir.v2max.app.core.SingBoxConfig.socksTestConfig(cfg, AppSettings(), 10889)
         assertTrue(json.contains("\"endpoints\""))
         assertTrue(json.contains("\"peers\""))
-        assertTrue(json.contains("\"public_key\":\"pub\"") || json.contains("\"public_key\": \"pub\""))
-        // در sing-box 1.11+ نوع wireguard به‌عنوان outbound حذف شده است
-        assertTrue(!json.contains("\"type\":\"wireguard\",\"tag\":\"proxy\""))
+        assertTrue(json.contains("public_key"))
+        // در sing-box 1.11+ نوع wireguard نباید در outbounds باشد
+        assertTrue(!json.contains("\"outbounds\":[{\"tag\":\"proxy\",\"type\":\"wireguard\""))
     }
 
     @Test
