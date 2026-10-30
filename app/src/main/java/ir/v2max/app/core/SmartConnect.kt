@@ -135,7 +135,12 @@ object SmartConnect {
             val protected = Repo.servers.value
                 .filter { it.id in outcome.deadIds && it.favorite }
                 .map { it.id }
-            val toRemove = outcome.deadIds.filterNot { it in protected }
+            // سرورهای پروتکل‌های جدید (sing-box) با موتور تست متفاوتی سنجیده می‌شوند و
+            // تا وقتی واقعاً آزموده نشده‌اند حذف نمی‌شوند تا کانفیگ سالم از دست نرود
+            val singBoxIds = Repo.servers.value
+                .filter { it.needsSingBox() && it.realPing <= 0 }
+                .map { it.id }
+            val toRemove = outcome.deadIds.filterNot { it in protected || it in singBoxIds }
             if (toRemove.isNotEmpty()) {
                 Repo.removeServers(toRemove)
                 removed = toRemove.size

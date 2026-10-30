@@ -42,7 +42,43 @@ val downloadLibV2ray by tasks.registering {
     }
 }
 
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(downloadLibV2ray) }
+// ---------------------------------------------------------------------------
+// libbox (sing-box, gomobile) — هسته‌ی دوم برای پروتکل‌هایی که Xray پشتیبانی نمی‌کند:
+// Hysteria2 / TUIC / WireGuard / AnyTLS
+// ---------------------------------------------------------------------------
+val libBoxVersion = "1.14.4"
+val libBoxUrl =
+    "https://github.com/singbox-android/libbox/releases/download/$libBoxVersion/libbox.aar"
+val libBoxAar = libsDirProvider.file("libbox.aar")
+
+val downloadLibBox by tasks.registering {
+    description = "Downloads the sing-box native library (libbox.aar) if it is missing"
+    val target = libBoxAar.asFile
+    outputs.file(target)
+    doLast {
+        if (target.exists() && target.length() > 10_000_000L) {
+            logger.lifecycle("libbox.aar already present (${target.length()} bytes)")
+            return@doLast
+        }
+        target.parentFile?.mkdirs()
+        logger.lifecycle("Downloading $libBoxUrl ...")
+        val tmp = File(target.parentFile, "libbox.aar.part")
+        URI(libBoxUrl).toURL().openStream().use { input ->
+            tmp.outputStream().use { output -> input.copyTo(output) }
+        }
+        if (tmp.length() < 10_000_000L) {
+            tmp.delete()
+            throw GradleException("Download of libbox.aar failed (file too small)")
+        }
+        tmp.renameTo(target)
+        logger.lifecycle("libbox.aar ready (${target.length()} bytes)")
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(downloadLibV2ray)
+    dependsOn(downloadLibBox)
+}
 
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
@@ -57,8 +93,8 @@ android {
         applicationId = "ir.v2max.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.14.0"
+        versionCode = 16
+        versionName = "2.0.0"
         resourceConfigurations += listOf("fa", "en")
     }
 
