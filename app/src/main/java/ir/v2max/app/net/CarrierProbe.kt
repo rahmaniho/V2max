@@ -275,12 +275,18 @@ object CarrierProbe {
         loss: Int,
         latency: Int
     ): FragmentProfile = when (family) {
-        CarrierFamily.MCI -> if (dpi || loss > 0) FragmentProfile.AGGRESSIVE else FragmentProfile.BALANCED
+        CarrierFamily.MCI -> when {
+            tlsBlocked >= 3 -> FragmentProfile.MAHSA
+            dpi || loss > 0 -> FragmentProfile.AGGRESSIVE
+            else -> FragmentProfile.BALANCED
+        }
         CarrierFamily.TCI -> FragmentProfile.AGGRESSIVE
         CarrierFamily.IRANCELL -> if (tlsBlocked >= 2) FragmentProfile.BALANCED else FragmentProfile.LIGHT
         CarrierFamily.RIGHTEL -> FragmentProfile.BALANCED
         CarrierFamily.WIFI -> if (dpi) FragmentProfile.BALANCED else FragmentProfile.LIGHT
         CarrierFamily.OTHER -> when {
+            // شبکه‌های بسیار سخت‌گیر: پروفایل مهسا (تجربه‌ی MahsaNG)
+            dpi && tlsBlocked >= 3 -> FragmentProfile.MAHSA
             dpi && tlsBlocked >= 2 -> FragmentProfile.AGGRESSIVE
             dpi -> FragmentProfile.BALANCED
             loss > 0 || latency > 400 -> FragmentProfile.BALANCED
