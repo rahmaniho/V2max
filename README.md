@@ -125,6 +125,26 @@
 - حذف خودکار کانفیگ‌های تکراری (در سطح همه‌ی منابع) و حفظ علاقه‌مندی‌ها/نتایج تست هنگام به‌روزرسانی اشتراک
 - سقف هوشمند تعداد کانفیگ برای هر منبع تا حافظه و سرعت برنامه حفظ شود
 
+### دو هسته، یک برنامه (نسخه ۲.۰)
+از نسخه ۲.۰، V2max دو هسته دارد و به‌طور خودکار هسته‌ی درست را برای هر سرور انتخاب می‌کند:
+
+| هسته | پروتکل‌ها |
+|---|---|
+| **Xray-core** (libv2ray) | VLESS، VMess، Trojan، Shadowsocks، SOCKS، HTTP |
+| **sing-box** (libbox 1.14) | Hysteria2، TUIC v5، AnyTLS، WireGuard |
+
+- **انتخاب خودکار هسته:** هر کانفیگ بر اساس پروتکلش (`needsSingBox()`) به هسته‌ی مناسب داده می‌شود؛
+  کاربر لازم نیست کاری انجام دهد.
+- **تست پیش از اتصال با همان هسته:** سرورهای Hysteria2/TUIC/AnyTLS/WireGuard هم با
+  یک inbound محلی SOCKS و درخواست واقعی سنجیده می‌شوند، نه فقط پینگ TCP.
+- **منابع اختصاصی هر پروتکل:** در صفحه‌ی «اشتراک‌ها» → «منابع»، برای هر پروتکل جدید
+  منبع رایگان جداگانه‌ای ثبت شده است (Hysteria2، TUIC، AnyTLS، WireGuard و منابع ترکیبی).
+- **کانفیگ معتبر طبق قالب رسمی ۱.۱۴:** WireGuard به‌صورت `endpoints` (چون outbound آن حذف شده)،
+  و وجود `domain_resolver` برای سرورهای دامنه‌ای الزامی است — هر دو رعایت می‌شوند و
+  کانفیگ پیش از اجرا با `Libbox.checkConfig` اعتبارسنجی می‌شود.
+- **بدون تعارض نیتیو:** کلاس‌های مشترک gomobile (`go.*`) هنگام ساخت از `libbox.aar` حذف می‌شوند
+  تا هر دو هسته در یک APK کنار هم کار کنند.
+
 ### پروتکل‌ها و انتقال‌ها
 | پروتکل | انتقال‌های پشتیبانی‌شده |
 |---|---|
@@ -132,7 +152,10 @@
 | VMess | TCP، WS، gRPC، H2، HTTPUpgrade، KCP |
 | Trojan | TCP، WS، gRPC، H2 |
 | Shadowsocks | TCP (+ TLS) |
-| Hysteria2 | QUIC (+ Salamander obfs) |
+| Hysteria2 | QUIC (+ Salamander obfs) — هسته‌ی sing-box |
+| TUIC v5 | QUIC (ALPN h3، congestion control bbr) — هسته‌ی sing-box |
+| AnyTLS | TLS + padding — هسته‌ی sing-box |
+| WireGuard | UDP (Cloudflare WARP و سرورهای شخصی، با reserved) — هسته‌ی sing-box |
 | SOCKS / HTTP | — |
 
 - پشتیبانی کامل از **REALITY**، uTLS (fingerprint)، ALPN، ECH، AllowInsecure
@@ -268,11 +291,14 @@ app/src/main/java/ir/v2max/app/
 ├── V2maxApp.kt                راه‌اندازی مخزن داده
 ├── data/
 │   ├── Models.kt              مدل‌های سرور، اشتراک، تنظیمات و وضعیت‌ها
-│   ├── PublicSources.kt       فهرست ۲۷ منبع رایگان عمومی (اشتراک‌های پیش‌فرض)
+│   ├── PublicSources.kt       فهرست منابع رایگان عمومی + منابع اختصاصی هر پروتکل
 │   └── Repo.kt                مخزن مرکزی (StateFlow + ذخیره‌سازی)
 ├── core/
 │   ├── ConfigBuilder.kt       ساخت JSON کانفیگ Xray (inbound/outbound/DNS/routing)
 │   ├── XrayCore.kt            پوشش thread-safe روی libv2ray
+│   ├── SingBoxConfig.kt       ساخت کانفیگ JSON هسته‌ی sing-box (outbound/endpoint/DNS)
+│   ├── SingBoxCore.kt         چرخه‌ی عمر libbox (setup/start/stop/آمار)
+│   ├── SingBoxPlatform.kt     پل اندروید برای sing-box (ساخت TUN و protect سوکت‌ها)
 │   ├── SmartConnect.kt        منطق اتصال هوشمند و انتخاب بهترین سرور
 │   ├── Failover.kt            موتور جایگزینی خودکار سرور
 │   └── TunnelController.kt    فرمان‌دهی به سرویس
@@ -281,7 +307,9 @@ app/src/main/java/ir/v2max/app/
 │   ├── UpdateChecker.kt       بررسی نسخه‌ی جدید از گیت‌هاب
 │   ├── LinkParser.kt          پارس vmess/vless/trojan/ss/…
 │   ├── SubscriptionFetcher.kt دریافت اشتراک با OkHttp
-│   └── HealthScanner.kt       اسکن سه‌مرحله‌ای (TCP + گوگل + اینستاگرام/یوتیوب)
+│   ├── HealthScanner.kt       اسکن سه‌مرحله‌ای (TCP + گوگل + اینستاگرام/یوتیوب)
+│   ├── SingBoxTester.kt       تست واقعی سرورهای sing-box پیش از اتصال
+│   └── SocksProbe.kt          سنجش تأخیر از طریق SOCKS محلی
 ├── service/
 │   ├── V2maxVpnService.kt     VpnService + چرخه‌ی عمر هسته + آمار ترافیک + split tunneling
 │   ├── Notifier.kt            نوتیفیکیشن دائمی + اکشن‌های سرور بعدی/تست مجدد + سقف داده

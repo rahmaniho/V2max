@@ -8,10 +8,15 @@ import ir.v2max.app.data.RoutingMode
 import ir.v2max.app.data.ServerConfig
 
 /**
- * ساخت کانفیگ JSON برای هسته‌ی sing-box (libbox).
+ * ساخت کانفیگ JSON برای هسته‌ی sing-box (libbox 1.14).
  *
  * این هسته فقط برای پروتکل‌هایی استفاده می‌شود که Xray-core پشتیبانی نمی‌کند:
  * Hysteria2، TUIC، AnyTLS و WireGuard. برای بقیه‌ی پروتکل‌ها همان ConfigBuilder (Xray) به کار می‌رود.
+ *
+ * نکات مهم قالب 1.14 که در این فایل رعایت شده‌اند:
+ *  - از نسخه‌ی 1.11، outbound نوع «wireguard» حذف شده و باید به‌صورت endpoint نوشته شود.
+ *  - از نسخه‌ی 1.14، اگر آدرس سرور دامنه باشد، وجود `domain_resolver` (یا
+ *    `route.default_domain_resolver`) الزامی است؛ بنابراین همیشه یک DNS محلی تعریف می‌کنیم.
  *
  * طراحی محافظه‌کارانه: کانفیگ تا حد امکان ساده ساخته می‌شود و پیش از اجرا با
  * `Libbox.checkConfig` اعتبارسنجی می‌گردد تا خطای قالب هرگز کل برنامه را زمین نزند.
@@ -20,9 +25,10 @@ object SingBoxConfig {
 
     const val TAG_PROXY = "proxy"
     const val TAG_DIRECT = "direct"
-    const val TAG_BLOCK = "block"
     const val TAG_TUN = "tun-in"
     const val TAG_SOCKS = "socks-in"
+
+    private const val TAG_DNS = "dns-local"
 
     private const val TUN_ADDRESS = "172.19.0.1/30"
 
@@ -59,8 +65,8 @@ object SingBoxConfig {
                 )
             }
         )
-        root.add("outbounds", outbounds(server, settings))
-        root.add("route", route(settings, listOf(TAG_PROXY)))
+        addProxyEntries(root, server, settings)
+        root.add("route", route())
         return root.toString()
     }
 
@@ -80,9 +86,28 @@ object SingBoxConfig {
                 )
             }
         )
-        root.add("outbounds", outbounds(server, settings))
-        root.add("route", route(settings, listOf(TAG_PROXY)))
+        addProxyEntries(root, server, settings)
+        root.add("route", route())
         return root.toString()
+    }
+
+    /**
+     * افزودن مسیر پروکسی به کانفیگ: برای WireGuard از `endpoints` و برای بقیه از `outbounds` استفاده می‌شود.
+     */
+    private fun addProxyEntries(root: JsonObject, server: ServerConfig, settings: AppSettings) {
+        val outbounds = JsonArray().apply {
+            if (server.proto != Proto.WIREGUARD) add(proxyOutbound(server, settings))
+            add(
+                JsonObject().apply {
+                    addProperty("type", "direct")
+                    addProperty("tag", TAG_DIRECT)
+                }
+            )
+        }
+        root.add("outbounds", outbounds)
+        if (server.proto == Proto.WIREGUARD) {
+            root.add("endpoints", JsonArray().apply { add(wireGuardEndpoint(server, settings)) })
+        }
     }
 
     private fun base(settings: AppSettings): JsonObject = JsonObject().apply {
@@ -92,27 +117,29 @@ object SingBoxConfig {
                 addProperty("timestamp", true)
             }
         )
-    }
-
-    private fun outbounds(server: ServerConfig, settings: AppSettings): JsonArray = JsonArray().apply {
-        add(proxyOutbound(server, settings))
+        // resolver محلی برای تبدیل دامنه‌ی سرورها؛ بدون این بخش، sing-box 1.14
+        // کانفیگ‌هایی که آدرس سرورشان دامنه است را رد می‌کند.
         add(
-            JsonObject().apply {
-                addProperty("type", "direct")
-                addProperty("tag", TAG_DIRECT)
-            }
-        )
-        add(
-            JsonObject().apply {
-                addProperty("type", "block")
-                addProperty("tag", TAG_BLOCK)
+            "dns", JsonObject().apply {
+                add(
+                    "servers",
+                    JsonArray().apply {
+                        add(
+                            JsonObject().apply {
+                                addProperty("type", "local")
+                                addProperty("tag", TAG_DNS)
+                            }
+                        )
+                    }
+                )
             }
         )
     }
 
     /** مسیریابی ساده: آدرس‌های خصوصی مستقیم، بقیه از پروکسی */
-    private fun route(settings: AppSettings, finals: List<String>): JsonObject = JsonObject().apply {
-        addProperty("final", finals.first())
+    private fun route(): JsonObject = JsonObject().apply {
+        addProperty("final", TAG_PROXY)
+        addProperty("default_domain_resolver", TAG_DNS)
         add(
             "rules",
             JsonArray().apply {
@@ -138,12 +165,10 @@ object SingBoxConfig {
                 o.addProperty("server", server.address.trim())
                 o.addProperty("server_port", server.port.coerceIn(1, 65535))
                 o.addProperty("password", server.password)
-                o.addProperty("up_mbps", 100)
-                o.addProperty("down_mbps", 100)
                 if (server.obfsType.isNotBlank() && server.obfsPassword.isNotBlank()) {
                     o.add(
                         "obfs", JsonObject().apply {
-                            addProperty("type", server.obfsType)
+                            addProperty("type", server.obfsType.ifBlank { "salamander" })
                             addProperty("password", server.obfsPassword)
                         }
                     )
@@ -155,7 +180,7 @@ object SingBoxConfig {
                 o.addProperty("type", "tuic")
                 o.addProperty("server", server.address.trim())
                 o.addProperty("server_port", server.port.coerceIn(1, 65535))
-                o.addProperty("uuid", server.uuid)
+                o.addProperty("uuid", server.uuid.trim())
                 o.addProperty("password", server.password)
                 o.addProperty("congestion_control", "bbr")
                 o.addProperty("udp_relay_mode", "native")
@@ -168,21 +193,9 @@ object SingBoxConfig {
                 o.addProperty("server", server.address.trim())
                 o.addProperty("server_port", server.port.coerceIn(1, 65535))
                 o.addProperty("password", server.password)
+                o.addProperty("idle_session_check_interval", "30s")
+                o.addProperty("idle_session_timeout", "30s")
                 o.add("tls", tls(server, defaultAlpn = null))
-            }
-
-            Proto.WIREGUARD -> {
-                o.addProperty("type", "wireguard")
-                o.addProperty("server", server.address.trim())
-                o.addProperty("server_port", server.port.coerceIn(1, 65535))
-                addLocalAddresses(o, server)
-                o.addProperty("private_key", server.wgPrivateKey)
-                o.addProperty("peer_public_key", server.wgPublicKey)
-                val reserved = server.wgReserved.split(",").mapNotNull { it.trim().toIntOrNull() }
-                if (reserved.size == 3) {
-                    o.add("reserved", JsonArray().apply { reserved.forEach { add(it) } })
-                }
-                o.addProperty("mtu", settings.mtu.coerceIn(1280, 1420))
             }
 
             else -> {
@@ -194,11 +207,47 @@ object SingBoxConfig {
         return o
     }
 
-    private fun addLocalAddresses(o: JsonObject, server: ServerConfig) {
-        val raw = server.wgAddress.ifBlank { "172.16.0.2/32" }
-        val list = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
-        o.add("local_address", JsonArray().apply { list.forEach { add(it) } })
+    /** WireGuard در sing-box 1.11+ به‌صورت endpoint تعریف می‌شود (outbound آن حذف شده است) */
+    fun wireGuardEndpoint(server: ServerConfig, settings: AppSettings): JsonObject = JsonObject().apply {
+        addProperty("type", "wireguard")
+        addProperty("tag", TAG_PROXY)
+        addProperty("mtu", settings.mtu.coerceIn(1280, 1420))
+        add("address", JsonArray().apply { localAddresses(server).forEach { add(it) } })
+        addProperty("private_key", server.wgPrivateKey.trim())
+        add(
+            "peers",
+            JsonArray().apply {
+                add(
+                    JsonObject().apply {
+                        addProperty("address", server.address.trim())
+                        addProperty("port", server.port.coerceIn(1, 65535))
+                        addProperty("public_key", server.wgPublicKey.trim())
+                        if (server.wgPreSharedKey.isNotBlank()) {
+                            addProperty("pre_shared_key", server.wgPreSharedKey.trim())
+                        }
+                        add(
+                            "allowed_ips",
+                            JsonArray().apply {
+                                add("0.0.0.0/0")
+                                add("::/0")
+                            }
+                        )
+                        addProperty("persistent_keepalive_interval", 25)
+                        val reserved = server.wgReserved.split(",").mapNotNull { it.trim().toIntOrNull() }
+                        if (reserved.size == 3) {
+                            add("reserved", JsonArray().apply { reserved.forEach { add(it) } })
+                        }
+                    }
+                )
+            }
+        )
     }
+
+    private fun localAddresses(server: ServerConfig): List<String> =
+        server.wgAddress.ifBlank { "172.16.0.2/32" }
+            .split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
 
     private fun tls(server: ServerConfig, defaultAlpn: String?): JsonObject = JsonObject().apply {
         addProperty("enabled", true)

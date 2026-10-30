@@ -140,7 +140,12 @@ object LinkParser {
         cfg.address = host
         cfg.port = port
 
+        // ابتدا جدا کردن شناسه از رمز و سپس درصدگشایی تا رمزهای حاوی «:» خراب نشوند
+        val rawUser = userInfo.substringBefore(":")
+        val rawPass = if (userInfo.contains(":")) userInfo.substringAfter(":") else ""
         val decodedUser = decodeComponent(userInfo)
+        val decodedUserId = decodeComponent(rawUser)
+        val decodedPassword = decodeComponent(rawPass)
 
         when (proto) {
             Proto.VLESS -> {
@@ -162,8 +167,8 @@ object LinkParser {
 
             Proto.TUIC -> {
                 // tuic://uuid:password@host:port
-                cfg.uuid = decodedUser.substringBefore(":")
-                cfg.password = if (decodedUser.contains(":")) decodedUser.substringAfter(":") else ""
+                cfg.uuid = decodedUserId.trim()
+                cfg.password = decodedPassword
             }
 
             Proto.ANYTLS -> {
@@ -171,8 +176,8 @@ object LinkParser {
             }
 
             Proto.SOCKS, Proto.HTTP -> {
-                cfg.uuid = decodedUser.substringBefore(":")
-                cfg.password = if (decodedUser.contains(":")) decodedUser.substringAfter(":") else ""
+                cfg.uuid = decodedUserId
+                cfg.password = decodedPassword
             }
 
             else -> Unit
@@ -195,7 +200,8 @@ object LinkParser {
         cfg.publicKey = q["pbk"].orEmpty()
         cfg.shortId = q["sid"].orEmpty()
         cfg.spiderX = q["spx"].orEmpty()
-        cfg.allowInsecure = q["allowInsecure"] == "1" || q["insecure"] == "1" || q["allow_insecure"] == "1"
+        cfg.allowInsecure = listOf("allowInsecure", "insecure", "allow_insecure", "insecure_skip_verify")
+            .any { key -> q[key]?.lowercase() in listOf("1", "true", "yes") }
         cfg.name = decodeComponent(fragment).ifBlank { "${host}:$port" }
         normalize(cfg)
         return cfg
@@ -242,6 +248,7 @@ object LinkParser {
         cfg.wgPublicKey = (q["publickey"] ?: q["public_key"] ?: q["peer"]).orEmpty()
         cfg.wgAddress = (q["address"] ?: q["ip"]).orEmpty().ifBlank { "172.16.0.2/32" }
         cfg.wgReserved = (q["reserved"] ?: "").orEmpty()
+        cfg.wgPreSharedKey = (q["presharedkey"] ?: q["pre_shared_key"] ?: q["psk"] ?: "").orEmpty()
         cfg.name = decodeComponent(fragment).ifBlank { "WG $host:$port" }
         return cfg
     }

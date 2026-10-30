@@ -78,6 +78,8 @@ data class ServerConfig(
     var wgPublicKey: String = "",
     var wgAddress: String = "",
     var wgReserved: String = "",
+    /** کلید مشترک از پیش تعیین‌شده (اختیاری) */
+    var wgPreSharedKey: String = "",
 
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
