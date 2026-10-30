@@ -268,7 +268,7 @@ class CoreLogicTest {
         assertEquals("84,160,213", cfg.wgReserved)
         assertTrue(cfg.wgPrivateKey.endsWith("="))
         // کلید عمومی هم باید درصدگشایی شده باشد
-        assertEquals("bmXOC/F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", cfg.wgPublicKey)
+        assertEquals("bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", cfg.wgPublicKey)
     }
 
     @Test
