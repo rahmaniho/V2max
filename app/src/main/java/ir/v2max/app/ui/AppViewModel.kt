@@ -86,6 +86,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         if (Repo.servers.value.isEmpty()) return
 
+        if (!autoConnectAllowed(app)) return
         val needsPermission = VpnService.prepare(app) != null
         if (needsPermission) {
             if (settings.autoConnectOnOpen) {
@@ -113,6 +114,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             autoConnect = settings.autoConnectOnOpen,
             limit = 450
         )
+    }
+
+    /** اگر «فقط وای‌فای» روشن باشد و شبکه داده باشد، اتصال خودکار انجام نمی‌شود */
+    private fun autoConnectAllowed(app: android.app.Application): Boolean {
+        if (!Repo.settings.value.wifiOnly) return true
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        val onWifi = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true ||
+            caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        if (!onWifi) showMessage("اتصال خودکار فقط روی وای‌فای فعال است")
+        return onWifi
     }
 
     fun showMessage(text: String) {

@@ -158,6 +158,7 @@ fun AppRoot(vm: AppViewModel) {
                         onTestAll = { vm.testAll() },
                         onToggleFavorite = { vm.toggleFavorite(it) },
                         onDelete = { vm.deleteServer(it) },
+                        showFlags = settings.showFlags,
                         onCopyLink = { id ->
                             val link = vm.shareLink(id)
                             if (link != null) {

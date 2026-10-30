@@ -315,6 +315,8 @@ class V2maxVpnService : VpnService() {
             totalDown = 0
             if (!isFailover) failoverAttempts = 0
             Failover.markWorking(server.id)
+            Repo.recordOutcome(server.id, true)
+            ir.v2max.app.core.SmartConnect.rememberWorkingNetwork(Repo.serverById(server.id) ?: server)
 
             publish(
                 TunnelUiState(
@@ -364,6 +366,7 @@ class V2maxVpnService : VpnService() {
                 }
             }
 
+            currentServer?.let { Repo.recordOutcome(it.id, false) }
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
             fail("اتصال برقرار نشد: $raw")
         }
@@ -569,6 +572,8 @@ class V2maxVpnService : VpnService() {
                 val threshold = if (critical) FAIL_THRESHOLD else FAIL_THRESHOLD + 2
 
                 if (failures == threshold) {
+                    Repo.tunnel.value.serverId.takeIf { it.isNotBlank() }
+                        ?.let { Repo.recordOutcome(it, false) }
                     publish(
                         Repo.tunnel.value.copy(message = "کیفیت شبکه افت کرد؛ در حال یافتن مسیر بهتر…")
                     )

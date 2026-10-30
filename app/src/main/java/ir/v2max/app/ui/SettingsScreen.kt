@@ -193,6 +193,46 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
+                title = "سنجش سرعت دانلود واقعی",
+                subtitle = "برای چند سرور برتر، سرعت دانلود واقعی اندازه‌گیری و در رتبه‌بندی لحاظ می‌شود",
+                checked = settings.speedTest
+            ) { value -> onChange { it.copy(speedTest = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "حافظه‌ی شبکه‌های آشنا",
+                subtitle = "برای هر اپراتور/شبکه، بهترین سرور و تنظیمات کاری ذخیره و خودکار انتخاب می‌شود",
+                checked = settings.rememberNetworks
+            ) { value -> onChange { it.copy(rememberNetworks = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "حالت کم‌مصرف",
+                subtitle = "تست سرعت و تست‌های سنگین انجام نمی‌شود؛ مناسب اینترنت محدود",
+                checked = settings.dataSaver
+            ) { value -> onChange { it.copy(dataSaver = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "اتصال خودکار فقط روی وای‌فای",
+                subtitle = "روی داده‌ی همراه، اتصال خودکار انجام نمی‌شود",
+                checked = settings.wifiOnly
+            ) { value -> onChange { it.copy(wifiOnly = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "نمایش پرچم کشور سرورها",
+                subtitle = "پرچم کشور از نام کانفیگ تشخیص داده می‌شود (بدون ارسال هیچ داده‌ای)",
+                checked = settings.showFlags
+            ) { value -> onChange { it.copy(showFlags = value) } }
+        }
+
+        item {
+            SettingSwitch(
                 title = "پینگ چندمقصدی (گوگل، اینستاگرام، یوتیوب)",
                 subtitle = "پیش از اتصال، سرور با هر سه مقصد سنجیده می‌شود و بهترین‌ها انتخاب می‌شوند",
                 checked = settings.multiPing

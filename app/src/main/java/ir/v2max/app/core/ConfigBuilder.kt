@@ -52,6 +52,52 @@ object ConfigBuilder {
         return root.toString()
     }
 
+    /**
+     * کانفیگ سبک با یک inbound از نوع SOCKS برای سنجش سرعت واقعی.
+     * هسته با tunFd = 0 اجرا می‌شود و ترافیک فقط از طریق پورت محلی عبور می‌کند.
+     */
+    fun socksTestConfig(server: ServerConfig, settings: AppSettings, port: Int): String {
+        val root = JsonObject()
+        root.add("log", JsonObject().apply { addProperty("loglevel", "warning") })
+        root.add(
+            "inbounds", JsonArray().apply {
+                add(
+                    JsonObject().apply {
+                        addProperty("tag", "socks-in")
+                        addProperty("protocol", "socks")
+                        addProperty("listen", "127.0.0.1")
+                        addProperty("port", port)
+                        add(
+                            "settings", JsonObject().apply {
+                                addProperty("auth", "noauth")
+                                addProperty("udp", false)
+                            }
+                        )
+                        add(
+                            "sniffing", JsonObject().apply {
+                                addProperty("enabled", true)
+                                add(
+                                    "destOverride", JsonArray().apply {
+                                        add(JsonPrimitive("http"))
+                                        add(JsonPrimitive("tls"))
+                                    }
+                                )
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        root.add(
+            "outbounds", JsonArray().apply {
+                add(outbound(server, settings))
+                add(JsonObject().apply { addProperty("protocol", "freedom"); addProperty("tag", "direct") })
+                add(JsonObject().apply { addProperty("protocol", "blackhole"); addProperty("tag", "block") })
+            }
+        )
+        return root.toString()
+    }
+
     /** کانفیگ کامل برای اجرای VPN */
     fun vpnConfig(server: ServerConfig, settings: AppSettings): String {
         val root = JsonObject()

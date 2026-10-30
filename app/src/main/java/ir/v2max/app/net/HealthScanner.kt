@@ -4,6 +4,7 @@ import android.content.Context
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
+import ir.v2max.app.data.CountryFlags
 import ir.v2max.app.data.PingTargets
 import ir.v2max.app.data.ServerConfig
 import kotlinx.coroutines.Dispatchers
@@ -58,6 +59,7 @@ object HealthScanner {
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
+        onSpeed: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> },
         onAlive: suspend (Int) -> Unit = {}
     ): Outcome = withContext(Dispatchers.IO) {
@@ -188,6 +190,31 @@ object HealthScanner {
             }
         }
 
+        // ---------- مرحله ۴: سنجش سرعت دانلود واقعی برای چند سرور برتر
+        if (settings.speedTest && !settings.dataSaver) {
+            val ranked = ordered
+                .filter { (realResults[it.id] ?: -1) > 0 }
+                .sortedBy { scoreOf(it) }
+                .take(settings.speedTestCount.coerceIn(1, 5))
+            if (ranked.isNotEmpty()) {
+                onPhase("سنجش سرعت دانلود واقعی", 0, ranked.size)
+                var speedDone = 0
+                ranked.forEach { cfg ->
+                    coroutineContext.ensureActive()
+                    val kbps = SpeedTester.measure(cfg, settings.copy(fragment = settings.fragment))
+                    mutex.lock()
+                    try {
+                        speedDone++
+                        onPhase("سنجش سرعت دانلود واقعی", speedDone, ranked.size)
+                    } finally {
+                        mutex.unlock()
+                    }
+                    cfg.speedKbps = kbps
+                    onSpeed(cfg, kbps)
+                }
+            }
+        }
+
         // ---------- انتخاب بهترین
         val scored = ordered.filter { (realResults[it.id] ?: -1) > 0 }
         val best = when {
@@ -218,12 +245,8 @@ object HealthScanner {
         )
     }
 
-    /** امتیاز کمتر = بهتر؛ سروری که به هر سه مقصد جواب داده اولویت دارد */
-    private fun scoreOf(cfg: ServerConfig): Long {
-        val base = cfg.bestPing().let { if (it > 0) it.toLong() else 99_999L }
-        val penalty = (3 - cfg.reachCount()).coerceAtLeast(0) * 900L
-        return base + penalty
-    }
+    /** امتیاز کمتر = بهتر؛ ترکیب تأخیر، تعداد مقصدهای پاسخ‌دهنده، سرعت و پایداری */
+    private fun scoreOf(cfg: ServerConfig): Long = cfg.score().toLong()
 
     /** تست TCP؛ خروجی میلی‌ثانیه یا -۱ */
     suspend fun tcpPing(cfg: ServerConfig): Int = withContext(Dispatchers.IO) {

@@ -58,7 +58,9 @@ import ir.v2max.app.data.TunnelUiState
 import ir.v2max.app.util.Format
 
 private enum class SortMode(val label: String) {
-    FASTEST("سریع‌ترین"),
+    FASTEST("بهترین امتیاز"),
+    SPEED("سرعت"),
+    STABLE("پایداری"),
     NAME("نام"),
     NEWEST("جدیدترین")
 }
@@ -75,6 +77,7 @@ fun ServersScreen(
     onTestAll: () -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDelete: (String) -> Unit,
+    showFlags: Boolean = true,
     onCopyLink: (String) -> Unit
 ) {
     var query by remember { mutableStateOf("") }
@@ -93,7 +96,7 @@ fun ServersScreen(
             }
             .sortedWith(
                 when (sort) {
-                    SortMode.FASTEST -> compareBy { if (it.bestPing() > 0) it.bestPing() else Int.MAX_VALUE }
+                    FASTEST -> compareBy { it.score() }
                     SortMode.NAME -> compareBy { it.displayName() }
                     SortMode.NEWEST -> compareByDescending { it.addedAt }
                 }
@@ -189,6 +192,7 @@ fun ServersScreen(
         items(filtered, key = { it.id }) { server ->
             ServerRow(
                 server = server,
+                showFlags = showFlags,
                 selected = server.id == selectedId,
                 connected = tunnel.status == TunnelStatus.CONNECTED && tunnel.serverId == server.id,
                 onClick = { onSelect(server.id) },
@@ -230,6 +234,7 @@ fun ServersScreen(
 @Composable
 private fun ServerRow(
     server: ServerConfig,
+    showFlags: Boolean,
     selected: Boolean,
     connected: Boolean,
     onClick: () -> Unit,
@@ -295,6 +300,13 @@ private fun ServerRow(
                         Text("★", color = V2.Amber, fontSize = 11.sp)
                         Spacer(Modifier.width(4.dp))
                     }
+                    if (showFlags && server.hasFlag()) {
+                        Text(
+                            ir.v2max.app.data.CountryFlags.emojiFor(server.countryCode),
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
                     Text(
                         server.displayName(),
                         style = MaterialTheme.typography.titleSmall,
@@ -311,9 +323,21 @@ private fun ServerRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (server.reachCount() > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    PingTargetsRow(server.googlePing, server.instagramPing, server.youtubePing)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (server.reachCount() > 0) {
+                        PingTargetsRow(server.googlePing, server.instagramPing, server.youtubePing)
+                    }
+                    if (server.speedKbps > 0) {
+                        Spacer(Modifier.height(4.dp))
+                        StatusTag(Format.kbps(server.speedKbps), V2.Mint)
+                    }
+                    if (server.successCount + server.failCount >= 3) {
+                        StatusTag("پایداری ${server.stability()}٪",
+                            if (server.stability() >= 80) V2.Mint else if (server.stability() >= 50) V2.Amber else V2.Red)
+                    }
                 }
             }
             Spacer(Modifier.width(8.dp))

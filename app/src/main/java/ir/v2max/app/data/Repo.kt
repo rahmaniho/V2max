@@ -63,6 +63,16 @@ object Repo {
         }.getOrNull() ?: AppSettings()
         _selectedId.value = p.getString(KEY_SELECTED, "") ?: ""
         loaded = true
+        loadProfiles()
+    }
+
+    /** کشور سرور را از نامش تشخیص می‌دهد (آفلاین) */
+    private fun withCountry(cfg: ServerConfig): ServerConfig {
+        if (cfg.countryCode.isNotBlank()) return cfg
+        val resolved = CountryFlags.resolve(cfg.name) ?: return cfg
+        cfg.countryCode = resolved.first
+        cfg.countryName = resolved.second
+        return cfg
     }
 
     private fun <T> readList(json: String?, type: java.lang.reflect.Type): List<T> = runCatching {
@@ -122,7 +132,7 @@ object Repo {
         val current = _servers.value.toMutableList()
         val known = current.map { it.fingerprint() }.toHashSet()
         var added = 0
-        incoming.filter { it.hasUsableEndpoint() }.forEach { cfg ->
+        incoming.filter { it.hasUsableEndpoint() }.map { withCountry(it) }.forEach { cfg ->
             val key = cfg.fingerprint()
             if (known.add(key)) {
                 current.add(cfg)
@@ -160,6 +170,11 @@ object Repo {
                     cfg.googlePing = old.googlePing
                     cfg.instagramPing = old.instagramPing
                     cfg.youtubePing = old.youtubePing
+                    cfg.speedKbps = old.speedKbps
+                    cfg.countryCode = old.countryCode
+                    cfg.countryName = old.countryName
+                    cfg.successCount = old.successCount
+                    cfg.failCount = old.failCount
                     cfg.testedAt = old.testedAt
                     cfg.addedAt = old.addedAt
                     cfg
@@ -374,6 +389,33 @@ object Repo {
         return removed
     }
 
+    /** ثبت نتیجه‌ی سنجش سرعت */
+    @Synchronized
+    fun setSpeed(id: String, kbps: Int, persist: Boolean = false) {
+        val list = _servers.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        list[idx] = list[idx].copy(speedKbps = kbps)
+        _servers.value = list
+        if (persist) persistServers()
+    }
+
+    /** ثبت اتصال موفق/ناموفق برای محاسبه‌ی پایداری */
+    @Synchronized
+    fun recordOutcome(id: String, success: Boolean) {
+        val list = _servers.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        val cfg = list[idx]
+        list[idx] = if (success) {
+            cfg.copy(successCount = cfg.successCount + 1)
+        } else {
+            cfg.copy(failCount = cfg.failCount + 1)
+        }
+        _servers.value = list
+        persistServers()
+    }
+
     /**
      * محدود کردن حجم داده‌ها: اگر تعداد کانفیگ‌های منابع رایگان از حد گذشت،
      * ضعیف‌ترین/قدیمی‌ترین آن‌ها حذف می‌شوند.
@@ -405,6 +447,52 @@ object Repo {
         return _servers.value
             .filter { it.bestPing() > 0 && now - it.testedAt <= maxAgeMs }
             .sortedBy { it.bestPing() }
+    }
+
+    // ------------------------------------------------------ network profiles
+
+    private const val KEY_PROFILES = "network_profiles_v1"
+
+    private val _profiles = MutableStateFlow<Map<String, NetworkProfile>>(emptyMap())
+    val profiles: StateFlow<Map<String, NetworkProfile>> = _profiles.asStateFlow()
+
+    private fun loadProfiles() {
+        _profiles.value = runCatching {
+            val json = prefs?.getString(KEY_PROFILES, null)
+            if (json.isNullOrBlank()) emptyMap() else {
+                val type = object : TypeToken<Map<String, NetworkProfile>>() {}.type
+                gson.fromJson<Map<String, NetworkProfile>>(json, type) ?: emptyMap()
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    private fun persistProfiles() {
+        if (persistSuspended) return
+        prefs?.edit()?.putString(KEY_PROFILES, gson.toJson(_profiles.value))?.apply()
+    }
+
+    fun profileFor(key: String): NetworkProfile? = _profiles.value[key]
+
+    @Synchronized
+    fun saveProfile(profile: NetworkProfile) {
+        if (profile.key.isBlank()) return
+        val map = _profiles.value.toMutableMap()
+        map[profile.key] = profile
+        _profiles.value = map
+        persistProfiles()
+    }
+
+    @Synchronized
+    fun removeProfile(key: String) {
+        val map = _profiles.value.toMutableMap()
+        map.remove(key)
+        _profiles.value = map
+        persistProfiles()
+    }
+
+    fun clearProfiles() {
+        _profiles.value = emptyMap()
+        persistProfiles()
     }
 
     // ------------------------------------------------------- update check meta
