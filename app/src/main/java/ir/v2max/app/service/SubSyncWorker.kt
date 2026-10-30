@@ -26,7 +26,14 @@ import java.util.concurrent.TimeUnit
  */
 class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = try {
+        run()
+    } catch (t: Throwable) {
+        ir.v2max.app.util.CrashLog.record(t, "SubSyncWorker")
+        Result.success()
+    }
+
+    private suspend fun run(): Result {
         Repo.init(applicationContext)
         val subs = Repo.subs.value
         if (subs.isEmpty()) return Result.success()

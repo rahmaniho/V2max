@@ -344,7 +344,7 @@ object Repo {
     @Synchronized
     fun ensureBuiltInSources(): Int {
         val known = _subs.value.map { it.url.trim().trimEnd('/') }.toHashSet()
-        val toAdd = PublicSources.ALL.filter { it.url.trim().trimEnd('/') !in known }.map {
+        val toAdd = PublicSources.DEFAULT.filter { it.url.trim().trimEnd('/') !in known }.map {
             Subscription(name = it.name, url = it.url, builtIn = true)
         }
         if (toAdd.isEmpty()) return 0

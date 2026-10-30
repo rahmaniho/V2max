@@ -16,6 +16,7 @@ import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.util.Format
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -57,8 +58,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingQuickConnect = false
     private val syncMutex = kotlinx.coroutines.sync.Mutex()
 
+    /**
+     * هیچ خطای پیش‌بینی‌نشده‌ای در کارهای پس‌زمینه نباید برنامه را ببندد.
+     * خطا فقط ثبت می‌شود و در صورت لزوم به کاربر پیام داده می‌شود.
+     */
+    private val errorHandler = CoroutineExceptionHandler { _, throwable ->
+        ir.v2max.app.util.CrashLog.record(throwable, "viewModel")
+        runCatching { _busy.value = false }
+        val text = throwable.message.orEmpty().take(120)
+        _message.value = if (text.isBlank()) "خطای غیرمنتظره رخ داد؛ دوباره تلاش کنید" else "خطا: $text"
+    }
+
     init {
-        viewModelScope.launch { startup() }
+        viewModelScope.launch(errorHandler) { startup() }
     }
 
     /**
@@ -72,12 +84,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val settings = Repo.settings.value
 
-        if (settings.useFreeSources) Repo.ensureBuiltInSources()
+        // اگر دفعه‌ی قبل برنامه بسته شده باشد، علت را نشان بده (به‌جای سکوت)
+        val crash = runCatching { ir.v2max.app.util.CrashLog.lastSummary() }.getOrDefault("")
+        if (crash.isNotBlank()) {
+            showMessage("دفعه‌ی قبل برنامه بسته شد: $crash")
+        }
+
+        if (settings.useFreeSources) runCatching { Repo.ensureBuiltInSources() }
 
         // ۱) بررسی عمیق شبکه‌ی اپراتور (DNS/DPI/تأخیر) پیش از هر کاری
         if (settings.deepProbe) SmartConnect.assessNetwork(app, force = true)
 
-        if (settings.autoRefreshOnOpen) {
+        // به‌روزرسانی خودکار فقط اگر داده‌ها کهنه باشند (پیش‌فرض ۳ ساعت) — شروع سریع‌تر
+        val newest = Repo.subs.value.maxOfOrNull { it.updatedAt } ?: 0L
+        val stale = System.currentTimeMillis() - newest > 3 * 60 * 60 * 1000L
+        if (settings.autoRefreshOnOpen && stale) {
             delay(200)
             syncAll(announce = false)
         }
@@ -160,11 +181,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         if (serverId == null) {
-            viewModelScope.launch { SmartConnect.quickConnect(app) }
+            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
             return
         }
         // پیش از اتصال، همان سرور تست می‌شود (یا در صورت خرابی، چرخه‌ی کامل اجرا می‌شود)
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             val ok = SmartConnect.connectVerified(app, serverId)
             if (!ok) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
         }
@@ -195,7 +216,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             launchRestart()
         } else if (pendingQuickConnect) {
             pendingQuickConnect = false
-            viewModelScope.launch { SmartConnect.quickConnect(getApplication()) }
+            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(getApplication()) }
         } else if (pendingSmartScan) {
             launchSmartConnect(pendingScanSubId)
         } else {
@@ -207,7 +228,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun launchSmartConnect(subscriptionId: String?) {
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             val best = SmartConnect.scanAndConnect(getApplication(), autoConnect = true, subscriptionId = subscriptionId)
             if (best == null) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
         }
@@ -223,19 +244,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _pendingVpnRequest.value = true
             return
         }
-        viewModelScope.launch { SmartConnect.quickConnect(app) }
+        viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
     }
 
     // ----------------------------------------------------------------- tests
 
     fun testAll() {
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             SmartConnect.scanAndConnect(getApplication(), autoConnect = false)
         }
     }
 
     fun testServer(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(errorHandler + Dispatchers.IO) {
             val server = Repo.serverById(id) ?: return@launch
             val settings = Repo.settings.value
             val tcp = HealthScanner.tcpPing(server)
@@ -270,7 +291,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun launchRestart() {
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             Repo.scan.value = ir.v2max.app.data.ScanState(
                 running = true,
                 phase = "آماده‌سازی جستجوی دوباره",
@@ -289,7 +310,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             showMessage("آدرس اشتراک را وارد کنید")
             return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             _busy.value = true
             val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(cleanUrl) }
             _busy.value = false
@@ -320,7 +341,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshSubscription(id: String) {
         val sub = Repo.subById(id) ?: return
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             _busy.value = true
             val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url) }
             _busy.value = false
@@ -351,7 +372,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             val (updated, configs) = syncAll(announce = !silent)
             if (!silent) {
                 showMessage(
@@ -447,7 +468,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         updateSettings { it.copy(useFreeSources = true) }
         showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             syncAll(announce = false)
             launchSmartConnect(null)
         }
@@ -457,7 +478,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         updateSettings { it.copy(useFreeSources = enabled) }
         if (enabled) {
             val added = Repo.ensureBuiltInSources()
-            if (added > 0) viewModelScope.launch { syncAll(announce = false) }
+            if (added > 0) viewModelScope.launch(errorHandler) { syncAll(announce = false) }
             showMessage(if (added > 0) "${Format.number(added)} منبع رایگان فعال شد" else "منابع رایگان فعال است")
         } else {
             Repo.removeBuiltInSources()
@@ -479,7 +500,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             addSubscription("", trimmed)
             return
         }
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(errorHandler + Dispatchers.IO) {
             val configs = LinkParser.parseAll(trimmed)
             if (configs.isEmpty()) {
                 showMessage("لینک معتبری پیدا نشد")
@@ -546,7 +567,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val last = Repo.lastUpdateCheck()
             if (System.currentTimeMillis() - last < 6 * 60 * 60 * 1000L) return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             if (manual) showMessage("در حال بررسی نسخه‌ی جدید…")
             Repo.markUpdateChecked()
             val info = UpdateChecker.checkForUpdate(app)
@@ -574,7 +595,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openUpdatePage()
             return
         }
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             Repo.updateProgress.value = 0.01f
             showMessage("در حال دانلود به‌روزرسانی…")
             val result = ir.v2max.app.net.UpdateInstaller.download(app, url) { done, total ->
@@ -610,7 +631,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // -------------------------------------------------------- بررسی شبکه
 
     fun refreshNetworkAssessment() {
-        viewModelScope.launch {
+        viewModelScope.launch(errorHandler) {
             SmartConnect.assessNetwork(getApplication(), force = true)
             val n = Repo.network.value
             showMessage(n.message.ifBlank { "بررسی شبکه انجام شد" })

@@ -59,8 +59,8 @@ android {
         applicationId = "ir.v2max.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 19
-        versionName = "2.1.1"
+        versionCode = 20
+        versionName = "2.2.0"
         resourceConfigurations += listOf("fa", "en")
     }
 

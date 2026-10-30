@@ -15,23 +15,34 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.R
 
-/** پالت رنگی V2max */
+/**
+ * پالت «ساده و روشن» نسخه‌ی ۳.
+ *
+ * طراحی جدید تخت (flat) است: بدون گرادیان، بدون شیشه‌ای/بلور، فقط دو سطح خاکستری
+ * و یک رنگ تأکید. این کار هم ظاهر را خواناتر می‌کند و هم کشیدن هر فریم ارزان‌تر
+ * می‌شود (روی گوشی‌های ضعیف‌تر، رابط روان‌تر است).
+ */
 object V2 {
-    val Background = Color(0xFF060A13)
-    val BackgroundDeep = Color(0xFF03060C)
-    val Surface = Color(0xFF0E1622)
-    val SurfaceHigh = Color(0xFF16202F)
-    val Stroke = Color(0xFF223047)
+    val Background = Color(0xFF101215)
+    val BackgroundDeep = Color(0xFF0B0D10)
+    val Surface = Color(0xFF171A1F)
+    val SurfaceHigh = Color(0xFF1E2228)
+    val Stroke = Color(0xFF2A2F37)
 
-    val Mint = Color(0xFF26E0A6)
-    val MintDark = Color(0xFF12A87B)
-    val Sky = Color(0xFF38BDF8)
-    val Amber = Color(0xFFF5B942)
-    val Red = Color(0xFFF87171)
+    /** رنگ تأکید اصلی (آبی) — جایگزین رنگ نعنایی قبلی */
+    val Mint = Color(0xFF5B8CFF)
+    val MintDark = Color(0xFF3D6BE0)
 
-    val TextPrimary = Color(0xFFEAF2FF)
-    val TextSecondary = Color(0xFF93A6C0)
-    val TextMuted = Color(0xFF5F7189)
+    /** رنگ مثبت/موفق برای پینگ سالم و وضعیت متصل */
+    val Green = Color(0xFF3DDC97)
+
+    val Sky = Color(0xFF6EA8FF)
+    val Amber = Color(0xFFF2B544)
+    val Red = Color(0xFFF06A6A)
+
+    val TextPrimary = Color(0xFFF2F4F7)
+    val TextSecondary = Color(0xFFA2ABB8)
+    val TextMuted = Color(0xFF6C7581)
 }
 
 val VazirFamily = FontFamily(
@@ -58,9 +69,9 @@ private val V2Typography = Typography(
 
 private val V2Colors = darkColorScheme(
     primary = V2.Mint,
-    onPrimary = Color(0xFF00251A),
+    onPrimary = Color(0xFF07101F),
     primaryContainer = V2.MintDark,
-    onPrimaryContainer = Color(0xFFE6FFF6),
+    onPrimaryContainer = Color(0xFFEAF1FF),
     secondary = V2.Sky,
     onSecondary = Color(0xFF001C2A),
     background = V2.Background,

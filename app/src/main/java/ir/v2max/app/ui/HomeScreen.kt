@@ -1,7 +1,6 @@
 package ir.v2max.app.ui
 
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
@@ -38,7 +37,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -87,8 +85,9 @@ fun HomeScreen(
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    // تیک ثانیه‌ای فقط وقتی اتصال برقرار است (به‌جای بازسازی مداوم صفحه در حالت قطع)
     LaunchedEffect(tunnel.status, tunnel.connectedAt) {
-        while (true) {
+        while (tunnel.status == TunnelStatus.CONNECTED) {
             now = System.currentTimeMillis()
             delay(1000)
         }
@@ -245,7 +244,7 @@ fun HomeScreen(
                         Modifier
                             .size(44.dp)
                             .clip(RoundedCornerShape(14.dp))
-                            .background(Brush.linearGradient(listOf(V2.Mint.copy(alpha = 0.22f), V2.Sky.copy(alpha = 0.14f)))),
+                            .background(V2.Mint.copy(alpha = 0.16f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -415,116 +414,78 @@ private fun HeaderRow(tunnel: TunnelUiState) {
     }
 }
 
+/**
+ * دکمه‌ی اصلی اتصال — نسخه‌ی ساده و سبک.
+ *
+ * نسخه‌ی قبلی سه انیمیشن بی‌پایان (پالس، چرخش، تنفس) روی یک Canvas ۲۶۸dp با
+ * گرادیان‌های شعاعی داشت که هر فریم دوباره رسم می‌شد؛ روی گوشی‌های ضعیف باعث
+ * کندی، داغ شدن و حتی بسته‌شدن برنامه می‌شد. حالا فقط یک چرخش ساده هنگام
+ * اتصال داریم و بقیه‌ی حالت‌ها ثابت‌اند.
+ */
 @Composable
 private fun ConnectOrb(status: TunnelStatus, onClick: () -> Unit) {
     val accent = statusColor(status)
-    val transition = rememberInfiniteTransition(label = "orb")
-    val pulse by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(2800, easing = LinearEasing)),
-        label = "pulse"
-    )
-    val spin by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(9000, easing = LinearEasing)),
-        label = "spin"
-    )
-    val breath by transition.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.04f,
-        animationSpec = infiniteRepeatable(tween(1600), RepeatMode.Reverse),
-        label = "breath"
-    )
-
-    val showPulse = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
+    val busy = status == TunnelStatus.CONNECTING || status == TunnelStatus.DISCONNECTING
+    val spin = if (busy) {
+        val transition = rememberInfiniteTransition(label = "spin")
+        val value by transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 360f,
+            animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
+            label = "spinAngle"
+        )
+        value
+    } else {
+        0f
+    }
 
     Canvas(
         modifier = Modifier
-            .size(268.dp)
+            .size(210.dp)
             .clickable { onClick() }
     ) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val maxRadius = size.minDimension / 2f - 4.dp.toPx()
 
-        if (showPulse) {
-            repeat(3) { index ->
-                val progress = (pulse + index / 3f) % 1f
-                drawCircle(
-                    color = accent.copy(alpha = (1f - progress) * 0.22f),
-                    radius = maxRadius * (0.62f + 0.38f * progress),
-                    center = center,
-                    style = Stroke(width = 1.5.dp.toPx())
-                )
-            }
-        }
-
-        // دیسک مرکزی
-        val discRadius = maxRadius * 0.62f * (if (status == TunnelStatus.CONNECTED) breath else 1f)
+        // حلقه‌ی پس‌زمینه
         drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    accent.copy(alpha = 0.20f),
-                    accent.copy(alpha = 0.06f),
-                    Color(0xFF0A1220)
-                ),
-                center = center,
-                radius = discRadius
-            ),
-            radius = discRadius,
+            color = V2.SurfaceHigh,
+            radius = maxRadius,
             center = center
         )
         drawCircle(
-            color = accent.copy(alpha = 0.28f),
-            radius = discRadius,
+            color = accent.copy(alpha = 0.55f),
+            radius = maxRadius,
             center = center,
-            style = Stroke(width = 1.2.dp.toPx())
+            style = Stroke(width = 2.dp.toPx())
         )
 
-        // حلقه‌ی اصلی
+        // حلقه‌ی وضعیت: هنگام کار می‌چرخد، در بقیه‌ی حالت‌ها ثابت است
         drawArc(
-            color = accent.copy(alpha = 0.85f),
-            startAngle = -90f,
-            sweepAngle = when (status) {
-                TunnelStatus.CONNECTED -> 360f
-                TunnelStatus.CONNECTING -> 110f
-                TunnelStatus.ERROR -> 360f
-                else -> 360f
-            },
+            color = accent,
+            startAngle = -90f + spin,
+            sweepAngle = if (busy) 80f else 360f,
             useCenter = false,
-            topLeft = Offset(center.x - maxRadius, center.y - maxRadius),
-            size = Size(maxRadius * 2f, maxRadius * 2f),
+            topLeft = Offset(center.x - maxRadius + 6.dp.toPx(), center.y - maxRadius + 6.dp.toPx()),
+            size = Size((maxRadius - 6.dp.toPx()) * 2f, (maxRadius - 6.dp.toPx()) * 2f),
             style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
         )
 
-        if (status == TunnelStatus.CONNECTING) {
-            drawArc(
-                color = accent,
-                startAngle = -90f + spin,
-                sweepAngle = 70f,
-                useCenter = false,
-                topLeft = Offset(center.x - maxRadius, center.y - maxRadius),
-                size = Size(maxRadius * 2f, maxRadius * 2f),
-                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-
         // نماد روشن/خاموش
-        val r = maxRadius * 0.20f
+        val r = maxRadius * 0.22f
         drawArc(
             color = accent,
             startAngle = -60f,
             sweepAngle = 300f,
             useCenter = false,
-            topLeft = Offset(center.x - r, center.y - r + 4.dp.toPx()),
+            topLeft = Offset(center.x - r, center.y - r + 3.dp.toPx()),
             size = Size(r * 2f, r * 2f),
             style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
         )
         drawLine(
             color = accent,
-            start = Offset(center.x, center.y - r * 1.55f + 4.dp.toPx()),
-            end = Offset(center.x, center.y - r * 0.30f + 4.dp.toPx()),
+            start = Offset(center.x, center.y - r * 1.55f + 3.dp.toPx()),
+            end = Offset(center.x, center.y - r * 0.30f + 3.dp.toPx()),
             strokeWidth = 5.dp.toPx(),
             cap = StrokeCap.Round
         )
