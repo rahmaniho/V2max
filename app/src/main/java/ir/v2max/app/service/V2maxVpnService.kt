@@ -1,11 +1,13 @@
 package ir.v2max.app.service
 
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.util.Log
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.Failover
@@ -41,6 +43,12 @@ class V2maxVpnService : VpnService() {
 
         /** هر چند ثانیه یک‌بار کیفیت اتصال سنجیده می‌شود (پایش هر ثانیه‌ای) */
         private const val PROBE_INTERVAL_MS = 2_000L
+
+        /** فاصله‌ی پروب وقتی صفحه خاموش است (صرفه‌جویی باتری) */
+        private const val PROBE_INTERVAL_IDLE_MS = 15_000L
+
+        /** فاصله‌ی پروب در حالت ذخیره‌ی انرژی یا باتری کم */
+        private const val PROBE_INTERVAL_SAVER_MS = 30_000L
 
         /** چند شکست پیاپی یعنی «اتصال عملاً مرده است» */
         private const val FAIL_THRESHOLD = 2
@@ -277,6 +285,18 @@ class V2maxVpnService : VpnService() {
 
             XrayCore.init(applicationContext)
 
+            // استخر سرورها: چند سرور سالم برتر برای انتخاب خودکار توسط هسته (balancer)
+            val pool = if (baseSettings.balancer) {
+                val healthy = Repo.servers.value
+                    .filter { it.id != server.id && it.hasUsableEndpoint() }
+                    .filter { it.bestPing() > 0 || it.tcpPing > 0 }
+                    .sortedBy { it.score() }
+                    .take((baseSettings.balancerSize - 1).coerceIn(0, 5))
+                listOf(server) + healthy
+            } else {
+                listOf(server)
+            }
+
             // ---- نردبان نفوذ: پروفایل‌های فرگمنت به‌ترتیب امتحان می‌شوند تا تانل واقعاً بالا بیاید
             val attempts = ladder
             var working: AppSettings? = null
@@ -305,7 +325,7 @@ class V2maxVpnService : VpnService() {
                 )
                 try {
                     if (XrayCore.isRunning) XrayCore.stop()
-                    XrayCore.start(ConfigBuilder.vpnConfig(server, settings), fd.fd)
+                    XrayCore.start(ConfigBuilder.vpnConfig(server, settings, pool), fd.fd)
                     if (!XrayCore.isRunning) throw IllegalStateException("هسته اجرا نشد")
 
                     // اعتبارسنجی واقعی: تا وقتی ترافیک از تانل عبور نکند، «وصل» حساب نمی‌شود
@@ -569,7 +589,8 @@ class V2maxVpnService : VpnService() {
                     lastProbe = 0
                     failures = 0
                 }
-                if (now - lastProbe < PROBE_INTERVAL_MS) continue
+                val interval = probeInterval()
+                if (now - lastProbe < interval) continue
                 lastProbe = now
 
                 // اگر هسته از کار افتاده باشد، اتصال بدون دخالت کاربر بازسازی می‌شود
@@ -709,6 +730,33 @@ class V2maxVpnService : VpnService() {
         Notifier.update(this, Repo.tunnel.value, false, Repo.settings.value.hideNotificationContent)
         stopForegroundCompat()
         stopSelf()
+    }
+
+    /**
+     * فاصله‌ی مناسب بین تست‌های سلامت بر اساس وضعیت صفحه، حالت ذخیره‌ی انرژی و شارژ باتری.
+     * این کار مصرف باتری را در استفاده‌ی شبانه تا حدود یک‌سوم کاهش می‌دهد.
+     */
+    private fun probeInterval(): Long {
+        if (!Repo.settings.value.batterySaver) return PROBE_INTERVAL_MS
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val interactive = pm.isInteractive
+            val powerSave = pm.isPowerSaveMode
+            val batteryLow = runCatching {
+                val intent = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+                val level = intent?.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, 100) ?: 100
+                val scale = intent?.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100) ?: 100
+                scale > 0 && level * 100 / scale <= 15
+            }.getOrDefault(false)
+
+            when {
+                powerSave || batteryLow -> PROBE_INTERVAL_SAVER_MS
+                !interactive -> PROBE_INTERVAL_IDLE_MS
+                else -> PROBE_INTERVAL_MS
+            }
+        } catch (t: Throwable) {
+            PROBE_INTERVAL_MS
+        }
     }
 
     private fun closeTun() {

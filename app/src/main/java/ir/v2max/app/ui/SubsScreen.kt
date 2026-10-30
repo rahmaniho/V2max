@@ -381,8 +381,11 @@ private fun SubscriptionCard(
                             .clip(RoundedCornerShape(50))
                             .background(
                                 Brush.horizontalGradient(
-                                    if (sub.usedPercent() > 0.85f) listOf(V2.Red, V2.Amber)
-                                    else listOf(V2.Mint, V2.Sky)
+                                    when {
+                                        sub.usedPercent() >= 0.95f -> listOf(V2.Red, V2.Red)
+                                        sub.usedPercent() > 0.8f -> listOf(V2.Amber, V2.Red)
+                                        else -> listOf(V2.Mint, V2.Sky)
+                                    }
                                 )
                             )
                     )
@@ -395,10 +398,22 @@ private fun SubscriptionCard(
                         color = V2.TextSecondary
                     )
                     Spacer(Modifier.weight(1f))
+                    val daysLeft = if (sub.expireAt > 0)
+                        ((sub.expireAt * 1000 - System.currentTimeMillis()) / (24 * 60 * 60 * 1000L)).toInt()
+                    else Int.MAX_VALUE
                     Text(
-                        if (sub.expireAt > 0) "انقضا: ${Format.dateOnly(sub.expireAt * 1000)}" else "آخرین به‌روزرسانی: ${Format.dateOnly(sub.updatedAt)}",
+                        when {
+                            sub.expireAt <= 0 -> "آخرین به‌روزرسانی: ${Format.dateOnly(sub.updatedAt)}"
+                            daysLeft < 0 -> "منقضی شده"
+                            daysLeft <= 7 -> "فقط $daysLeft روز مانده"
+                            else -> "انقضا: ${Format.dateOnly(sub.expireAt * 1000)}"
+                        },
                         fontSize = 10.5.sp,
-                        color = V2.TextMuted
+                        color = when {
+                            sub.expireAt > 0 && daysLeft < 0 -> V2.Red
+                            sub.expireAt > 0 && daysLeft <= 7 -> V2.Amber
+                            else -> V2.TextMuted
+                        }
                     )
                 }
             } else {

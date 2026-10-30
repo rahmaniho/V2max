@@ -118,6 +118,39 @@ class CoreLogicTest {
         assertTrue(smartRules > globalRules)
     }
 
+    @Test
+    fun `balancer config adds observatory and pool outbounds`() {
+        val settings = AppSettings(balancer = true, balancerSize = 3)
+        val primary = ServerConfig(address = "a.example.com", port = 443, name = "A")
+        val pool = listOf(
+            primary,
+            ServerConfig(address = "b.example.com", port = 443, name = "B"),
+            ServerConfig(address = "c.example.com", port = 443, name = "C")
+        )
+        val json = com.google.gson.JsonParser.parseString(
+            ConfigBuilder.vpnConfig(primary, settings, pool)
+        ).asJsonObject
+        assertNotNull(json.get("observatory"))
+        val routing = json.getAsJsonObject("routing")
+        val balancers = routing.getAsJsonArray("balancers")
+        assertNotNull(balancers)
+        assertEquals(1, balancers.size())
+        // سه سرور + مستقیم + مسدود + DNS
+        assertEquals(6, json.getAsJsonArray("outbounds").size())
+    }
+
+    @Test
+    fun `balancer disabled keeps single proxy outbound`() {
+        val settings = AppSettings(balancer = false)
+        val primary = ServerConfig(address = "a.example.com", port = 443)
+        val pool = listOf(primary, ServerConfig(address = "b.example.com", port = 443))
+        val json = com.google.gson.JsonParser.parseString(
+            ConfigBuilder.vpnConfig(primary, settings, pool)
+        ).asJsonObject
+        assertEquals(null, json.get("observatory"))
+        assertEquals(null, json.getAsJsonObject("routing").get("balancers"))
+    }
+
     // ----------------------------------------------------------------- format
 
     @Test

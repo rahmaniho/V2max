@@ -385,6 +385,48 @@ fun SettingsScreen(
             ) { onScanQr() }
         }
 
+        item { GroupTitle("موتور اتصال") }
+
+        item {
+            SettingSwitch(
+                title = "استخر خودکار سرورها",
+                subtitle = "چند سرور برتر هم‌زمان در تانل قرار می‌گیرند و هسته سریع‌ترین را انتخاب می‌کند؛ قطعی کمتر و سرعت بیشتر",
+                checked = settings.balancer
+            ) { value -> onChange { it.copy(balancer = value) } }
+        }
+
+        item {
+            SettingValue(
+                title = "تعداد سرور در استخر",
+                subtitle = "سرورهای بیشتر = پایداری بالاتر، مصرف تست بیشتر",
+                value = "${settings.balancerSize} سرور"
+            ) {
+                val next = when (settings.balancerSize) {
+                    2 -> 3
+                    3 -> 4
+                    4 -> 5
+                    else -> 2
+                }
+                onChange { it.copy(balancerSize = next) }
+            }
+        }
+
+        item {
+            SettingSwitch(
+                title = "مسیریابی دقیق ایران (geoip/geosite)",
+                subtitle = "دانلود خودکار فایل‌های رسمی؛ دامنه و IPهای ایرانی مستقیم و بدون تانل باز می‌شوند",
+                checked = settings.geoAssets
+            ) { value -> onChange { it.copy(geoAssets = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "صرفه‌جویی باتری",
+                subtitle = "با خاموش بودن صفحه، فاصله‌ی تست‌های سلامت از ۲ ثانیه به ۱۵ ثانیه می‌رسد",
+                checked = settings.batterySaver
+            ) { value -> onChange { it.copy(batterySaver = value) } }
+        }
+
         item { GroupTitle("حریم خصوصی و امنیت") }
 
         item {
