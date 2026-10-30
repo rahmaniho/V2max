@@ -44,6 +44,8 @@ object XrayCore {
     private var initialized = false
 
     private var controller: CoreController? = null
+    private var speedLease = 0L
+    private var nextLease = 0L
 
     private val callback = object : CoreCallbackHandler {
         override fun startup(): Long {
@@ -104,13 +106,41 @@ object XrayCore {
     @Synchronized
     @Throws(Exception::class)
     fun start(config: String, tunFd: Int) {
+        check(speedLease == 0L) { "تست سرعت در حال اجراست؛ دوباره تلاش کنید" }
         val c = controller ?: Libv2ray.newCoreController(callback).also { controller = it }
         c.startLoop(config, tunFd)
+    }
+
+    /** A temporary speed test must never stop a VPN started by another request. */
+    @Synchronized
+    fun startSpeedTest(config: String): Long? {
+        if (speedLease != 0L || isRunning) return null
+        val c = controller ?: Libv2ray.newCoreController(callback).also { controller = it }
+        val lease = ++nextLease
+        speedLease = lease
+        try {
+            c.startLoop(config, 0)
+            if (!c.isRunning) {
+                speedLease = 0L
+                return null
+            }
+            return lease
+        } catch (t: Throwable) {
+            speedLease = 0L
+            throw t
+        }
+    }
+
+    @Synchronized
+    fun stopSpeedTest(lease: Long) {
+        if (speedLease != lease) return
+        stop()
     }
 
     @Synchronized
     fun stop() {
         try {
+            speedLease = 0L
             val c = controller ?: return
             if (c.isRunning) c.stopLoop()
         } catch (t: Throwable) {
@@ -153,11 +183,26 @@ object XrayCore {
         return result
     }
 
-    /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل) */
+    @Volatile private var lastProbeProblem: String = ""
+
+    fun clearProbeProblem() { lastProbeProblem = "" }
+    fun probeProblem(): String = lastProbeProblem
+
+    /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل). متن خطاها بدون اطلاعات محرمانه ذخیره می‌شود. */
     fun measureOutboundDelay(config: String, url: String): Long {
         return try {
             Libv2ray.measureOutboundDelay(config, url)
         } catch (t: Throwable) {
+            val reason = t.message.orEmpty()
+            val safe = when {
+                reason.contains("allowInsecure", ignoreCase = true) ->
+                    "هسته‌ی Xray گزینه‌ی allowInsecure را حذف کرده است؛ گواهی معتبر یا اثرانگشت گواهی لازم است"
+                reason.contains("config load error", ignoreCase = true) ||
+                    reason.contains("instance creation failed", ignoreCase = true) ->
+                    "فرمت یا تنظیمات کانفیگ با هسته‌ی Xray سازگار نیست"
+                else -> ""
+            }
+            if (safe.isNotBlank()) lastProbeProblem = safe
             -1L
         }
     }

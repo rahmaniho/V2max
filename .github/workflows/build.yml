@@ -66,7 +66,16 @@ jobs:
             printf 'storeFile=keystore.jks\nstorePassword=v2max123\nkeyAlias=v2max\nkeyPassword=v2max123\n' > keystore.properties
           fi
 
-      - name: Run unit tests
+      - name: Download matching Xray executable for compatibility tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/xray"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/xray.zip" \
+            "https://github.com/XTLS/Xray-core/releases/download/${LIBV2RAY_VERSION}/Xray-linux-64.zip"
+          unzip -q "$RUNNER_TEMP/xray.zip" -d "$RUNNER_TEMP/xray"
+          chmod +x "$RUNNER_TEMP/xray/xray"
+          echo "TEST_XRAY_BIN=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
+
+      - name: Run unit and local Xray integration tests
         run: |
           set -o pipefail
           gradle --no-daemon testReleaseUnitTest 2>&1 | tee test-out.log
@@ -111,7 +120,7 @@ jobs:
 
       # انتشار APK در بخش Releases تا لینک دانلود مستقیم و همیشگی داشته باشد
       - name: Publish APKs to GitHub Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

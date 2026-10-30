@@ -119,18 +119,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
 
-        val lastScan = Repo.scan.value.finishedAt
-        val scannedRecently = lastScan > 0 && System.currentTimeMillis() - lastScan < 90_000L
+        // اتصال فقط پس از اتمام آزمون واقعی انجام می‌شود.
 
-        if (!settings.autoRefreshOnOpen && scannedRecently) {
-            // همین چند لحظه پیش اسکن شده؛ از همان نتیجه استفاده می‌شود
-            if (settings.autoConnectOnOpen && !Repo.tunnel.value.isActive) {
-                SmartConnect.fastStart(app)
-            }
-            return
-        }
-
-        // اسکن سه‌مرحله‌ای و اتصال به بهترین سرور (اتصال پس از پینگ انجام می‌شود)
         SmartConnect.scanAndConnect(
             app,
             autoConnect = settings.autoConnectOnOpen,
@@ -160,7 +150,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // --------------------------------------------------------------- connect
 
     fun toggleConnection() {
-        if (Repo.tunnel.value.isActive) {
+        if (Repo.scan.value.running) {
+            SmartConnect.cancelScan()
+            if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
+            else showMessage("تست اتصال لغو شد")
+        } else if (Repo.tunnel.value.isActive) {
             TunnelController.stop(getApplication())
         } else {
             quickConnect()
@@ -168,6 +162,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnectTunnel() {
+        SmartConnect.cancelScan()
         TunnelController.stop(getApplication())
     }
 
@@ -220,7 +215,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } else if (pendingSmartScan) {
             launchSmartConnect(pendingScanSubId)
         } else {
-            TunnelController.start(getApplication(), pendingServerId)
+            val id = pendingServerId
+            viewModelScope.launch(errorHandler) {
+                val app = getApplication<Application>()
+                if (id == null) SmartConnect.quickConnect(app)
+                else if (!SmartConnect.connectVerified(app, id)) {
+                    showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+                }
+            }
         }
         pendingSmartScan = false
         pendingServerId = null
@@ -259,16 +261,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(errorHandler + Dispatchers.IO) {
             val server = Repo.serverById(id) ?: return@launch
             val settings = Repo.settings.value
-            val tcp = HealthScanner.tcpPing(server)
-            Repo.setTestResult(id, tcp, -1)
-            if (tcp <= 0) return@launch
-
-            val google = HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.GOOGLE.url)
-            val instagram = if (settings.multiPing)
-                HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.INSTAGRAM.url) else -1
-            val youtube = if (settings.multiPing)
-                HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.YOUTUBE.url) else -1
-            Repo.setMultiPing(id, google, instagram, youtube, persist = true)
+            showMessage("در حال تست واقعی کانفیگ…")
+            val result = HealthScanner.scan(
+                context = getApplication(),
+                servers = listOf(server),
+                settings = settings,
+                preferredId = id,
+                onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping) },
+                onReal = { cfg, probe -> Repo.setVerifiedResult(cfg.id, probe) },
+                onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing) },
+                onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false) }
+            )
+            Repo.persistNow()
+            showMessage(result.best?.let { "تست واقعی موفق بود: ${it.realPing}ms" } ?: result.message)
         }
     }
 

@@ -146,20 +146,19 @@ object Repo {
         prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
     }
 
-    /**
-     * سقف تعداد کانفیگ‌های نگه‌داری‌شده.
-     *
-     * نگه‌داشتن هزاران کانفیگ، حافظه و زمان ذخیره‌سازی/آزمایش را چند برابر می‌کند و
-     * روی گوشی‌های کم‌حافظه باعث بسته‌شدن برنامه می‌شود. سرورهای موردعلاقه همیشه
-     * می‌مانند و بقیه بر اساس امتیاز (کیفیت) نگه داشته می‌شوند.
-     */
-    private const val MAX_SERVERS = 700
+    /** محدودیت فقط برای منابع عمومی است؛ کانفیگ و اشتراک شخصی هرگز حذف نمی‌شوند. */
+    private const val MAX_BUILT_IN_SERVERS = 700
 
     private fun capped(list: List<ServerConfig>): List<ServerConfig> {
-        if (list.size <= MAX_SERVERS) return list
-        val favorites = list.filter { it.favorite }
-        val rest = list.filterNot { it.favorite }.sortedBy { it.score() }
-        return (favorites + rest.take((MAX_SERVERS - favorites.size).coerceAtLeast(0))).distinctBy { it.id }
+        val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet()
+        val builtIn = list.filter { it.subId in builtInIds }
+        if (builtIn.size <= MAX_BUILT_IN_SERVERS) return list
+        val protected = builtIn.filter { it.favorite || it.id == _selectedId.value }
+        val remaining = builtIn.filterNot { it.favorite || it.id == _selectedId.value }
+            .sortedBy { it.score() }
+        val keep = (protected + remaining.take((MAX_BUILT_IN_SERVERS - protected.size).coerceAtLeast(0)))
+            .map { it.id }.toHashSet()
+        return list.filter { it.subId !in builtInIds || it.id in keep }
     }
 
     /**
@@ -182,7 +181,7 @@ object Repo {
         if (added > 0) {
             _servers.value = capped(current)
             persistServers()
-            if (_selectedId.value.isBlank()) setSelected(current.lastOrNull()?.id.orEmpty())
+            if (_selectedId.value.isBlank()) setSelected(_servers.value.lastOrNull()?.id.orEmpty())
         }
         return added
     }
@@ -216,11 +215,18 @@ object Repo {
                     cfg.successCount = old.successCount
                     cfg.failCount = old.failCount
                     cfg.testedAt = old.testedAt
+                    cfg.testedFragment = old.testedFragment
+                    cfg.testedFragmentProfile = old.testedFragmentProfile
+                    cfg.testedUrl = old.testedUrl
                     cfg.addedAt = old.addedAt
                     cfg
                 } else cfg
             )
         }
+        // Keep the live server until disconnect even if an updated subscription no longer lists it.
+        val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
+        existing.firstOrNull { it.id == liveId && merged.none { updated -> updated.id == it.id } }
+            ?.let { merged.add(it) }
         val others = _servers.value.filter { it.subId != subId }
         _servers.value = capped(others + merged)
         persistServers()
@@ -266,6 +272,36 @@ object Repo {
         if (persist) persistServers()
     }
 
+    /** شروع آزمون جدید؛ نتایج قدیمی نباید سرور شکست‌خورده را سالم نشان دهند. */
+    @Synchronized
+    fun setPretest(id: String, tcpPing: Int) {
+        val list = _servers.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        list[idx] = list[idx].copy(
+            tcpPing = tcpPing, realPing = -1, googlePing = -1, instagramPing = -1,
+            youtubePing = -1, testedAt = 0L, testedUrl = ""
+        )
+        _servers.value = list
+    }
+
+    @Synchronized
+    fun setVerifiedResult(id: String, result: ir.v2max.app.net.ProbeResult?) {
+        val list = _servers.value.toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return
+        val old = list[idx]
+        list[idx] = old.copy(
+            realPing = result?.delayMs ?: -1,
+            googlePing = if (result?.url == PingTargets.GOOGLE.url) result.delayMs else -1,
+            testedAt = if (result != null) System.currentTimeMillis() else 0L,
+            testedUrl = result?.url.orEmpty(),
+            testedFragment = result?.fragment ?: false,
+            testedFragmentProfile = result?.profile ?: old.testedFragmentProfile
+        )
+        _servers.value = list
+    }
+
     /** ثبت نتیجه‌ی پینگ چندگانه (گوگل/اینستاگرام/یوتیوب) */
     @Synchronized
     fun setMultiPing(
@@ -282,8 +318,8 @@ object Repo {
             googlePing = google,
             instagramPing = instagram,
             youtubePing = youtube,
-            realPing = google,
-            testedAt = System.currentTimeMillis()
+            realPing = if (google > 0) google else list[idx].realPing,
+            testedAt = if (list[idx].realPing > 0) list[idx].testedAt else System.currentTimeMillis()
         )
         _servers.value = list
         if (persist) persistServers()
@@ -293,7 +329,7 @@ object Repo {
     @Synchronized
     fun clearTestResults() {
         _servers.value = _servers.value.map {
-            it.copy(tcpPing = -1, realPing = -1, googlePing = -1, instagramPing = -1, youtubePing = -1, testedAt = 0L)
+            it.copy(tcpPing = -1, realPing = -1, googlePing = -1, instagramPing = -1, youtubePing = -1, testedAt = 0L, testedUrl = "")
         }
         persistServers()
     }
@@ -485,8 +521,8 @@ object Repo {
     fun healthyServers(maxAgeMs: Long = 30 * 60 * 1000L): List<ServerConfig> {
         val now = System.currentTimeMillis()
         return _servers.value
-            .filter { it.bestPing() > 0 && now - it.testedAt <= maxAgeMs }
-            .sortedBy { it.bestPing() }
+            .filter { it.realPing > 0 && it.testedUrl.isNotBlank() && now - it.testedAt in 0..maxAgeMs }
+            .sortedBy { it.score() }
     }
 
     // ------------------------------------------------------ network profiles

@@ -4,6 +4,7 @@ import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.ServerConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -46,8 +47,9 @@ object SpeedTester {
         withContext(Dispatchers.IO) {
             if (XrayCore.isRunning) return@withContext 0
             val config = ConfigBuilder.socksTestConfig(server, settings, SOCKS_PORT)
+            var lease: Long? = null
             try {
-                XrayCore.start(config, 0)
+                lease = XrayCore.startSpeedTest(config) ?: return@withContext 0
                 if (!XrayCore.isRunning) return@withContext 0
                 // کمی صبر تا inbound آماده شود
                 delay(350)
@@ -79,10 +81,12 @@ object SpeedTester {
                 // کیلوبیت بر ثانیه
                 val kbps = ((totalBytes * 8L) / elapsedMs).toInt()
                 kbps.coerceIn(0, 999_999)
-            } catch (t: Throwable) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
                 0
             } finally {
-                runCatching { XrayCore.stop() }
+                lease?.let { runCatching { XrayCore.stopSpeedTest(it) } }
             }
         }
 }

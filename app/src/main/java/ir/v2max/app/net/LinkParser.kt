@@ -1,6 +1,6 @@
 package ir.v2max.app.net
 
-import android.util.Base64
+import java.util.Base64
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import ir.v2max.app.data.Proto
@@ -40,7 +40,9 @@ object LinkParser {
         if (scheme.isEmpty()) return null
         return try {
             when (scheme) {
-                "vmess" -> parseVmess(line)
+                "vmess" -> if (line.substringAfter("://").substringBefore("?").contains('@')) {
+                    parseStandard(line, Proto.VMESS)
+                } else parseVmess(line)
                 "vless" -> parseStandard(line, Proto.VLESS)
                 "trojan" -> parseStandard(line, Proto.TROJAN)
                 "ss" -> parseShadowsocks(line)
@@ -84,9 +86,10 @@ object LinkParser {
         cfg.headerType = str("type", "headerType").ifBlank { "none" }
         cfg.host = str("host")
         cfg.path = str("path")
-        cfg.serviceName = str("path").takeIf { cfg.network == "grpc" }.orEmpty()
-        cfg.authority = str("authority")
-        cfg.mode = str("mode")
+        cfg.serviceName = str("serviceName").ifBlank { str("path").takeIf { cfg.network == "grpc" }.orEmpty() }
+        cfg.authority = str("authority").ifBlank { str("host").takeIf { cfg.network == "grpc" }.orEmpty() }
+        cfg.mode = str("mode").ifBlank { str("type").takeIf { cfg.network == "grpc" }.orEmpty() }
+        cfg.kcpSeed = str("path").takeIf { cfg.network in listOf("kcp", "mkcp") }.orEmpty()
         cfg.security = str("tls").let { if (it == "tls" || it == "reality") it else "" }
         cfg.sni = str("sni")
         cfg.alpn = str("alpn")
@@ -94,6 +97,9 @@ object LinkParser {
         cfg.publicKey = str("pbk")
         cfg.shortId = str("sid")
         cfg.spiderX = str("spx")
+        cfg.allowInsecure = str("insecure", "allowInsecure").lowercase() in listOf("1", "true", "yes")
+        cfg.verifyPeerCertByName = str("vcn")
+        cfg.pinnedPeerCertSha256 = str("pcs")
         cfg.name = decodeComponent(str("ps", "remarks")).ifBlank { "${host}:$port" }
         normalize(cfg)
         return cfg
@@ -146,6 +152,11 @@ object LinkParser {
         val decodedPassword = decodeComponent(rawPass)
 
         when (proto) {
+            Proto.VMESS -> {
+                cfg.uuid = decodedUser
+                cfg.method = q["scy"].orEmpty().ifBlank { "auto" }
+            }
+
             Proto.VLESS -> {
                 cfg.uuid = decodedUser
                 cfg.method = q["encryption"].orEmpty().ifBlank { "none" }
@@ -171,16 +182,24 @@ object LinkParser {
             else -> Unit
         }
 
-        cfg.network = q["type"].orEmpty().ifBlank { "tcp" }
+        cfg.network = q["type"].orEmpty().ifBlank { "tcp" }.lowercase()
         cfg.headerType = q["headerType"].orEmpty().ifBlank { "none" }
-        cfg.host = q["host"].orEmpty().ifBlank { q["sni"].orEmpty() }
+        cfg.host = q["host"].orEmpty()
         cfg.path = q["path"].orEmpty()
         cfg.serviceName = q["serviceName"].orEmpty().ifBlank { q["path"].orEmpty() }
         cfg.authority = q["authority"].orEmpty()
         cfg.mode = q["mode"].orEmpty()
-        cfg.security = q["security"].orEmpty().let {
-            if (proto == Proto.HYSTERIA2) "tls"
-            else if (it == "tls" || it == "reality") it else ""
+        cfg.xhttpExtra = q["extra"].orEmpty()
+        cfg.finalMask = q["fm"].orEmpty()
+        cfg.kcpSeed = q["seed"].orEmpty()
+        cfg.kcpMtu = q["mtu"]?.toIntOrNull() ?: 1350
+        cfg.kcpTti = q["tti"]?.toIntOrNull() ?: 50
+        cfg.security = when {
+            proto == Proto.HYSTERIA2 -> "tls"
+            q["security"] == "none" -> "none"
+            q["security"] == "tls" || q["security"] == "reality" -> q["security"].orEmpty()
+            proto == Proto.TROJAN -> "tls"
+            else -> ""
         }
         cfg.sni = q["sni"].orEmpty().ifBlank { q["peer"].orEmpty() }
         cfg.alpn = q["alpn"].orEmpty()
@@ -188,6 +207,10 @@ object LinkParser {
         cfg.publicKey = q["pbk"].orEmpty()
         cfg.shortId = q["sid"].orEmpty()
         cfg.spiderX = q["spx"].orEmpty()
+        cfg.echConfigList = q["ech"].orEmpty()
+        cfg.verifyPeerCertByName = q["vcn"].orEmpty()
+        cfg.pinnedPeerCertSha256 = q["pcs"].orEmpty().ifBlank { q["pinSHA256"].orEmpty() }
+        cfg.mldsa65Verify = q["pqv"].orEmpty()
         cfg.allowInsecure = listOf("allowInsecure", "insecure", "allow_insecure", "insecure_skip_verify")
             .any { key -> q[key]?.lowercase() in listOf("1", "true", "yes") }
         cfg.name = decodeComponent(fragment).ifBlank { "${host}:$port" }
@@ -213,8 +236,9 @@ object LinkParser {
             // ss://base64(method:password)@host:port  یا  ss://method:password@host:port
             val userInfo = body.substringBeforeLast("@")
             val hostPort = body.substringAfterLast("@")
-            val decoded = if (userInfo.contains(":")) decodeComponent(userInfo) else {
-                decodeBase64(userInfo) ?: decodeComponent(userInfo)
+            val decodedInfo = decodeComponent(userInfo)
+            val decoded = if (decodedInfo.contains(":")) decodedInfo else {
+                decodeBase64(decodedInfo) ?: decodedInfo
             }
             method = decoded.substringBefore(":", "")
             password = decoded.substringAfter(":", "")
@@ -241,15 +265,26 @@ object LinkParser {
         val q = parseQuery(query)
         val cfg = ServerConfig()
         cfg.proto = Proto.SS
-        cfg.address = host
+        cfg.address = host.removeSurrounding("[", "]")
         cfg.port = port
-        cfg.method = method
+        cfg.method = method.lowercase()
         cfg.password = password
         cfg.network = q["type"].orEmpty().ifBlank { "tcp" }
         cfg.host = q["host"].orEmpty()
         cfg.path = q["path"].orEmpty()
         cfg.security = if (q["security"] == "tls") "tls" else ""
         cfg.sni = q["sni"].orEmpty()
+        // v2rayNG maps simple-obfs HTTP to the Xray TCP HTTP header.
+        val plugin = q["plugin"].orEmpty()
+        if (plugin.isNotBlank()) {
+            val parts = plugin.split(';')
+            val options = parts.drop(1).associate { it.substringBefore('=') to it.substringAfter('=', "") }
+            if (options["obfs"] != "http") return null // Do not silently discard unsupported plugins.
+            cfg.network = "tcp"
+            cfg.headerType = "http"
+            cfg.host = options["obfs-host"].orEmpty()
+            cfg.path = options["path"].orEmpty()
+        }
         cfg.name = decodeComponent(fragment).ifBlank { "${host}:$port" }
         normalize(cfg)
         return cfg
@@ -270,8 +305,8 @@ object LinkParser {
             if (cfg.host.isBlank()) cfg.host = cfg.address
         }
         if (cfg.security.isBlank() && cfg.proto == Proto.TROJAN) cfg.security = "tls"
-        if (cfg.security.isNotBlank() && cfg.sni.isBlank()) {
-            cfg.sni = cfg.host.ifBlank { cfg.address }
+        if (cfg.security.isNotBlank() && cfg.security != "none" && cfg.sni.isBlank()) {
+            cfg.sni = cfg.effectiveSni()
         }
         if (cfg.network == "grpc" && cfg.serviceName.isBlank()) cfg.serviceName = cfg.path
         if (cfg.network == "ws" && cfg.path.isBlank()) cfg.path = "/"
@@ -296,7 +331,7 @@ object LinkParser {
         val variants = listOf(cleaned, cleaned.replace('-', '+').replace('_', '/'))
         for (variant in variants) {
             try {
-                val bytes = Base64.decode(pad(variant), Base64.NO_WRAP)
+                val bytes = Base64.getDecoder().decode(pad(variant))
                 if (bytes.isEmpty()) continue
                 val text = String(bytes, Charsets.UTF_8)
                 if (text.isNotBlank() && !text.contains('\uFFFD')) return text
@@ -321,6 +356,9 @@ object LinkParser {
         }
     }
 
+    private fun encodeComponent(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
+
     /** ساخت لینک اشتراک از یک کانفیگ (برای اشتراک‌گذاری) */
     fun toLink(cfg: ServerConfig): String {
         return when (cfg.proto) {
@@ -334,15 +372,22 @@ object LinkParser {
                     addProperty("aid", "0")
                     addProperty("scy", cfg.method.ifBlank { "auto" })
                     addProperty("net", cfg.network)
-                    addProperty("type", cfg.headerType.ifBlank { "none" })
-                    addProperty("host", cfg.host)
-                    addProperty("path", cfg.path)
+                    addProperty("type", if (cfg.network == "grpc") cfg.mode else cfg.headerType.ifBlank { "none" })
+                    addProperty("host", if (cfg.network == "grpc") cfg.authority else cfg.host)
+                    addProperty("path", when (cfg.network) {
+                        "grpc" -> cfg.serviceName
+                        "kcp", "mkcp" -> cfg.kcpSeed
+                        else -> cfg.path
+                    })
                     addProperty("tls", cfg.security)
                     addProperty("sni", cfg.sni)
                     addProperty("alpn", cfg.alpn)
                     addProperty("fp", cfg.fingerprint)
+                    addProperty("insecure", if (cfg.allowInsecure) "1" else "0")
+                    addProperty("vcn", cfg.verifyPeerCertByName)
+                    addProperty("pcs", cfg.pinnedPeerCertSha256)
                 }
-                val encoded = Base64.encodeToString(obj.toString().toByteArray(), Base64.NO_WRAP or Base64.URL_SAFE)
+                val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(obj.toString().toByteArray(Charsets.UTF_8))
                 "vmess://$encoded"
             }
 
@@ -360,38 +405,61 @@ object LinkParser {
                     Proto.SOCKS, Proto.HTTP -> if (cfg.uuid.isBlank()) "" else "${cfg.uuid}:${cfg.password}"
                     else -> ""
                 }
-                val q = mutableListOf<String>()
-                if (cfg.proto == Proto.VLESS) q.add("encryption=${cfg.method.ifBlank { "none" }}")
+                val q = mutableListOf<Pair<String, String>>()
+                fun param(key: String, value: String) { if (value.isNotBlank()) q.add(key to value) }
+                if (cfg.proto == Proto.VLESS) param("encryption", cfg.method.ifBlank { "none" })
                 if (cfg.proto != Proto.HYSTERIA2) {
-                    q.add("type=${cfg.network}")
-                    if (cfg.security.isNotBlank()) q.add("security=${cfg.security}")
-                    if (cfg.sni.isNotBlank()) q.add("sni=${cfg.sni}")
-                    if (cfg.host.isNotBlank()) q.add("host=${cfg.host}")
-                    if (cfg.path.isNotBlank()) q.add("path=${cfg.path}")
-                    if (cfg.serviceName.isNotBlank() && cfg.network == "grpc") q.add("serviceName=${cfg.serviceName}")
-                    if (cfg.fingerprint.isNotBlank()) q.add("fp=${cfg.fingerprint}")
-                    if (cfg.publicKey.isNotBlank()) q.add("pbk=${cfg.publicKey}")
-                    if (cfg.shortId.isNotBlank()) q.add("sid=${cfg.shortId}")
-                    if (cfg.flow.isNotBlank()) q.add("flow=${cfg.flow}")
-                    if (cfg.alpn.isNotBlank()) q.add("alpn=${cfg.alpn}")
-                } else {
-                    if (cfg.sni.isNotBlank()) q.add("sni=${cfg.sni}")
-                    if (cfg.obfsPassword.isNotBlank()) {
-                        q.add("obfs=salamander")
-                        q.add("obfs-password=${cfg.obfsPassword}")
+                    param("type", cfg.network)
+                    param("security", cfg.security)
+                    param("host", cfg.host)
+                    param("path", cfg.path)
+                    if (cfg.network == "grpc") param("serviceName", cfg.serviceName)
+                    param("authority", cfg.authority)
+                    param("mode", cfg.mode)
+                    param("headerType", cfg.headerType.takeUnless { it == "none" }.orEmpty())
+                    param("extra", cfg.xhttpExtra)
+                    param("fm", cfg.finalMask)
+                    if (cfg.network in listOf("kcp", "mkcp")) {
+                        param("seed", cfg.kcpSeed)
+                        param("mtu", cfg.kcpMtu.toString())
+                        param("tti", cfg.kcpTti.toString())
                     }
+                    param("fp", cfg.fingerprint)
+                    param("pbk", cfg.publicKey)
+                    param("sid", cfg.shortId)
+                    param("spx", cfg.spiderX)
+                    param("pqv", cfg.mldsa65Verify)
+                    param("flow", cfg.flow)
+                } else if (cfg.obfsPassword.isNotBlank()) {
+                    param("obfs", "salamander")
+                    param("obfs-password", cfg.obfsPassword)
                 }
-                val query = if (q.isEmpty()) "" else "?" + q.joinToString("&") { it.replace(" ", "%20") }
+                param("sni", cfg.sni)
+                param("alpn", cfg.alpn)
+                param("ech", cfg.echConfigList)
+                param("vcn", cfg.verifyPeerCertByName)
+                param("pcs", cfg.pinnedPeerCertSha256)
+                if (cfg.allowInsecure) param("insecure", "1")
+                val query = if (q.isEmpty()) "" else "?" + q.joinToString("&") { (key, value) ->
+                    "$key=${encodeComponent(value)}"
+                }
                 val hostPart = if (cfg.address.contains(":")) "[${cfg.address}]" else cfg.address
-                "$scheme://$user@$hostPart:${cfg.port}$query#${cfg.name.replace(" ", "%20")}"
+                val encodedUser = if (cfg.proto == Proto.SOCKS || cfg.proto == Proto.HTTP) {
+                    if (cfg.uuid.isBlank()) "" else "${encodeComponent(cfg.uuid)}:${encodeComponent(cfg.password)}"
+                } else encodeComponent(user)
+                "$scheme://$encodedUser@$hostPart:${cfg.port}$query#${encodeComponent(cfg.name)}"
             }
 
             Proto.SS -> {
-                val cred = Base64.encodeToString(
-                    "${cfg.method}:${cfg.password}".toByteArray(),
-                    Base64.NO_WRAP or Base64.URL_SAFE
+                val cred = Base64.getUrlEncoder().withoutPadding().encodeToString(
+                    "${cfg.method}:${cfg.password}".toByteArray(Charsets.UTF_8)
                 )
-                "ss://$cred@${cfg.address}:${cfg.port}#${cfg.name.replace(" ", "%20")}"
+                val hostPart = if (cfg.address.contains(":")) "[${cfg.address}]" else cfg.address
+                val plugin = if (cfg.headerType == "http") {
+                    val value = "obfs-local;obfs=http;obfs-host=${cfg.host};path=${cfg.path}"
+                    "?plugin=${encodeComponent(value)}"
+                } else ""
+                "ss://$cred@$hostPart:${cfg.port}$plugin#${encodeComponent(cfg.name)}"
             }
         }
     }
