@@ -16,6 +16,30 @@ object XrayCore {
 
     private const val TAG = "V2maxCore"
 
+    /** آخرین خطوط لاگ هسته برای صفحه‌ی عیب‌یابی (حداکثر ۴۰۰ خط) */
+    private val logLines = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private val logListeners = java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
+
+    fun logs(): List<String> = logLines.toList()
+
+    fun clearLogs() = logLines.clear()
+
+    fun addLogListener(listener: (String) -> Unit) {
+        logListeners.addIfAbsent(listener)
+    }
+
+    fun removeLogListener(listener: (String) -> Unit) {
+        logListeners.remove(listener)
+    }
+
+    /** ثبت یک رویداد هم در logcat و هم در حافظه‌ی نمایشی */
+    fun log(line: String) {
+        val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        logLines.addLast("[$stamp] $line")
+        while (logLines.size > 400) logLines.pollFirst()
+        logListeners.forEach { runCatching { it(line) } }
+    }
+
     @Volatile
     private var initialized = false
 
@@ -24,16 +48,21 @@ object XrayCore {
     private val callback = object : CoreCallbackHandler {
         override fun startup(): Long {
             Log.i(TAG, "core started")
+            log("هسته آغاز شد")
             return 0
         }
 
         override fun shutdown(): Long {
             Log.i(TAG, "core stopped")
+            log("هسته متوقف شد")
             return 0
         }
 
         override fun onEmitStatus(code: Long, message: String?): Long {
-            if (!message.isNullOrBlank()) Log.i(TAG, "core: $message")
+            if (!message.isNullOrBlank()) {
+                Log.i(TAG, "core: $message")
+                log(message)
+            }
             return 0
         }
     }
@@ -49,6 +78,7 @@ object XrayCore {
             initialized = true
         } catch (t: Throwable) {
             Log.e(TAG, "init failed", t)
+            log("خطا در آماده‌سازی هسته: ${t.message}")
             throw t
         }
     }
@@ -84,6 +114,7 @@ object XrayCore {
             if (c.isRunning) c.stopLoop()
         } catch (t: Throwable) {
             Log.e(TAG, "stop failed", t)
+            log("خطا در توقف هسته: ${t.message}")
         }
     }
 

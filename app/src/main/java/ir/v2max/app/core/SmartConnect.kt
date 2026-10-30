@@ -99,6 +99,9 @@ object SmartConnect {
                         persist = false
                     )
                 },
+                onSpeed = { cfg, kbps ->
+                    Repo.setSpeed(cfg.id, kbps, persist = false)
+                },
                 onMulti = { cfg ->
                     Repo.setMultiPing(
                         cfg.id,
@@ -160,26 +163,40 @@ object SmartConnect {
             }
         )
 
-        if (best != null) {
+        // حافظه‌ی شبکه‌های آشنا: اگر سرور ذخیره‌شده‌ی همین شبکه تقریباً هم‌سطح بهترین بود، همان انتخاب می‌شود
+        val assessment = Repo.network.value
+        val profileKey = profileKeyOf(assessment)
+        val remembered = if (settings.rememberNetworks && profileKey.isNotBlank()) {
+            Repo.profileFor(profileKey)?.serverId?.let { Repo.serverById(it) }
+        } else null
+
+        val chosen = when {
+            best == null -> null
+            remembered != null && remembered.bestPing() > 0 &&
+                remembered.score() <= best.score() + 60 -> remembered
+            else -> best
+        }
+
+        if (chosen != null) {
             val tunnel = Repo.tunnel.value
             val current = Repo.serverById(tunnel.serverId)
             val connected = tunnel.status == TunnelStatus.CONNECTED
-            val sameAsRunning = connected && current?.id == best.id
+            val sameAsRunning = connected && current?.id == chosen.id
             // اتصال فعلی تقریباً هم‌سطح بهترین است؛ برای جلوگیری از قطعی سوییچ نمی‌کنیم
             val keepCurrent = autoConnect && connected && current != null &&
                 !sameAsRunning && current.bestPing() > 0 &&
-                current.bestPing() <= best.bestPing() * 1.35f
+                current.score() <= chosen.score() * 1.35f
 
             when {
-                sameAsRunning -> Repo.setSelected(best.id)
+                sameAsRunning -> Repo.setSelected(chosen.id)
                 keepCurrent -> Unit
                 else -> {
-                    Repo.setSelected(best.id)
-                    if (autoConnect) TunnelController.start(context, best.id)
+                    Repo.setSelected(chosen.id)
+                    if (autoConnect) TunnelController.start(context, chosen.id)
                 }
             }
         }
-        return@withLock best
+        return@withLock chosen
     }
 
     /**
@@ -259,6 +276,36 @@ object SmartConnect {
         Repo.clearTestResults()
         Repo.scan.value = ScanState()
         return scanAndConnect(context, autoConnect = autoConnect)
+    }
+
+    /** کلید حافظه‌ی شبکه از نتیجه‌ی بررسی عمیق */
+    fun profileKeyOf(assessment: ir.v2max.app.data.NetworkAssessment): String {
+        if (assessment.assessedAt == 0L) return ""
+        return assessment.carrier.name + "|" + assessment.netType.ifBlank { "net" }
+    }
+
+    /** ذخیره‌ی بهترین سرور و تنظیمات کاری همین شبکه پس از اتصال موفق */
+    fun rememberWorkingNetwork(server: ir.v2max.app.data.ServerConfig) {
+        if (!Repo.settings.value.rememberNetworks) return
+        val assessment = Repo.network.value
+        val key = profileKeyOf(assessment)
+        if (key.isBlank()) return
+        val settings = Repo.settings.value
+        val previous = Repo.profileFor(key)
+        Repo.saveProfile(
+            ir.v2max.app.data.NetworkProfile(
+                key = key,
+                carrierLabel = assessment.carrier.label,
+                serverId = server.id,
+                serverName = server.displayName(),
+                fragmentProfile = settings.fragmentProfile,
+                mtu = settings.mtu,
+                bestPing = server.bestPing(),
+                score = server.score(),
+                uses = (previous?.uses ?: 0) + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
     /** بررسی دوره‌ای سلامت سرور انتخابی */

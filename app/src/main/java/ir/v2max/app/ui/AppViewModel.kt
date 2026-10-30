@@ -9,6 +9,7 @@ import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
+import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser
@@ -86,6 +87,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
         if (Repo.servers.value.isEmpty()) return
 
+        if (!autoConnectAllowed(app)) return
         val needsPermission = VpnService.prepare(app) != null
         if (needsPermission) {
             if (settings.autoConnectOnOpen) {
@@ -115,6 +117,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    /** اگر «فقط وای‌فای» روشن باشد و شبکه داده باشد، اتصال خودکار انجام نمی‌شود */
+    private fun autoConnectAllowed(app: android.app.Application): Boolean {
+        if (!Repo.settings.value.wifiOnly) return true
+        val cm = app.getSystemService(android.net.ConnectivityManager::class.java) ?: return true
+        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) }
+        val onWifi = caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true ||
+            caps?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) == true
+        if (!onWifi) showMessage("اتصال خودکار فقط روی وای‌فای فعال است")
+        return onWifi
+    }
+
     fun showMessage(text: String) {
         _message.value = text
     }
@@ -131,6 +144,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } else {
             quickConnect()
         }
+    }
+
+    fun disconnectTunnel() {
+        TunnelController.stop(getApplication())
     }
 
     /** درخواست اتصال؛ در صورت نیاز مجوز VPN از کاربر گرفته می‌شود */
@@ -493,6 +510,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (Repo.tunnel.value.isActive) {
             requestConnect(id)
         }
+    }
+
+    fun saveEditedServer(server: ServerConfig) {
+        Repo.updateServer(server)
+        showMessage("کانفیگ ذخیره شد")
+    }
+
+    fun cloneServer(copy: ServerConfig) {
+        Repo.updateServer(copy)
+        Repo.setSelected(copy.id)
+        showMessage("نسخه‌ی کپی ساخته شد")
+    }
+
+    fun deleteServers(ids: List<String>) {
+        Repo.removeServers(ids)
+        showMessage("${Format.number(ids.size)} سرور حذف شد")
+    }
+
+    fun setFavorite(ids: List<String>, favorite: Boolean) {
+        ids.forEach { Repo.setFavorite(it, favorite) }
+        showMessage(if (favorite) "به علاقه‌مندی‌ها اضافه شد" else "از علاقه‌مندی‌ها حذف شد")
     }
 
     fun shareLink(serverId: String): String? {

@@ -52,6 +52,52 @@ object ConfigBuilder {
         return root.toString()
     }
 
+    /**
+     * کانفیگ سبک با یک inbound از نوع SOCKS برای سنجش سرعت واقعی.
+     * هسته با tunFd = 0 اجرا می‌شود و ترافیک فقط از طریق پورت محلی عبور می‌کند.
+     */
+    fun socksTestConfig(server: ServerConfig, settings: AppSettings, port: Int): String {
+        val root = JsonObject()
+        root.add("log", JsonObject().apply { addProperty("loglevel", "warning") })
+        root.add(
+            "inbounds", JsonArray().apply {
+                add(
+                    JsonObject().apply {
+                        addProperty("tag", "socks-in")
+                        addProperty("protocol", "socks")
+                        addProperty("listen", "127.0.0.1")
+                        addProperty("port", port)
+                        add(
+                            "settings", JsonObject().apply {
+                                addProperty("auth", "noauth")
+                                addProperty("udp", false)
+                            }
+                        )
+                        add(
+                            "sniffing", JsonObject().apply {
+                                addProperty("enabled", true)
+                                add(
+                                    "destOverride", JsonArray().apply {
+                                        add(JsonPrimitive("http"))
+                                        add(JsonPrimitive("tls"))
+                                    }
+                                )
+                            }
+                        )
+                    }
+                )
+            }
+        )
+        root.add(
+            "outbounds", JsonArray().apply {
+                add(outbound(server, settings))
+                add(JsonObject().apply { addProperty("protocol", "freedom"); addProperty("tag", "direct") })
+                add(JsonObject().apply { addProperty("protocol", "blackhole"); addProperty("tag", "block") })
+            }
+        )
+        return root.toString()
+    }
+
     /** کانفیگ کامل برای اجرای VPN */
     fun vpnConfig(server: ServerConfig, settings: AppSettings): String {
         val root = JsonObject()
@@ -201,6 +247,9 @@ object ConfigBuilder {
 
     // -------------------------------------------------------------- routing
 
+    /** برای آزمون و پیش‌نمایش: فقط بخش routing کانفیگ */
+    fun routingJson(settings: AppSettings): JsonObject = buildRouting(settings)
+
     private fun buildRouting(settings: AppSettings): JsonObject {
         val rules = JsonArray()
 
@@ -253,10 +302,52 @@ object ConfigBuilder {
             )
         }
 
+        // 6) قواعد سفارشی کاربر (ویرایش‌شده در صفحه‌ی مسیریابی)
+        buildCustomRules(settings).forEach { rules.add(it) }
+
         val routing = JsonObject()
         routing.addProperty("domainStrategy", "AsIs")
         routing.add("rules", rules)
         return routing
+    }
+
+    /**
+     * قواعد مسیریابی کاربر را به آیتم‌های routing.xray تبدیل می‌کند.
+     * خطاهای قالب نادیده گرفته می‌شوند تا یک خط اشتباه کل اتصال را خراب نکند.
+     */
+    fun buildCustomRules(settings: AppSettings): List<JsonObject> {
+        val out = ArrayList<JsonObject>()
+        for (raw in settings.customRoutingRules) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val parts = line.split("|").map { it.trim() }
+            if (parts.size < 3) continue
+            val action = parts[0].lowercase()
+            val outbound = when (action) {
+                "direct" -> TAG_DIRECT
+                "proxy" -> TAG_PROXY
+                "block", "reject" -> TAG_BLOCK
+                else -> continue
+            }
+            val type = parts[1].lowercase()
+            val values = parts.drop(2).joinToString(",").split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (values.isEmpty()) continue
+
+            val rule = JsonObject()
+            when (type) {
+                "domain" -> rule.add("domain", JsonArray().apply {
+                    values.forEach { add(if (it.startsWith("domain:") || it.startsWith("full:") || it.startsWith("regexp:") || it.startsWith("keyword:")) it else "domain:$it") }
+                })
+                "ip" -> rule.add("ip", JsonArray().apply { values.forEach { add(it) } })
+                "port" -> rule.addProperty("port", values.joinToString(","))
+                else -> continue
+            }
+            rule.addProperty("outboundTag", outbound)
+            out.add(rule)
+        }
+        return out
     }
 
     // ------------------------------------------------------------- outbound

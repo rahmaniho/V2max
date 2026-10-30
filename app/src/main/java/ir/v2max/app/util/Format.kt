@@ -7,6 +7,17 @@ import java.util.Locale
 /** قالب‌بندی اعداد، سرعت و زمان برای نمایش در رابط فارسی */
 object Format {
 
+    /** سرعت اندازه‌گیری‌شده (کیلوبیت بر ثانیه) */
+    fun kbps(value: Int): String = when {
+        value <= 0 -> "—"
+        value >= 1000 -> {
+            val mbps = value / 1000.0
+            val rounded = (mbps * 10).toInt() / 10.0
+            "$rounded Mbps"
+        }
+        else -> "$value Kbps"
+    }
+
     fun speed(bytesPerSecond: Long): String {
         if (bytesPerSecond <= 0L) return "۰ B/s"
         val kb = bytesPerSecond / 1024.0

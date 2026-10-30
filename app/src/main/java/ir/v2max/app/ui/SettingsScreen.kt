@@ -50,6 +50,8 @@ fun SettingsScreen(
     onSetFreeSources: (Boolean) -> Unit = {},
     onCheckUpdate: () -> Unit = {},
     onScanQr: () -> Unit = {},
+    onOpenRouting: () -> Unit = {},
+    onOpenDiag: () -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {}
 ) {
@@ -189,6 +191,46 @@ fun SettingsScreen(
                 subtitle = "پروفایل مناسب بر اساس شبکه‌ی اپراتور انتخاب و در صورت نیاز خودکار اصلاح می‌شود",
                 checked = settings.autoTuneFragment
             ) { value -> onChange { it.copy(autoTuneFragment = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "سنجش سرعت دانلود واقعی",
+                subtitle = "برای چند سرور برتر، سرعت دانلود واقعی اندازه‌گیری و در رتبه‌بندی لحاظ می‌شود",
+                checked = settings.speedTest
+            ) { value -> onChange { it.copy(speedTest = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "حافظه‌ی شبکه‌های آشنا",
+                subtitle = "برای هر اپراتور/شبکه، بهترین سرور و تنظیمات کاری ذخیره و خودکار انتخاب می‌شود",
+                checked = settings.rememberNetworks
+            ) { value -> onChange { it.copy(rememberNetworks = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "حالت کم‌مصرف",
+                subtitle = "تست سرعت و تست‌های سنگین انجام نمی‌شود؛ مناسب اینترنت محدود",
+                checked = settings.dataSaver
+            ) { value -> onChange { it.copy(dataSaver = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "اتصال خودکار فقط روی وای‌فای",
+                subtitle = "روی داده‌ی همراه، اتصال خودکار انجام نمی‌شود",
+                checked = settings.wifiOnly
+            ) { value -> onChange { it.copy(wifiOnly = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "نمایش پرچم کشور سرورها",
+                subtitle = "پرچم کشور از نام کانفیگ تشخیص داده می‌شود (بدون ارسال هیچ داده‌ای)",
+                checked = settings.showFlags
+            ) { value -> onChange { it.copy(showFlags = value) } }
         }
 
         item {
@@ -341,6 +383,67 @@ fun SettingsScreen(
                 subtitle = "اسکن کد QR مخزن یا لینک اشتراک با دوربین",
                 value = "اسکن"
             ) { onScanQr() }
+        }
+
+        item { GroupTitle("حریم خصوصی و امنیت") }
+
+        item {
+            SettingSwitch(
+                title = "قفل برنامه",
+                subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
+                checked = settings.appLock
+            ) { value -> onChange { it.copy(appLock = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "پنهان‌کردن جزئیات در اعلان",
+                subtitle = "نام سرور و سرعت در اعلان نمایش داده نمی‌شود",
+                checked = settings.hideNotificationContent
+            ) { value -> onChange { it.copy(hideNotificationContent = value) } }
+        }
+
+        item {
+            SettingValue(
+                title = "سقف مصرف روزانه",
+                subtitle = if (settings.dailyLimitMb <= 0) "بدون محدودیت — برای تعیین سقف ضربه بزنید"
+                else "با رسیدن به ${settings.dailyLimitMb} مگابایت اتصال قطع می‌شود",
+                value = if (settings.dailyLimitMb <= 0) "بی‌نهایت" else "${settings.dailyLimitMb} MB"
+            ) {
+                val next = when {
+                    settings.dailyLimitMb <= 0 -> 500
+                    settings.dailyLimitMb < 1000 -> 1000
+                    settings.dailyLimitMb < 3000 -> 3000
+                    else -> 0
+                }
+                onChange { it.copy(dailyLimitMb = next) }
+            }
+        }
+
+        item { GroupTitle("ابزارهای پیشرفته") }
+
+        item {
+            SettingValue(
+                title = "مسیریابی سفارشی",
+                subtitle = "قواعد دلخواه برای دامنه، IP و پورت (direct / proxy / block)",
+                value = "${settings.customRoutingRules.size} قاعده"
+            ) { onOpenRouting() }
+        }
+
+        item {
+            SettingValue(
+                title = "عیب‌یابی و گزارش",
+                subtitle = "لاگ زنده‌ی هسته، IP و کشور خروجی، بررسی DNS و ارسال گزارش",
+                value = "باز کردن"
+            ) { onOpenDiag() }
+        }
+
+        item {
+            SettingValue(
+                title = "اتوماسیون با Intent",
+                subtitle = "اتصال/قطع/واردکردن کانفیگ از Tasker یا سایر برنامه‌ها",
+                value = "راهنما"
+            ) { onOpenDiag() }
         }
 
         item { GroupTitle("درباره") }

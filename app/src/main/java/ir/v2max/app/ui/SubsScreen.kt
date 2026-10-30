@@ -64,7 +64,8 @@ fun SubsScreen(
     onSmartScan: (String) -> Unit,
     onImportText: (String) -> Unit,
     onAddFreeSources: () -> Unit = {},
-    onScanQr: () -> Unit = {}
+    onScanQr: () -> Unit = {},
+    onQrContent: (String) -> Unit = {}
 ) {
     var showAdd by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
@@ -261,6 +262,7 @@ fun SubsScreen(
         items(subs, key = { it.id }) { sub ->
             SubscriptionCard(
                 sub = sub,
+                onShowQr = { onQrContent(sub.url) },
                 serverCount = servers.count { it.subId == sub.id },
                 onRefresh = { onRefresh(sub.id) },
                 onSmartScan = { onSmartScan(sub.id) },
@@ -307,6 +309,7 @@ fun SubsScreen(
 @Composable
 private fun SubscriptionCard(
     sub: Subscription,
+    onShowQr: () -> Unit = {},
     serverCount: Int,
     onRefresh: () -> Unit,
     onSmartScan: () -> Unit,
@@ -415,7 +418,8 @@ private fun SubscriptionCard(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SmallAction(text = "اسکن هوشمند", color = V2.Mint, modifier = Modifier.weight(1f), onClick = onSmartScan)
                 SmallAction(text = "به‌روزرسانی", color = V2.Sky, modifier = Modifier.weight(1f), onClick = onRefresh)
-                SmallAction(text = "حذف", color = V2.Red, modifier = Modifier.width(72.dp), onClick = onDelete)
+                SmallAction(text = "QR", color = V2.Amber, modifier = Modifier.width(56.dp), onClick = onShowQr)
+                SmallAction(text = "حذف", color = V2.Red, modifier = Modifier.width(64.dp), onClick = onDelete)
             }
         }
     }

@@ -497,6 +497,19 @@ fun UpdateBanner(version: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
     }
 }
 
+/** برچسب کوچک رنگی (سرعت/پایداری) */
+@Composable
+fun StatusTag(text: String, color: Color) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.12f))
+            .padding(horizontal = 5.dp, vertical = 2.dp)
+    ) {
+        Text(text, color = color, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
 /** ردیف نشانگر پینگ گوگل/اینستاگرام/یوتیوب یک سرور */
 @Composable
 fun PingTargetsRow(google: Int, instagram: Int, youtube: Int) {

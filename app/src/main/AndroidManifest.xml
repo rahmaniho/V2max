@@ -52,6 +52,14 @@
                 <data android:scheme="v2max" />
             </intent-filter>
             <intent-filter>
+                <action android:name="ir.v2max.app.action.CONNECT" />
+                <action android:name="ir.v2max.app.action.DISCONNECT" />
+                <action android:name="ir.v2max.app.action.TOGGLE" />
+                <action android:name="ir.v2max.app.action.IMPORT" />
+                <action android:name="ir.v2max.app.action.SMART" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
@@ -87,6 +95,23 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <receiver
+            android:name=".service.AutoReceiver"
+            android:exported="true" />
+
+        <receiver
+            android:name=".service.V2maxWidget"
+            android:exported="true"
+            android:label="V2max">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="ir.v2max.app.widget.TOGGLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
 
         <receiver
             android:name=".service.BootReceiver"

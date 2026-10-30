@@ -65,6 +65,19 @@ jobs:
             printf 'storeFile=keystore.jks\nstorePassword=v2max123\nkeyAlias=v2max\nkeyPassword=v2max123\n' > keystore.properties
           fi
 
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          gradle --no-daemon testReleaseUnitTest 2>&1 | tee test-out.log
+
+      - name: Report test failures
+        run: |
+          if [ -f test-out.log ] && grep -qE "FAILED|tests completed" test-out.log; then
+            grep -E "FAILED|tests completed|error:" test-out.log | head -40 | while IFS= read -r line; do
+              echo "::warning title=tests::$line"
+            done
+          fi
+
       - name: Build release APK
         run: |
           set -o pipefail

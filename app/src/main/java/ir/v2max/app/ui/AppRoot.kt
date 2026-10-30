@@ -45,6 +45,10 @@ fun AppRoot(vm: AppViewModel) {
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
     var showPerApp by rememberSaveable { mutableStateOf(false) }
     var showQr by rememberSaveable { mutableStateOf(false) }
+    var qrDialogContent by remember { mutableStateOf("") }
+    var showRouting by rememberSaveable { mutableStateOf(false) }
+    var showDiag by rememberSaveable { mutableStateOf(false) }
+    var editingId by rememberSaveable { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -83,6 +87,20 @@ fun AppRoot(vm: AppViewModel) {
         }
     }
 
+    if (qrDialogContent.isNotBlank()) {
+        QrDialog(
+            title = "کد QR اشتراک",
+            content = qrDialogContent,
+            onDismiss = { qrDialogContent = "" },
+            onCopy = {
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("V2max", qrDialogContent))
+                qrDialogContent = ""
+                vm.showMessage("لینک کپی شد")
+            }
+        )
+    }
+
     AppBackground {
         Scaffold(
             containerColor = Color.Transparent,
@@ -98,7 +116,7 @@ fun AppRoot(vm: AppViewModel) {
                 }
             },
             bottomBar = {
-                if (!showPerApp && !showQr) {
+                if (!showPerApp && !showQr && !showRouting && !showDiag && editingId.isBlank()) {
                     Box(Modifier.navigationBarsPadding()) {
                         BottomBar(tab) { tab = it }
                     }
@@ -111,7 +129,34 @@ fun AppRoot(vm: AppViewModel) {
                     .padding(padding)
                     .statusBarsPadding()
             ) {
-                if (showQr) {
+                if (editingId.isNotBlank()) {
+                    val server = servers.firstOrNull { it.id == editingId }
+                    if (server == null) {
+                        editingId = ""
+                    } else {
+                        ConfigEditorScreen(
+                            server = server,
+                            onBack = { editingId = "" },
+                            onSave = { vm.saveEditedServer(it); editingId = "" },
+                            onClone = { copy ->
+                                vm.cloneServer(copy)
+                                editingId = ""
+                            }
+                        )
+                    }
+                } else if (showDiag) {
+                    DiagScreen(
+                        appVersion = BuildConfig.VERSION_NAME,
+                        coreVersion = remember { vm.coreVersion() },
+                        onBack = { showDiag = false }
+                    )
+                } else if (showRouting) {
+                    RoutingScreen(
+                        settings = settings,
+                        onBack = { showRouting = false },
+                        onChange = { block -> vm.updateSettings(block) }
+                    )
+                } else if (showQr) {
                     QrScanScreen(
                         onBack = { showQr = false },
                         onScanned = { text ->
@@ -158,6 +203,11 @@ fun AppRoot(vm: AppViewModel) {
                         onTestAll = { vm.testAll() },
                         onToggleFavorite = { vm.toggleFavorite(it) },
                         onDelete = { vm.deleteServer(it) },
+                        showFlags = settings.showFlags,
+                        onQrContent = { id -> vm.shareLink(id).orEmpty() },
+                        onEdit = { id -> editingId = id },
+                        onBulkDelete = { ids -> vm.deleteServers(ids) },
+                        onBulkFavorite = { ids, fav -> vm.setFavorite(ids, fav) },
                         onCopyLink = { id ->
                             val link = vm.shareLink(id)
                             if (link != null) {
@@ -183,7 +233,8 @@ fun AppRoot(vm: AppViewModel) {
                         onSmartScan = { vm.requestSmartConnect(it) },
                         onImportText = { vm.importText(it) },
                         onAddFreeSources = { vm.addFreeSources() },
-                        onScanQr = { showQr = true }
+                        onScanQr = { showQr = true },
+                        onQrContent = { qrDialogContent = it }
                     )
 
                     Tab.SETTINGS -> SettingsScreen(
@@ -197,7 +248,9 @@ fun AppRoot(vm: AppViewModel) {
                         onBackup = { exportLauncher.launch("v2max-backup.json") },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
-                        onScanQr = { showQr = true }
+                        onScanQr = { showQr = true },
+                        onOpenRouting = { showRouting = true },
+                        onOpenDiag = { showDiag = true }
                     )
                 }
             }

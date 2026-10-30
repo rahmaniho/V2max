@@ -34,6 +34,8 @@ class V2maxVpnService : VpnService() {
     companion object {
         private const val TAG = "V2maxVpn"
         const val ACTION_START = "ir.v2max.app.action.START_TUNNEL"
+        const val ACTION_NEXT = "ir.v2max.app.action.NEXT_SERVER"
+        const val ACTION_RETEST = "ir.v2max.app.action.RETEST"
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
 
@@ -119,6 +121,40 @@ class V2maxVpnService : VpnService() {
         if (action == ACTION_STOP) {
             stopTunnel()
             return START_NOT_STICKY
+        }
+
+        if (action == ACTION_NEXT) {
+            // تغییر فوری به سرور بعدی از فهرست سالم‌ها
+            val current = currentServer?.id ?: Repo.tunnel.value.serverId
+            scope.launch {
+                val next = Failover.findReplacement(current)
+                if (next != null) {
+                    Failover.markFailed(current)
+                    failoverPending = true
+                    connect(next.id)
+                }
+            }
+            return START_STICKY
+        }
+
+        if (action == ACTION_RETEST) {
+            // تست دوباره‌ی سرور فعلی و جابه‌جایی در صورت خرابی
+            scope.launch {
+                val id = currentServer?.id ?: Repo.tunnel.value.serverId
+                val server = Repo.serverById(id)
+                if (server != null) {
+                    val ping = withContext(Dispatchers.IO) {
+                        ir.v2max.app.net.HealthScanner.realDelay(server, Repo.settings.value)
+                    }
+                    if (ping <= 0) {
+                        rotate("تست مجدد ناموفق بود")
+                    } else {
+                        Repo.setTestResult(server.id, server.tcpPing, ping)
+                        publish(Repo.tunnel.value.copy(ping = ping, message = "تست مجدد: ${ping}ms"))
+                    }
+                }
+            }
+            return START_STICKY
         }
 
         // اعلان فوری برای رعایت مهلت startForeground
@@ -315,6 +351,8 @@ class V2maxVpnService : VpnService() {
             totalDown = 0
             if (!isFailover) failoverAttempts = 0
             Failover.markWorking(server.id)
+            Repo.recordOutcome(server.id, true)
+            ir.v2max.app.core.SmartConnect.rememberWorkingNetwork(Repo.serverById(server.id) ?: server)
 
             publish(
                 TunnelUiState(
@@ -364,6 +402,7 @@ class V2maxVpnService : VpnService() {
                 }
             }
 
+            currentServer?.let { Repo.recordOutcome(it.id, false) }
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
             fail("اتصال برقرار نشد: $raw")
         }
@@ -498,6 +537,18 @@ class V2maxVpnService : VpnService() {
                 totalUp += traffic[0]
                 totalDown += traffic[1]
 
+                // سقف مصرف روزانه
+                ir.v2max.app.util.DataUsage.add(this@V2maxVpnService, traffic[0] + traffic[1])
+                val limitMb = Repo.settings.value.dailyLimitMb
+                if (limitMb > 0) {
+                    val usedMb = ir.v2max.app.util.DataUsage.todayBytes(this@V2maxVpnService) / (1024L * 1024L)
+                    if (usedMb >= limitMb) {
+                        Notifier.dailyLimitReached(this@V2maxVpnService, limitMb)
+                        stopTunnel()
+                        return@launch
+                    }
+                }
+
                 val now = System.currentTimeMillis()
                 val elapsed = (now - lastTick).coerceAtLeast(1L)
                 lastTick = now
@@ -569,6 +620,8 @@ class V2maxVpnService : VpnService() {
                 val threshold = if (critical) FAIL_THRESHOLD else FAIL_THRESHOLD + 2
 
                 if (failures == threshold) {
+                    Repo.tunnel.value.serverId.takeIf { it.isNotBlank() }
+                        ?.let { Repo.recordOutcome(it, false) }
                     publish(
                         Repo.tunnel.value.copy(message = "کیفیت شبکه افت کرد؛ در حال یافتن مسیر بهتر…")
                     )
@@ -630,7 +683,7 @@ class V2maxVpnService : VpnService() {
 
         if (Repo.tunnel.value.status != TunnelStatus.DISCONNECTED) {
             Repo.tunnel.value = Repo.tunnel.value.copy(status = TunnelStatus.DISCONNECTING)
-            Notifier.update(this, Repo.tunnel.value, false)
+            Notifier.update(this, Repo.tunnel.value, false, Repo.settings.value.hideNotificationContent)
         }
 
         // توقف همگام تا مطمئن شویم هسته و رابط TUN واقعاً آزاد شده‌اند
@@ -653,7 +706,7 @@ class V2maxVpnService : VpnService() {
             downSpeed = 0,
             upSpeed = 0
         )
-        Notifier.update(this, Repo.tunnel.value, false)
+        Notifier.update(this, Repo.tunnel.value, false, Repo.settings.value.hideNotificationContent)
         stopForegroundCompat()
         stopSelf()
     }
@@ -667,11 +720,17 @@ class V2maxVpnService : VpnService() {
 
     private fun publish(state: TunnelUiState) {
         Repo.tunnel.value = state
+        runCatching { V2maxWidget.refresh(this) }
         if (!isForeground) {
             startForegroundCompat(state)
             isForeground = true
         } else {
-            Notifier.update(this, state, Repo.settings.value.showSpeedInNotification)
+            Notifier.update(
+                this,
+                state,
+                Repo.settings.value.showSpeedInNotification && !Repo.settings.value.hideNotificationContent,
+                Repo.settings.value.hideNotificationContent
+            )
         }
     }
 

@@ -87,6 +87,17 @@ data class ServerConfig(
     /** تأخیر واقعی نسبت به یوتیوب (ms) */
     var youtubePing: Int = -1,
 
+    /** سرعت دانلود واقعی اندازه‌گیری‌شده (کیلوبیت بر ثانیه) — ۰ یعنی سنجیده نشده */
+    var speedKbps: Int = 0,
+
+    /** کد کشور (ISO-3166 alpha-2) و نام فارسی کشور */
+    var countryCode: String = "",
+    var countryName: String = "",
+
+    /** آمار پایداری: تعداد اتصال‌های موفق و تلاش‌های ناموفق */
+    var successCount: Int = 0,
+    var failCount: Int = 0,
+
     var testedAt: Long = 0L,
     var addedAt: Long = System.currentTimeMillis()
 ) {
@@ -110,6 +121,29 @@ data class ServerConfig(
         if (a == "[::1]") return false
         return true
     }
+
+    /** درصد پایداری بین ۰ تا ۱۰۰ (۱۰۰ = بدون شکست) */
+    fun stability(): Int {
+        val total = successCount + failCount
+        if (total <= 0) return 70
+        return ((successCount * 100) / total).coerceIn(0, 100)
+    }
+
+    /** امتیاز ترکیبی؛ کمتر بهتر. تأخیر + جریمه‌ی سرعت پایین + جریمه‌ی ناپایداری */
+    fun score(): Int {
+        val base = bestPing().let { if (it > 0) it else 3500 }
+        var score = base
+        if (speedKbps <= 0) {
+            score += 150
+        } else {
+            // هر ۵۰۰ کیلوبیت سرعت بیشتر، ۱۰ امتیاز کمتر (تا ۱۴۰ امتیاز اثر)
+            score -= (speedKbps / 500).coerceAtMost(14) * 10
+        }
+        score += (100 - stability()) * 2
+        return score.coerceAtLeast(1)
+    }
+
+    fun hasFlag(): Boolean = countryCode.isNotBlank()
 
     fun bestPing(): Int {
         val candidates = listOf(googlePing, instagramPing, youtubePing, realPing)
@@ -173,7 +207,7 @@ enum class PerAppMode {
 
 /** بسته‌ی پشتیبان */
 data class BackupPayload(
-    val version: Int = 1,
+    val version: Int = 2,
     val createdAt: Long = System.currentTimeMillis(),
     val servers: List<ServerConfig> = emptyList(),
     val subs: List<Subscription> = emptyList(),
@@ -217,6 +251,33 @@ data class AppSettings(
     /** بررسی خودکار نسخه‌ی جدید برنامه */
     var autoUpdateCheck: Boolean = true,
 
+    /** سنجش سرعت دانلود واقعی برای چند سرور برتر */
+    var speedTest: Boolean = true,
+
+    /** چند سرور برتر سرعت‌شان سنجیده شود */
+    var speedTestCount: Int = 3,
+
+    /** استفاده از حافظه‌ی شبکه‌های آشنا برای انتخاب خودکار */
+    var rememberNetworks: Boolean = true,
+
+    /** حالت کم‌مصرف: تست‌های سنگین‌تر و دانلود تست سرعت انجام نمی‌شود */
+    var dataSaver: Boolean = false,
+
+    /** اتصال خودکار فقط روی وای‌فای */
+    var wifiOnly: Boolean = false,
+
+    /** سقف مصرف روزانه (مگابایت) — صفر یعنی بی‌نهایت */
+    var dailyLimitMb: Int = 0,
+
+    /** قفل برنامه با اثر انگشت/رمز دستگاه */
+    var appLock: Boolean = false,
+
+    /** پنهان‌کردن جزئیات اتصال در اعلان (نام سرور و سرعت) */
+    var hideNotificationContent: Boolean = false,
+
+    /** نمایش پرچم کشور در فهرست سرورها */
+    var showFlags: Boolean = true,
+
     /** حذف سرورهایی که به هیچ‌کدام از مقصدها پاسخ نمی‌دهند */
     var dropDeadServers: Boolean = true,
 
@@ -230,6 +291,16 @@ data class AppSettings(
 
     var showSpeedInNotification: Boolean = true,
     var dynamicColor: Boolean = false,
+
+    /**
+     * قواعد مسیریابی سفارشی کاربر.
+     * هر قاعده یک خط با قالب «عمل|نوع|مقدار» است، مثلاً:
+     *   direct|domain|example.com
+     *   proxy|ip|8.8.8.8/32
+     *   block|domain|ads.example.org
+     * مقدارها می‌توانند با کاما از هم جدا شوند.
+     */
+    var customRoutingRules: List<String> = emptyList(),
 
     // پروکسی برنامه‌به‌برنامه
     var perAppMode: PerAppMode = PerAppMode.OFF,
@@ -327,6 +398,23 @@ data class NetworkAssessment(
     val fresh: Boolean
         get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt < 10 * 60 * 1000L
 }
+
+/**
+ * حافظه‌ی «شبکه‌های آشنا»: برای هر ترکیب اپراتور/نسل شبکه، بهترین سرور و
+ * تنظیمات فرگمنت/MTU که واقعاً جواب داده ذخیره می‌شود.
+ */
+data class NetworkProfile(
+    val key: String = "",                 // مثلاً "MCI|4G"
+    val carrierLabel: String = "",
+    val serverId: String = "",
+    val serverName: String = "",
+    val fragmentProfile: FragmentProfile = FragmentProfile.BALANCED,
+    val mtu: Int = 1500,
+    val bestPing: Int = -1,
+    val score: Int = 0,
+    val uses: Int = 0,
+    val updatedAt: Long = 0L
+)
 
 /** اطلاعات نسخه‌ی جدید منتشرشده */
 data class UpdateInfo(
