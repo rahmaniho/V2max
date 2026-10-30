@@ -66,6 +66,7 @@ object HealthScanner {
         if (servers.isEmpty()) return@withContext Outcome(message = "کانفیگی برای تست وجود ندارد")
 
         runCatching { XrayCore.init(context) }
+        runCatching { SingBoxTester.init(context) }
 
         val usable = servers.filter { it.hasUsableEndpoint() }
         val invalid = servers.filterNot { it.hasUsableEndpoint() }.map { it.id }
@@ -272,6 +273,9 @@ object HealthScanner {
     suspend fun realDelay(cfg: ServerConfig, settings: AppSettings, url: String): Int =
         withContext(Dispatchers.IO) {
             try {
+                if (cfg.needsSingBox()) {
+                    return@withContext SingBoxTester.delay(cfg, settings, url)
+                }
                 val config = ConfigBuilder.testConfig(cfg, settings)
                 val delay = XrayCore.measureOutboundDelay(config, url)
                 if (delay in 1..60000) delay.toInt() else -1

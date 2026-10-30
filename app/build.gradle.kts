@@ -1,6 +1,12 @@
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URI
 import java.util.Properties
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 plugins {
     id("com.android.application")
@@ -42,7 +48,127 @@ val downloadLibV2ray by tasks.registering {
     }
 }
 
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(downloadLibV2ray) }
+// ---------------------------------------------------------------------------
+// libbox (sing-box, gomobile) — هسته‌ی دوم برای پروتکل‌هایی که Xray پشتیبانی نمی‌کند:
+// Hysteria2 / TUIC / WireGuard / AnyTLS
+// ---------------------------------------------------------------------------
+val libBoxVersion = "1.14.4"
+val libBoxUrl =
+    "https://github.com/singbox-android/libbox/releases/download/$libBoxVersion/libbox.aar"
+val libBoxAar = libsDirProvider.file("libbox.aar")
+
+val downloadLibBox by tasks.registering {
+    description = "Downloads the sing-box native library (libbox.aar) if it is missing"
+    val target = libBoxAar.asFile
+    outputs.file(target)
+    doLast {
+        if (target.exists() && target.length() > 10_000_000L) {
+            logger.lifecycle("libbox.aar already present (${target.length()} bytes)")
+            return@doLast
+        }
+        target.parentFile?.mkdirs()
+        logger.lifecycle("Downloading $libBoxUrl ...")
+        val tmp = File(target.parentFile, "libbox.aar.part")
+        URI(libBoxUrl).toURL().openStream().use { input ->
+            tmp.outputStream().use { output -> input.copyTo(output) }
+        }
+        if (tmp.length() < 10_000_000L) {
+            tmp.delete()
+            throw GradleException("Download of libbox.aar failed (file too small)")
+        }
+        tmp.renameTo(target)
+        logger.lifecycle("libbox.aar ready (${target.length()} bytes)")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// libbox و libv2ray هر دو با gomobile ساخته شده‌اند و کلاس‌های مشترک go.Seq را
+// داخل classes.jar خود دارند؛ Android Gradle Plugin اجازه‌ی وجود کلاس تکراری
+// نمی‌دهد. جدیدترین نسخه‌ی go.Seq (از libv2ray) نگه داشته می‌شود و نسخه‌ی
+// قدیمی‌تر از libbox حذف می‌شود (gomobile در این بخش فقط افزودنی است).
+// ---------------------------------------------------------------------------
+fun stripGoClassesFromClassesJar(bytes: ByteArray, removed: IntArray): ByteArray {
+    val output = ByteArrayOutputStream(bytes.size)
+    ZipInputStream(ByteArrayInputStream(bytes)).use { input ->
+        ZipOutputStream(output).use { out ->
+            var entry: ZipEntry? = input.nextEntry
+            val buffer = ByteArray(64 * 1024)
+            while (entry != null) {
+                val name = entry.name
+                if (!entry.isDirectory && (name == "go/" || name.startsWith("go/"))) {
+                    removed[0]++
+                } else {
+                    out.putNextEntry(ZipEntry(name))
+                    if (!entry.isDirectory) {
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            out.write(buffer, 0, read)
+                        }
+                    }
+                    out.closeEntry()
+                }
+                input.closeEntry()
+                entry = input.nextEntry
+            }
+        }
+    }
+    return output.toByteArray()
+}
+
+fun stripDuplicateGoClasses(aar: File): Int {
+    if (!aar.exists() || aar.length() < 1_000_000L) return 0
+    val temp = File(aar.parentFile, aar.name + ".tmp")
+    val removed = IntArray(1)
+    ZipFile(aar).use { zip ->
+        ZipOutputStream(temp.outputStream().buffered()).use { out ->
+            val entries = zip.entries()
+            var wrote = 0
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                if (entry.isDirectory) continue
+                val raw = zip.getInputStream(entry).use { it.readBytes() }
+                val data = if (entry.name == "classes.jar") {
+                    stripGoClassesFromClassesJar(raw, removed)
+                } else {
+                    raw
+                }
+                out.putNextEntry(ZipEntry(entry.name))
+                out.write(data)
+                out.closeEntry()
+                wrote++
+            }
+            if (wrote == 0) return 0
+        }
+    }
+    if (removed[0] > 0) {
+        if (!temp.renameTo(aar)) {
+            aar.delete()
+            temp.renameTo(aar)
+        }
+    } else {
+        temp.delete()
+    }
+    return removed[0]
+}
+
+val stripLibBoxDuplicates by tasks.registering {
+    description = "Removes gomobile go.* classes from libbox.aar that libv2ray.aar already provides"
+    dependsOn(downloadLibBox)
+    dependsOn(downloadLibV2ray)
+    doLast {
+        val removed = stripDuplicateGoClasses(libBoxAar.asFile)
+        if (removed > 0) {
+            logger.lifecycle("libbox.aar: removed $removed duplicate gomobile classes")
+        } else {
+            logger.lifecycle("libbox.aar: no duplicate gomobile classes left to strip")
+        }
+    }
+}
+
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(stripLibBoxDuplicates)
+}
 
 val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
@@ -57,8 +183,8 @@ android {
         applicationId = "ir.v2max.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.14.0"
+        versionCode = 16
+        versionName = "2.0.0"
         resourceConfigurations += listOf("fa", "en")
     }
 

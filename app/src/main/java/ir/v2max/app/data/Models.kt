@@ -10,7 +10,12 @@ enum class Proto(val label: String) {
     SS("Shadowsocks"),
     SOCKS("Socks"),
     HTTP("HTTP"),
-    HYSTERIA2("Hysteria2");
+    HYSTERIA2("Hysteria2"),
+
+    /** پروتکل‌های مبتنی بر QUIC/سیم‌کشی که هسته‌ی Xray پشتیبانی نمی‌کند (با هسته‌ی sing-box اجرا می‌شوند) */
+    TUIC("TUIC"),
+    ANYTLS("AnyTLS"),
+    WIREGUARD("WireGuard");
 
     companion object {
         fun fromScheme(scheme: String): Proto? = when (scheme.lowercase()) {
@@ -68,6 +73,14 @@ data class ServerConfig(
     var spiderX: String = "",
     var allowInsecure: Boolean = false,
 
+    // WireGuard
+    var wgPrivateKey: String = "",
+    var wgPublicKey: String = "",
+    var wgAddress: String = "",
+    var wgReserved: String = "",
+    /** کلید مشترک از پیش تعیین‌شده (اختیاری) */
+    var wgPreSharedKey: String = "",
+
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
     var obfsPassword: String = "",
@@ -102,6 +115,15 @@ data class ServerConfig(
     var addedAt: Long = System.currentTimeMillis()
 ) {
     val endpoint: String get() = "$address:$port"
+
+    /**
+     * آیا این کانفیگ باید با هسته‌ی sing-box اجرا شود؟
+     * Hysteria2/TUIC/WireGuard/AnyTLS در Xray-core وجود ندارند.
+     */
+    fun needsSingBox(): Boolean = when (proto) {
+        Proto.HYSTERIA2, Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> true
+        else -> false
+    }
 
     /** تعداد مقصدهایی که سرور به آن‌ها پاسخ داده است (۰ تا ۳) */
     fun reachCount(): Int {

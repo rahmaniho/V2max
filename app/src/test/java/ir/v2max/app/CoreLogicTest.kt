@@ -211,6 +211,126 @@ class CoreLogicTest {
         })
     }
 
+    // -------------------------------------------------- sing-box core (2.0)
+
+    @Test
+    fun `parses hysteria2 link with insecure and sni`() {
+        val cfg = LinkParser.parseLine(
+            "hysteria2://secret@hy.example.com:443/?insecure=1&sni=cdn.example.com#HY2"
+        )
+        assertNotNull(cfg)
+        cfg!!
+        assertEquals(Proto.HYSTERIA2, cfg.proto)
+        assertEquals("secret", cfg.password)
+        assertEquals("cdn.example.com", cfg.sni)
+        assertTrue(cfg.allowInsecure)
+        assertTrue(cfg.needsSingBox())
+    }
+
+    @Test
+    fun `parses tuic link with encoded password`() {
+        val cfg = LinkParser.parseLine(
+            "tuic://3796d9ef-02ac-447c-a8bf-30789f5c58b3:qnJtB11d%2F552vPJu4EU4R7u6elt08%3D@13.140.91.117:22912" +
+                "?allow_insecure=0&alpn=h3%2Cspdy%2F3.1&congestion_control=bbr&udp_relay_mode=native#TUIC"
+        )
+        assertNotNull(cfg)
+        cfg!!
+        assertEquals(Proto.TUIC, cfg.proto)
+        assertEquals("3796d9ef-02ac-447c-a8bf-30789f5c58b3", cfg.uuid)
+        assertEquals("qnJtB11d/552vPJu4EU4R7u6elt08=", cfg.password)
+        assertEquals("h3,spdy/3.1", cfg.alpn)
+        assertTrue(!cfg.allowInsecure)
+    }
+
+    @Test
+    fun `parses anytls link`() {
+        val cfg = LinkParser.parseLine("anytls://dongtaiwang.com@45.221.98.14:59901/?insecure=1&fp=chrome#AT")
+        assertNotNull(cfg)
+        cfg!!
+        assertEquals(Proto.ANYTLS, cfg.proto)
+        assertEquals("dongtaiwang.com", cfg.password)
+        assertEquals("chrome", cfg.fingerprint)
+        assertEquals(59901, cfg.port)
+        assertTrue(cfg.needsSingBox())
+    }
+
+    @Test
+    fun `parses wireguard link with reserved bytes`() {
+        val cfg = LinkParser.parseLine(
+            "wireguard://4N3vWR92y5QFhJm6RV1wlLHkmpwT6gmU%2B96u7kqEj1c%3D@162.159.192.6:500" +
+                "?address=172.16.0.2%2F32&reserved=84%2C160%2C213&publickey=bmXOC%2BF1FxEMF9dyiK2H5%2F1SUtzH0JuVo51h2wPfgyo%3D#WG"
+        )
+        assertNotNull(cfg)
+        cfg!!
+        assertEquals(Proto.WIREGUARD, cfg.proto)
+        assertEquals("162.159.192.6", cfg.address)
+        assertEquals(500, cfg.port)
+        assertEquals("84,160,213", cfg.wgReserved)
+        assertTrue(cfg.wgPrivateKey.endsWith("="))
+        // کلید عمومی هم باید درصدگشایی شده باشد
+        assertEquals("bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=", cfg.wgPublicKey)
+    }
+
+    @Test
+    fun `only sing-box protocols use the sing-box core`() {
+        fun cfg(proto: Proto) = ServerConfig(proto = proto, name = "n", address = "a", port = 1)
+        assertTrue(cfg(Proto.HYSTERIA2).needsSingBox())
+        assertTrue(cfg(Proto.TUIC).needsSingBox())
+        assertTrue(cfg(Proto.ANYTLS).needsSingBox())
+        assertTrue(cfg(Proto.WIREGUARD).needsSingBox())
+        assertTrue(!cfg(Proto.VLESS).needsSingBox())
+        assertTrue(!cfg(Proto.VMESS).needsSingBox())
+        assertTrue(!cfg(Proto.TROJAN).needsSingBox())
+    }
+
+    @Test
+    fun `sing-box config contains tls dns resolver and route`() {
+        val cfg = ServerConfig(
+            proto = Proto.TUIC,
+            name = "t",
+            address = "t.example.com",
+            port = 443,
+            uuid = "11111111-2222-3333-4444-555555555555",
+            password = "pw",
+            sni = "t.example.com"
+        )
+        val json = ir.v2max.app.core.SingBoxConfig.socksTestConfig(cfg, AppSettings(), 10889)
+        assertTrue(json.contains("\"type\": \"tuic\"") || json.contains("\"type\":\"tuic\""))
+        assertTrue(json.contains("default_domain_resolver"))
+        assertTrue(json.contains("\"congestion_control\""))
+        assertTrue(json.contains("h3"))
+    }
+
+    @Test
+    fun `wireguard uses endpoint not outbound`() {
+        val cfg = ServerConfig(
+            proto = Proto.WIREGUARD,
+            name = "w",
+            address = "162.159.192.6",
+            port = 500,
+            wgPrivateKey = "priv",
+            wgPublicKey = "pub",
+            wgAddress = "172.16.0.2/32",
+            wgReserved = "84,160,213"
+        )
+        val json = ir.v2max.app.core.SingBoxConfig.socksTestConfig(cfg, AppSettings(), 10889)
+        assertTrue(json.contains("\"endpoints\""))
+        assertTrue(json.contains("\"peers\""))
+        assertTrue(json.contains("public_key"))
+        // در sing-box 1.11+ نوع wireguard نباید در outbounds باشد
+        assertTrue(!json.contains("\"outbounds\":[{\"tag\":\"proxy\",\"type\":\"wireguard\""))
+    }
+
+    @Test
+    fun `public sources cover every sing-box protocol`() {
+        listOf(Proto.HYSTERIA2, Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD).forEach { proto ->
+            assertTrue(
+                "منبع کانفیگ برای $proto ثبت نشده است",
+                ir.v2max.app.data.PublicSources.forProto(proto).isNotEmpty()
+            )
+        }
+    }
+
     // ----------------------------------------------------------------- format
 
     @Test

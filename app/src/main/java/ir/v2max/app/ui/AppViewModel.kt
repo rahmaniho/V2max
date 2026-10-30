@@ -662,7 +662,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         showMessage("همه‌ی داده‌ها پاک شد")
     }
 
-    fun coreVersion(): String = runCatching { ir.v2max.app.core.XrayCore.version() }.getOrDefault("نامشخص")
+    fun coreVersion(): String {
+        val xray = runCatching { ir.v2max.app.core.XrayCore.version() }.getOrDefault("نامشخص")
+        val singBox = runCatching { ir.v2max.app.core.SingBoxCore.version() }.getOrDefault("")
+        return if (singBox.isBlank() || singBox == "نامشخص") xray else "$xray · sing-box $singBox"
+    }
 
     fun previewSmartConnect() {
         requestSmartConnect(null)

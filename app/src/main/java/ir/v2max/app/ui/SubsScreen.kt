@@ -44,6 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ir.v2max.app.data.Proto
+import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
@@ -71,6 +73,7 @@ fun SubsScreen(
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<Subscription?>(null) }
+    var showSources by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
 
     LazyColumn(
@@ -215,7 +218,7 @@ fun SubsScreen(
                 ) {
                     Column(Modifier.weight(1f)) {
                         Text(
-                            "منابع رایگان عمومی",
+                            "منابع آماده (رایگان)",
                             style = MaterialTheme.typography.titleSmall,
                             color = V2.TextPrimary
                         )
@@ -228,9 +231,9 @@ fun SubsScreen(
                     }
                     Spacer(Modifier.width(8.dp))
                     GhostButton(
-                        text = "افزودن",
+                        text = "منابع",
                         modifier = Modifier.width(92.dp),
-                        onClick = onAddFreeSources
+                        onClick = { showSources = true }
                     )
                 }
             }
@@ -280,6 +283,21 @@ fun SubsScreen(
         }
 
         item { Spacer(Modifier.height(10.dp)) }
+    }
+
+    if (showSources) {
+        SourcePickerDialog(
+            onDismiss = { showSources = false },
+            onPick = { source ->
+                onAdd(source.name, source.url)
+                showSources = false
+            },
+            onAddAll = {
+                onAddFreeSources()
+                showSources = false
+            },
+            alreadyAdded = subs.map { it.url.trim().trimEnd('/') }.toSet()
+        )
     }
 
     pendingDelete?.let { sub ->
@@ -470,3 +488,95 @@ private fun fieldColors(): androidx.compose.material3.TextFieldColors =
     focusedTextColor = V2.TextPrimary,
     unfocusedTextColor = V2.TextPrimary
 )
+
+private fun protoLabel(proto: Proto): String = when (proto) {
+    Proto.HYSTERIA2 -> "Hysteria2"
+    Proto.TUIC -> "TUIC"
+    Proto.ANYTLS -> "AnyTLS"
+    Proto.WIREGUARD -> "WireGuard"
+    Proto.VMESS -> "VMess"
+    Proto.VLESS -> "VLESS"
+    Proto.TROJAN -> "Trojan"
+    Proto.SS -> "Shadowsocks"
+    Proto.SOCKS -> "SOCKS"
+    Proto.HTTP -> "HTTP"
+}
+
+/**
+ * انتخابگر منبع آماده: منابع اختصاصی پروتکل‌های هسته‌ی sing-box
+ * (Hysteria2/TUIC/AnyTLS/WireGuard) در بالای فهرست و با نشان پروتکل نمایش داده می‌شوند.
+ */
+@Composable
+private fun SourcePickerDialog(
+    onDismiss: () -> Unit,
+    onPick: (ir.v2max.app.data.PublicSource) -> Unit,
+    onAddAll: () -> Unit,
+    alreadyAdded: Set<String>
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = V2.SurfaceHigh,
+        title = { Text("منابع آماده", color = V2.TextPrimary) },
+        text = {
+            Column {
+                Text(
+                    "منابع اختصاصی پروتکل‌هایی که هسته‌ی Xray پشتیبانی نمی‌کند (Hysteria2، TUIC، AnyTLS، WireGuard) با علامت ⚡ مشخص شده‌اند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = V2.TextMuted
+                )
+                Spacer(Modifier.height(10.dp))
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(320.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(PublicSources.ALL, key = { it.url }) { source ->
+                        val url = source.url.trim().trimEnd('/')
+                        val added = url in alreadyAdded
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(V2.Surface)
+                                .border(1.dp, V2.Stroke.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    source.name,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = V2.TextPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val label = source.protocols.joinToString(" · ") { protoLabel(it) }
+                                if (label.isNotBlank()) {
+                                    Text(label, style = MaterialTheme.typography.bodySmall, color = V2.Mint, fontSize = 10.5.sp)
+                                }
+                            }
+                            TextButton(
+                                enabled = !added,
+                                onClick = { onPick(source) }
+                            ) {
+                                Text(
+                                    if (added) "ثبت شد" else "افزودن",
+                                    color = if (added) V2.TextMuted else V2.Mint,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onAddAll) { Text("افزودن همه", color = V2.Mint) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("بستن", color = V2.TextMuted) }
+        }
+    )
+}

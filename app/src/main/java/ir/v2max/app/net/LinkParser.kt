@@ -47,6 +47,9 @@ object LinkParser {
                 "socks", "socks5" -> parseStandard(line, Proto.SOCKS)
                 "http", "https" -> parseStandard(line, Proto.HTTP)
                 "hysteria2", "hy2" -> parseStandard(line, Proto.HYSTERIA2)
+                "tuic" -> parseStandard(line, Proto.TUIC)
+                "anytls" -> parseStandard(line, Proto.ANYTLS)
+                "wireguard", "wg" -> parseWireGuard(line)
                 else -> null
             }
         } catch (t: Throwable) {
@@ -109,7 +112,8 @@ object LinkParser {
         val beforeQuery = main.substringBefore("?")
 
         val userInfo = beforeQuery.substringBeforeLast("@", "")
-        val hostPort = beforeQuery.substringAfterLast("@", beforeQuery)
+        // بعضی لینک‌ها مسیر «/» بعد از پورت دارند (anytls://pass@host:port/?...) و باید حذف شود
+        val hostPort = beforeQuery.substringAfterLast("@", beforeQuery).substringBefore("/")
         if (hostPort.isBlank()) return null
 
         val host: String
@@ -137,7 +141,12 @@ object LinkParser {
         cfg.address = host
         cfg.port = port
 
+        // ابتدا جدا کردن شناسه از رمز و سپس درصدگشایی تا رمزهای حاوی «:» خراب نشوند
+        val rawUser = userInfo.substringBefore(":")
+        val rawPass = if (userInfo.contains(":")) userInfo.substringAfter(":") else ""
         val decodedUser = decodeComponent(userInfo)
+        val decodedUserId = decodeComponent(rawUser)
+        val decodedPassword = decodeComponent(rawPass)
 
         when (proto) {
             Proto.VLESS -> {
@@ -157,9 +166,19 @@ object LinkParser {
                 cfg.obfsPassword = q["obfs-password"].orEmpty()
             }
 
+            Proto.TUIC -> {
+                // tuic://uuid:password@host:port
+                cfg.uuid = decodedUserId.trim()
+                cfg.password = decodedPassword
+            }
+
+            Proto.ANYTLS -> {
+                cfg.password = decodedUser
+            }
+
             Proto.SOCKS, Proto.HTTP -> {
-                cfg.uuid = decodedUser.substringBefore(":")
-                cfg.password = if (decodedUser.contains(":")) decodedUser.substringAfter(":") else ""
+                cfg.uuid = decodedUserId
+                cfg.password = decodedPassword
             }
 
             else -> Unit
@@ -173,7 +192,8 @@ object LinkParser {
         cfg.authority = q["authority"].orEmpty()
         cfg.mode = q["mode"].orEmpty()
         cfg.security = q["security"].orEmpty().let {
-            if (proto == Proto.HYSTERIA2) "tls" else if (it == "tls" || it == "reality") it else ""
+            if (proto == Proto.HYSTERIA2 || proto == Proto.TUIC || proto == Proto.ANYTLS) "tls"
+            else if (it == "tls" || it == "reality") it else ""
         }
         cfg.sni = q["sni"].orEmpty().ifBlank { q["peer"].orEmpty() }
         cfg.alpn = q["alpn"].orEmpty()
@@ -181,9 +201,56 @@ object LinkParser {
         cfg.publicKey = q["pbk"].orEmpty()
         cfg.shortId = q["sid"].orEmpty()
         cfg.spiderX = q["spx"].orEmpty()
-        cfg.allowInsecure = q["allowInsecure"] == "1" || q["insecure"] == "1" || q["allow_insecure"] == "1"
+        cfg.allowInsecure = listOf("allowInsecure", "insecure", "allow_insecure", "insecure_skip_verify")
+            .any { key -> q[key]?.lowercase() in listOf("1", "true", "yes") }
         cfg.name = decodeComponent(fragment).ifBlank { "${host}:$port" }
         normalize(cfg)
+        return cfg
+    }
+
+    // ---------------------------------------------------------------- wireguard
+
+    /**
+     * پشتیبانی از لینک‌های WireGuard:
+     *   wireguard://<privateKey>@<host>:<port>/?publickey=<peer>&address=172.16.0.2/32&reserved=0,0,0&mtu=1420#name
+     * و قالب ساده‌ی `wg://<privateKey>@<host>:<port>?publickey=...`
+     */
+    private fun parseWireGuard(line: String): ServerConfig? {
+        val withoutScheme = line.substringAfter("://")
+        val fragment = withoutScheme.substringAfter("#", "")
+        val main = withoutScheme.substringBefore("#")
+        val queryStr = main.substringAfter("?", "")
+        val beforeQuery = main.substringBefore("?")
+
+        val userInfo = beforeQuery.substringBeforeLast("@", "")
+        val hostPort = beforeQuery.substringAfterLast("@", "").substringBefore("/")
+        if (hostPort.isBlank() || userInfo.isBlank()) return null
+
+        val host: String
+        val port: Int
+        if (hostPort.startsWith("[")) {
+            val end = hostPort.indexOf(']')
+            if (end < 0) return null
+            host = hostPort.substring(1, end)
+            port = hostPort.substring(end + 1).removePrefix(":").toIntOrNull() ?: 51820
+        } else {
+            val idx = hostPort.lastIndexOf(':')
+            host = if (idx < 0) hostPort else hostPort.substring(0, idx)
+            port = if (idx < 0) 51820 else (hostPort.substring(idx + 1).toIntOrNull() ?: 51820)
+        }
+        if (host.isBlank()) return null
+
+        val q = parseQuery(queryStr)
+        val cfg = ServerConfig()
+        cfg.proto = Proto.WIREGUARD
+        cfg.address = host
+        cfg.port = port
+        cfg.wgPrivateKey = decodeComponent(userInfo)
+        cfg.wgPublicKey = (q["publickey"] ?: q["public_key"] ?: q["peer"]).orEmpty()
+        cfg.wgAddress = (q["address"] ?: q["ip"]).orEmpty().ifBlank { "172.16.0.2/32" }
+        cfg.wgReserved = (q["reserved"] ?: "").orEmpty()
+        cfg.wgPreSharedKey = (q["presharedkey"] ?: q["pre_shared_key"] ?: q["psk"] ?: "").orEmpty()
+        cfg.name = decodeComponent(fragment).ifBlank { "WG $host:$port" }
         return cfg
     }
 
@@ -385,6 +452,18 @@ object LinkParser {
                 )
                 "ss://$cred@${cfg.address}:${cfg.port}#${cfg.name.replace(" ", "%20")}"
             }
+
+            Proto.TUIC ->
+                "tuic://${cfg.uuid}:${cfg.password}@${cfg.address}:${cfg.port}" +
+                    "?sni=${cfg.sni}&alpn=${cfg.alpn}#${cfg.name.replace(" ", "%20")}"
+
+            Proto.ANYTLS ->
+                "anytls://${cfg.password}@${cfg.address}:${cfg.port}?sni=${cfg.sni}#${cfg.name.replace(" ", "%20")}"
+
+            Proto.WIREGUARD ->
+                "wireguard://${cfg.wgPrivateKey}@${cfg.address}:${cfg.port}" +
+                    "?publickey=${cfg.wgPublicKey}&address=${cfg.wgAddress}&reserved=${cfg.wgReserved}" +
+                    "#${cfg.name.replace(" ", "%20")}"
         }
     }
 }
