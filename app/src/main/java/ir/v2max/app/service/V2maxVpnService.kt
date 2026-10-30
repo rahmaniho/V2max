@@ -480,6 +480,213 @@ class V2maxVpnService : VpnService() {
         return attempts
     }
 
+    private fun establishTun(settings: AppSettings): ParcelFileDescriptor? {
+        val builder = Builder()
+        builder.setSession("V2max")
+        builder.setMtu(settings.mtu.coerceIn(1280, 9000))
+
+        builder.addAddress("172.19.0.1", 30)
+        builder.addRoute("0.0.0.0", 0)
+
+        if (settings.ipv6) {
+            runCatching {
+                builder.addAddress("fdfe:dcba:9876::1", 126)
+                builder.addRoute("::", 0)
+            }
+        }
+
+        val dnsServers = settings.vpnDns.split(",")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && !it.contains(":") }
+        if (dnsServers.isEmpty()) {
+            builder.addDnsServer("1.1.1.1")
+        } else {
+            dnsServers.forEach { builder.addDnsServer(it) }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { builder.setMetered(false) }
+        }
+
+        // خود برنامه از تانل خارج می‌شود تا سوکت‌های هسته در حلقه نیفتند
+        applyPerAppRules(builder, settings)
+
+        return try {
+            builder.establish()
+        } catch (t: Throwable) {
+            Log.e(TAG, "establish failed", t)
+            null
+        }
+    }
+
+    /** اعمال قوانین پروکسی برنامه‌به‌برنامه */
+    private fun applyPerAppRules(builder: Builder, settings: AppSettings) {
+        val selected = settings.perAppPackages.filter { it.isNotBlank() }
+        when (settings.perAppMode) {
+            ir.v2max.app.data.PerAppMode.OFF -> {
+                runCatching { builder.addDisallowedApplication(packageName) }
+            }
+
+            ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> {
+                if (selected.isEmpty()) {
+                    runCatching { builder.addDisallowedApplication(packageName) }
+                } else {
+                    var added = 0
+                    selected.forEach { pkg ->
+                        if (pkg == packageName) return@forEach
+                        runCatching {
+                            builder.addAllowedApplication(pkg)
+                            added++
+                        }
+                    }
+                    if (added == 0) {
+                        runCatching { builder.addDisallowedApplication(packageName) }
+                    }
+                }
+            }
+
+            ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> {
+                runCatching { builder.addDisallowedApplication(packageName) }
+                selected.forEach { pkg ->
+                    runCatching { builder.addDisallowedApplication(pkg) }
+                }
+            }
+        }
+    }
+
+    // --------------------------------------------------------------- monitor
+
+    private fun startMonitor() {
+        monitorJob?.cancel()
+        monitorJob = scope.launch {
+            var lastTick = System.currentTimeMillis()
+            var lastProbe = System.currentTimeMillis()
+            var probeIndex = 0
+            var failures = 0
+
+            while (isActive) {
+                delay(1000)
+                val state = Repo.tunnel.value
+                if (state.status != TunnelStatus.CONNECTED) break
+
+                val traffic = withContext(Dispatchers.IO) { coreTraffic() }
+                totalUp += traffic[0]
+                totalDown += traffic[1]
+
+                // سقف مصرف روزانه
+                ir.v2max.app.util.DataUsage.add(this@V2maxVpnService, traffic[0] + traffic[1])
+                val limitMb = Repo.settings.value.dailyLimitMb
+                if (limitMb > 0) {
+                    val usedMb = ir.v2max.app.util.DataUsage.todayBytes(this@V2maxVpnService) / (1024L * 1024L)
+                    if (usedMb >= limitMb) {
+                        Notifier.dailyLimitReached(this@V2maxVpnService, limitMb)
+                        stopTunnel()
+                        return@launch
+                    }
+                }
+
+                val now = System.currentTimeMillis()
+                val elapsed = (now - lastTick).coerceAtLeast(1L)
+                lastTick = now
+
+                publish(
+                    state.copy(
+                        downSpeed = traffic[1] * 1000L / elapsed,
+                        upSpeed = traffic[0] * 1000L / elapsed,
+                        totalDown = totalDown,
+                        totalUp = totalUp,
+                        connectedAt = connectedAt
+                    )
+                )
+
+                if (networkChanged) {
+                    // شبکه عوض شده؛ همان لحظه کیفیت را دوباره بسنج
+                    networkChanged = false
+                    lastProbe = 0
+                    failures = 0
+                }
+                val interval = probeInterval()
+                if (now - lastProbe < interval) continue
+                lastProbe = now
+
+                // اگر هسته از کار افتاده باشد، اتصال بدون دخالت کاربر بازسازی می‌شود
+                if (withContext(Dispatchers.IO) { !coreRunning() }) {
+                    Log.w(TAG, "core stopped unexpectedly")
+                    if (Repo.settings.value.smartFailover) {
+                        if (rotate("بازسازی هسته")) return@launch
+                    }
+                    fail("اتصال قطع شد")
+                    return@launch
+                }
+
+                // پینگ چرخشی روی مقصدهای مختلف تا کیفیت واقعی اینترنت سنجیده شود
+                val targets = Repo.settings.value.let {
+                    if (it.multiPing) ir.v2max.app.data.PingTargets.ALL
+                    else listOf(ir.v2max.app.data.PingTargets.GOOGLE)
+                }
+                val target = targets[probeIndex % targets.size]
+                probeIndex++
+
+                val ping = withContext(Dispatchers.IO) {
+                    XrayCore.measureDelay(target.url)
+                }
+
+                if (ping > 0) {
+                    if (failures > 0) Log.i(TAG, "connection recovered after $failures failures")
+                    failures = 0
+                    Repo.pushLatency(ping.toInt())
+                    Repo.setTestResult(
+                        Repo.tunnel.value.serverId,
+                        Repo.serverById(Repo.tunnel.value.serverId)?.tcpPing ?: -1,
+                        ping.toInt()
+                    )
+                    publish(
+                        Repo.tunnel.value.copy(
+                            ping = ping.toInt(),
+                            message = "متصل"
+                        )
+                    )
+                    continue
+                }
+
+                failures++
+                Log.w(TAG, "probe on ${target.name} failed ($failures)")
+
+                if (!Repo.settings.value.smartFailover) continue
+
+                // مقصد گوگل معیار اصلی است؛ افت اینستاگرام/یوتیوب تنها به‌تنهایی
+                // باعث جابه‌جایی نمی‌شود تا اتصال بی‌دلیل عوض نشود
+                val critical = target.url == ir.v2max.app.data.PingTargets.GOOGLE.url
+                val threshold = if (critical) FAIL_THRESHOLD else FAIL_THRESHOLD + 2
+
+                if (failures == threshold) {
+                    Repo.tunnel.value.serverId.takeIf { it.isNotBlank() }
+                        ?.let { Repo.recordOutcome(it, false) }
+                    publish(
+                        Repo.tunnel.value.copy(message = "کیفیت شبکه افت کرد؛ در حال یافتن مسیر بهتر…")
+                    )
+                    if (rotate("سرور فعلی پاسخ نمی‌دهد")) return@launch
+                } else if (failures >= MAX_FAIL_RESILIENCE) {
+                    // تلاش نهایی: کاوش گسترده؛ اگر چیزی نبود اتصال را قطع نمی‌کنیم
+                    val replacement = Failover.probeAsync(limit = 120)
+                        ?: Failover.findReplacement(currentServer?.id)
+                    if (replacement != null) {
+                        failoverAttempts++
+                        failoverPending = true
+                        Log.i(TAG, "hard switch → ${replacement.endpoint}")
+                        connect(replacement.id)
+                        return@launch
+                    }
+                    failures = threshold
+                }
+            }
+        }
+    }
+
+    /**
+     * جابه‌جایی به سرور جایگزین.
+     * @return true اگر فرمان اتصال به سرور جدید صادر شده باشد
+     */
     /**
      * جابه‌جایی به سرور جایگزین.
      * @return true اگر فرمان اتصال به سرور جدید صادر شده باشد
