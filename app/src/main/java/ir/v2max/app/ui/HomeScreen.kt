@@ -176,12 +176,15 @@ fun HomeScreen(
             }
         }
 
-        item {
-            LatencyCard(
-                samples = latencySamples,
-                poolSize = poolSize,
-                connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED
-            )
+        // جزئیات فقط وقتی اتصال برقرار است نمایش داده می‌شوند تا صفحه‌ی اصلی ساده بماند
+        if (tunnel.status == TunnelStatus.CONNECTED) {
+            item {
+                LatencyCard(
+                    samples = latencySamples,
+                    poolSize = poolSize,
+                    connected = true
+                )
+            }
         }
 
         item { NetworkCard(network, onRefreshNetwork) }
@@ -190,44 +193,48 @@ fun HomeScreen(
 
         item { ScanBanner(scan) }
 
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                MetricCard(
-                    modifier = Modifier.weight(1f),
-                    title = "دریافت",
-                    value = Format.speed(tunnel.downSpeed),
-                    accent = V2.Mint,
-                    arrow = "↓"
-                )
-                MetricCard(
-                    modifier = Modifier.weight(1f),
-                    title = "ارسال",
-                    value = Format.speed(tunnel.upSpeed),
-                    accent = V2.Sky,
-                    arrow = "↑"
-                )
+        if (tunnel.status == TunnelStatus.CONNECTED) {
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    MetricCard(
+                        modifier = Modifier.weight(1f),
+                        title = "دریافت",
+                        value = Format.speed(tunnel.downSpeed),
+                        accent = V2.Mint,
+                        arrow = "↓"
+                    )
+                    MetricCard(
+                        modifier = Modifier.weight(1f),
+                        title = "ارسال",
+                        value = Format.speed(tunnel.upSpeed),
+                        accent = V2.Sky,
+                        arrow = "↑"
+                    )
+                }
             }
         }
 
-        item {
-            GlassCard(Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 14.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    MiniStat("مدت اتصال", Format.duration(connectedFor))
-                    Divider()
-                    MiniStat(
-                        "پینگ",
-                        if (tunnel.ping > 0) "${Format.number(tunnel.ping)} ms" else "—"
-                    )
-                    Divider()
-                    MiniStat(
-                        "مصرف",
-                        Format.bytes(tunnel.totalDown + tunnel.totalUp)
-                    )
+        if (tunnel.status == TunnelStatus.CONNECTED) {
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 14.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        MiniStat("مدت اتصال", Format.duration(connectedFor))
+                        Divider()
+                        MiniStat(
+                            "پینگ",
+                            if (tunnel.ping > 0) "${Format.number(tunnel.ping)} ms" else "—"
+                        )
+                        Divider()
+                        MiniStat(
+                            "مصرف",
+                            Format.bytes(tunnel.totalDown + tunnel.totalUp)
+                        )
+                    }
                 }
             }
         }
