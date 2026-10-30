@@ -40,7 +40,12 @@ object Notifier {
         manager.createNotificationChannel(channel)
     }
 
-    fun build(context: Context, state: TunnelUiState, showSpeed: Boolean): Notification {
+    fun build(
+        context: Context,
+        state: TunnelUiState,
+        showSpeed: Boolean,
+        hideDetails: Boolean = false
+    ): Notification {
         ensureChannel(context)
 
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -81,7 +86,9 @@ object Notifier {
             flags
         )
 
-        val title = when {
+        val title = if (hideDetails) {
+            "V2max"
+        } else when {
             state.status == ir.v2max.app.data.TunnelStatus.CONNECTED ->
                 state.serverName.ifBlank { "متصل" }
 
@@ -89,7 +96,14 @@ object Notifier {
             else -> "V2max"
         }
 
-        val text = when (state.status) {
+        val text = if (hideDetails) {
+            when (state.status) {
+                ir.v2max.app.data.TunnelStatus.CONNECTED -> "اتصال برقرار است"
+                ir.v2max.app.data.TunnelStatus.CONNECTING -> "در حال اتصال…"
+                ir.v2max.app.data.TunnelStatus.ERROR -> "اتصال ناموفق بود"
+                else -> "اتصال قطع است"
+            }
+        } else when (state.status) {
             ir.v2max.app.data.TunnelStatus.CONNECTED ->
                 if (showSpeed) "↓ ${Format.speed(state.downSpeed)}   ↑ ${Format.speed(state.upSpeed)}" else "اتصال برقرار است"
 
@@ -102,7 +116,7 @@ object Notifier {
             .setSmallIcon(R.drawable.ic_stat)
             .setContentTitle(title)
             .setContentText(text)
-            .setSubText(if (state.ping > 0) "پینگ ${state.ping} ms" else null)
+            .setSubText(if (!hideDetails && state.ping > 0) "پینگ ${state.ping} ms" else null)
             .setOngoing(state.status != ir.v2max.app.data.TunnelStatus.ERROR)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
@@ -115,10 +129,38 @@ object Notifier {
             .build()
     }
 
-    fun update(context: Context, state: TunnelUiState, showSpeed: Boolean) {
+    fun update(
+        context: Context,
+        state: TunnelUiState,
+        showSpeed: Boolean,
+        hideDetails: Boolean = false
+    ) {
         runCatching {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
-            manager.notify(NOTIFICATION_ID, build(context, state, showSpeed))
+            manager.notify(NOTIFICATION_ID, build(context, state, showSpeed, hideDetails))
+        }
+    }
+
+    /** اعلان رسیدن به سقف مصرف روزانه */
+    fun dailyLimitReached(context: Context, limitMb: Int) {
+        ensureChannel(context)
+        val intent = PendingIntent.getActivity(
+            context,
+            10,
+            Intent(context, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("سقف مصرف روزانه")
+            .setContentText("$limitMb مگابایت مصرف شد؛ اتصال قطع شد")
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setContentIntent(intent)
+            .build()
+        runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID + 1, notification)
         }
     }
 

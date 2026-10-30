@@ -385,6 +385,41 @@ fun SettingsScreen(
             ) { onScanQr() }
         }
 
+        item { GroupTitle("حریم خصوصی و امنیت") }
+
+        item {
+            SettingSwitch(
+                title = "قفل برنامه",
+                subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
+                checked = settings.appLock
+            ) { value -> onChange { it.copy(appLock = value) } }
+        }
+
+        item {
+            SettingSwitch(
+                title = "پنهان‌کردن جزئیات در اعلان",
+                subtitle = "نام سرور و سرعت در اعلان نمایش داده نمی‌شود",
+                checked = settings.hideNotificationContent
+            ) { value -> onChange { it.copy(hideNotificationContent = value) } }
+        }
+
+        item {
+            SettingValue(
+                title = "سقف مصرف روزانه",
+                subtitle = if (settings.dailyLimitMb <= 0) "بدون محدودیت — برای تعیین سقف ضربه بزنید"
+                else "با رسیدن به ${settings.dailyLimitMb} مگابایت اتصال قطع می‌شود",
+                value = if (settings.dailyLimitMb <= 0) "بی‌نهایت" else "${settings.dailyLimitMb} MB"
+            ) {
+                val next = when {
+                    settings.dailyLimitMb <= 0 -> 500
+                    settings.dailyLimitMb < 1000 -> 1000
+                    settings.dailyLimitMb < 3000 -> 3000
+                    else -> 0
+                }
+                onChange { it.copy(dailyLimitMb = next) }
+            }
+        }
+
         item { GroupTitle("ابزارهای پیشرفته") }
 
         item {

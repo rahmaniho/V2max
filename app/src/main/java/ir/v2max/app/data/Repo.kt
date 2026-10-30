@@ -50,16 +50,18 @@ object Repo {
         if (loaded) return
         val p = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         prefs = p
-        _servers.value = readList<ServerConfig>(
-            p.getString(KEY_SERVERS, null),
-            object : TypeToken<List<ServerConfig>>() {}.type
-        )
+        // خواندن با مهاجرت ساختار داده (پر کردن کلیدهای جدید با مقدار پیش‌فرض)
+        _servers.value = p.getString(KEY_SERVERS, null)?.let {
+            Migrations.healList(it, ServerConfig())
+        } ?: readList<ServerConfig>(null, object : TypeToken<List<ServerConfig>>() {}.type)
         _subs.value = readList<Subscription>(
             p.getString(KEY_SUBS, null),
             object : TypeToken<List<Subscription>>() {}.type
         )
         _settings.value = runCatching {
-            p.getString(KEY_SETTINGS, null)?.let { gson.fromJson(it, AppSettings::class.java) }
+            p.getString(KEY_SETTINGS, null)?.let {
+                Migrations.heal(it, AppSettings()) ?: gson.fromJson(it, AppSettings::class.java)
+            }
         }.getOrNull() ?: AppSettings()
         _selectedId.value = p.getString(KEY_SELECTED, "") ?: ""
         loaded = true
@@ -530,8 +532,9 @@ object Repo {
 
     @Synchronized
     fun restoreBackup(json: String): Boolean {
-        val payload = runCatching { gson.fromJson(json, BackupPayload::class.java) }.getOrNull()
+        val raw = runCatching { gson.fromJson(json, BackupPayload::class.java) }.getOrNull()
             ?: return false
+        val payload = Migrations.migrateBackup(raw)
         if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
         _servers.value = payload.servers
         _subs.value = payload.subs

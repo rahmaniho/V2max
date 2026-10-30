@@ -247,6 +247,9 @@ object ConfigBuilder {
 
     // -------------------------------------------------------------- routing
 
+    /** برای آزمون و پیش‌نمایش: فقط بخش routing کانفیگ */
+    fun routingJson(settings: AppSettings): JsonObject = buildRouting(settings)
+
     private fun buildRouting(settings: AppSettings): JsonObject {
         val rules = JsonArray()
 

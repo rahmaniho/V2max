@@ -207,7 +207,7 @@ enum class PerAppMode {
 
 /** بسته‌ی پشتیبان */
 data class BackupPayload(
-    val version: Int = 1,
+    val version: Int = 2,
     val createdAt: Long = System.currentTimeMillis(),
     val servers: List<ServerConfig> = emptyList(),
     val subs: List<Subscription> = emptyList(),
@@ -265,6 +265,15 @@ data class AppSettings(
 
     /** اتصال خودکار فقط روی وای‌فای */
     var wifiOnly: Boolean = false,
+
+    /** سقف مصرف روزانه (مگابایت) — صفر یعنی بی‌نهایت */
+    var dailyLimitMb: Int = 0,
+
+    /** قفل برنامه با اثر انگشت/رمز دستگاه */
+    var appLock: Boolean = false,
+
+    /** پنهان‌کردن جزئیات اتصال در اعلان (نام سرور و سرعت) */
+    var hideNotificationContent: Boolean = false,
 
     /** نمایش پرچم کشور در فهرست سرورها */
     var showFlags: Boolean = true,

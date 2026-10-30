@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,15 +14,20 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.data.Repo
 import ir.v2max.app.ui.AppRoot
 import ir.v2max.app.ui.AppViewModel
 import ir.v2max.app.ui.V2maxTheme
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val viewModel: AppViewModel by viewModels()
+
+    /** وضعیت قفل برنامه (اگر در تنظیمات فعال شده باشد) */
+    private val unlocked = androidx.compose.runtime.mutableStateOf(false)
+    private var lockPromptShown = false
 
     private lateinit var vpnPermissionLauncher: ActivityResultLauncher<Intent>
     private lateinit var notificationLauncher: ActivityResultLauncher<String>
@@ -57,7 +61,20 @@ class MainActivity : ComponentActivity() {
                 }
             }
             V2maxTheme {
-                AppRoot(viewModel)
+                val locked = Repo.settings.collectAsStateWithLifecycle().value.appLock && !unlocked.value
+                if (locked) {
+                    LockScreen(
+                        onUnlock = { requestUnlock() }
+                    )
+                    LaunchedEffect(Unit) {
+                        if (!lockPromptShown) {
+                            lockPromptShown = true
+                            requestUnlock()
+                        }
+                    }
+                } else {
+                    AppRoot(viewModel)
+                }
             }
         }
 
@@ -125,6 +142,23 @@ class MainActivity : ComponentActivity() {
         const val ACTION_SMART = "ir.v2max.app.action.SMART"
         const val EXTRA_ID = "id"
         const val EXTRA_TEXT = "text"
+    }
+
+    private fun requestUnlock() {
+        ir.v2max.app.ui.AppLock.prompt(
+            this,
+            onSuccess = { unlocked.value = true },
+            onFailure = { /* کاربر می‌تواند دوباره تلاش کند */ }
+        )
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // بازگشت به برنامه نیازمند احراز هویت مجدد است
+        if (Repo.settings.value.appLock) {
+            unlocked.value = false
+            lockPromptShown = false
+        }
     }
 
     private fun askNotificationPermission() {

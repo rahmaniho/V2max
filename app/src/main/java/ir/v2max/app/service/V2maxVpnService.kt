@@ -537,6 +537,18 @@ class V2maxVpnService : VpnService() {
                 totalUp += traffic[0]
                 totalDown += traffic[1]
 
+                // سقف مصرف روزانه
+                ir.v2max.app.util.DataUsage.add(this@V2maxVpnService, traffic[0] + traffic[1])
+                val limitMb = Repo.settings.value.dailyLimitMb
+                if (limitMb > 0) {
+                    val usedMb = ir.v2max.app.util.DataUsage.todayBytes(this@V2maxVpnService) / (1024L * 1024L)
+                    if (usedMb >= limitMb) {
+                        Notifier.dailyLimitReached(this@V2maxVpnService, limitMb)
+                        stopTunnel()
+                        return@launch
+                    }
+                }
+
                 val now = System.currentTimeMillis()
                 val elapsed = (now - lastTick).coerceAtLeast(1L)
                 lastTick = now
@@ -671,7 +683,7 @@ class V2maxVpnService : VpnService() {
 
         if (Repo.tunnel.value.status != TunnelStatus.DISCONNECTED) {
             Repo.tunnel.value = Repo.tunnel.value.copy(status = TunnelStatus.DISCONNECTING)
-            Notifier.update(this, Repo.tunnel.value, false)
+            Notifier.update(this, Repo.tunnel.value, false, Repo.settings.value.hideNotificationContent)
         }
 
         // توقف همگام تا مطمئن شویم هسته و رابط TUN واقعاً آزاد شده‌اند
@@ -694,7 +706,7 @@ class V2maxVpnService : VpnService() {
             downSpeed = 0,
             upSpeed = 0
         )
-        Notifier.update(this, Repo.tunnel.value, false)
+        Notifier.update(this, Repo.tunnel.value, false, Repo.settings.value.hideNotificationContent)
         stopForegroundCompat()
         stopSelf()
     }
@@ -713,7 +725,12 @@ class V2maxVpnService : VpnService() {
             startForegroundCompat(state)
             isForeground = true
         } else {
-            Notifier.update(this, state, Repo.settings.value.showSpeedInNotification)
+            Notifier.update(
+                this,
+                state,
+                Repo.settings.value.showSpeedInNotification && !Repo.settings.value.hideNotificationContent,
+                Repo.settings.value.hideNotificationContent
+            )
         }
     }
 
