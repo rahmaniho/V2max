@@ -331,6 +331,21 @@ class CoreLogicTest {
         }
     }
 
+    @Test
+    fun `incomplete sing-box credentials are rejected early`() {
+        val wg = ServerConfig(proto = Proto.WIREGUARD, name = "w", address = "1.2.3.4", port = 51820)
+        assertTrue(!wg.hasUsableEndpoint())
+        wg.wgPrivateKey = "priv"
+        wg.wgPublicKey = "pub"
+        assertTrue(wg.hasUsableEndpoint())
+
+        val tuic = ServerConfig(proto = Proto.TUIC, name = "t", address = "1.2.3.4", port = 443)
+        assertTrue(!tuic.hasUsableEndpoint())
+        tuic.uuid = "11111111-2222-3333-4444-555555555555"
+        tuic.password = "pw"
+        assertTrue(tuic.hasUsableEndpoint())
+    }
+
     // ----------------------------------------------------------------- format
 
     @Test

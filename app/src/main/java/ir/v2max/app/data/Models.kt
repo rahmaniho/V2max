@@ -141,7 +141,14 @@ data class ServerConfig(
         if (a == "localhost" || a == "0.0.0.0" || a == "::" || a == "::1") return false
         if (a.startsWith("127.")) return false
         if (a == "[::1]") return false
-        return true
+        // اعتبارسنجی سریع اعتبارنامه‌ها تا کانفیگ ناقص حتی به مرحله‌ی تست هم نرسد
+        return when (proto) {
+            Proto.WIREGUARD -> wgPrivateKey.isNotBlank() && wgPublicKey.isNotBlank()
+            Proto.TUIC -> uuid.isNotBlank() && password.isNotBlank()
+            Proto.ANYTLS -> password.isNotBlank() || uuid.isNotBlank()
+            Proto.HYSTERIA2 -> password.isNotBlank()
+            else -> true
+        }
     }
 
     /** درصد پایداری بین ۰ تا ۱۰۰ (۱۰۰ = بدون شکست) */
