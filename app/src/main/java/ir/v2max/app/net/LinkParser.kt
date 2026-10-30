@@ -47,7 +47,7 @@ object LinkParser {
                 "socks", "socks5" -> parseStandard(line, Proto.SOCKS)
                 "http", "https" -> parseStandard(line, Proto.HTTP)
                 "hysteria2", "hy2" -> parseStandard(line, Proto.HYSTERIA2)
-                "tuic" -> parseStandard(line, Proto.TUCI)
+                "tuic" -> parseStandard(line, Proto.TUIC)
                 "anytls" -> parseStandard(line, Proto.ANYTLS)
                 "wireguard", "wg" -> parseWireGuard(line)
                 else -> null
@@ -160,7 +160,7 @@ object LinkParser {
                 cfg.obfsPassword = q["obfs-password"].orEmpty()
             }
 
-            Proto.TUCI -> {
+            Proto.TUIC -> {
                 // tuic://uuid:password@host:port
                 cfg.uuid = decodedUser.substringBefore(":")
                 cfg.password = if (decodedUser.contains(":")) decodedUser.substringAfter(":") else ""
@@ -186,7 +186,7 @@ object LinkParser {
         cfg.authority = q["authority"].orEmpty()
         cfg.mode = q["mode"].orEmpty()
         cfg.security = q["security"].orEmpty().let {
-            if (proto == Proto.HYSTERIA2 || proto == Proto.TUCI || proto == Proto.ANYTLS) "tls"
+            if (proto == Proto.HYSTERIA2 || proto == Proto.TUIC || proto == Proto.ANYTLS) "tls"
             else if (it == "tls" || it == "reality") it else ""
         }
         cfg.sni = q["sni"].orEmpty().ifBlank { q["peer"].orEmpty() }

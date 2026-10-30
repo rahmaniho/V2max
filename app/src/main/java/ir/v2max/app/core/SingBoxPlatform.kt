@@ -29,7 +29,6 @@ import ir.v2max.app.data.AppSettings
 class SingBoxPlatform(
     private val vpnService: VpnService?,
     private val settings: AppSettings,
-    private val enabled: Boolean = true,
     private val buildTun: () -> Int,
     private val onLog: (String) -> Unit = {}
 ) : PlatformInterface {
@@ -39,7 +38,7 @@ class SingBoxPlatform(
         private set
 
     override fun openTun(options: TunOptions): Int {
-        if (!enabled) {
+        if (vpnService == null) {
             onLog("openTun بدون VpnService (حالت تست) نادیده گرفته شد")
             return -1
         }

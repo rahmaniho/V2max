@@ -506,21 +506,24 @@ class V2maxVpnService : VpnService() {
         )
 
         val tunSettings = baseSettings.copy(mtu = baseSettings.mtu.coerceIn(1280, 9000))
-        var openedFd = -1
 
         val started = try {
             SingBoxCore.start(
                 context = applicationContext,
                 config = ir.v2max.app.core.SingBoxConfig.vpnConfig(server, tunSettings),
                 vpnService = this,
-                settings = tunSettings
-            ) {
-                // این بلوک از داخل خود هسته فراخوانی می‌شود؛ TUN باید همان‌جا ساخته شود
-                val pfd = establishTun(tunSettings)
-                    ?: throw IllegalStateException("ساخت رابط TUN ناموفق بود")
-                tun = pfd
-                openedFd = pfd.fd
-            }
+                settings = tunSettings,
+                buildTun = {
+                    // این بلوک از داخل خود هسته فراخوانی می‌شود؛ TUN باید همان‌جا ساخته شود
+                    val pfd = establishTun(tunSettings)
+                    if (pfd == null) {
+                        -1
+                    } else {
+                        tun = pfd
+                        pfd.fd
+                    }
+                }
+            )
         } catch (t: Throwable) {
             Log.e(TAG, "sing-box start failed", t)
             false

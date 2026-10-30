@@ -119,7 +119,7 @@ data class ServerConfig(
      * Hysteria2/TUIC/WireGuard/AnyTLS در Xray-core وجود ندارند.
      */
     fun needsSingBox(): Boolean = when (proto) {
-        Proto.HYSTERIA2, Proto.TUCI, Proto.ANYTLS, Proto.WIREGUARD -> true
+        Proto.HYSTERIA2, Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> true
         else -> false
     }
 

@@ -151,7 +151,7 @@ object SingBoxConfig {
                 o.add("tls", tls(server, defaultAlpn = null))
             }
 
-            Proto.TUCI -> {
+            Proto.TUIC -> {
                 o.addProperty("type", "tuic")
                 o.addProperty("server", server.address.trim())
                 o.addProperty("server_port", server.port.coerceIn(1, 65535))
@@ -232,7 +232,7 @@ object SingBoxConfig {
 
     /** فهرست پروتکل‌هایی که با این هسته اجرا می‌شوند (برای نمایش در رابط کاربری) */
     fun supports(proto: Proto): Boolean = when (proto) {
-        Proto.HYSTERIA2, Proto.TUCI, Proto.ANYTLS, Proto.WIREGUARD -> true
+        Proto.HYSTERIA2, Proto.TUIC, Proto.ANYTLS, Proto.WIREGUARD -> true
         else -> false
     }
 

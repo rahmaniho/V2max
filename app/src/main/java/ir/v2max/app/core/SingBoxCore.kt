@@ -75,7 +75,7 @@ object SingBoxCore {
         config: String,
         vpnService: VpnService?,
         settings: AppSettings,
-        onTunOpened: (Int) -> Unit = {}
+        buildTun: () -> Int = { -1 }
     ): Boolean {
         setup(context)
         stop()
@@ -88,9 +88,8 @@ object SingBoxCore {
 
         val platform = SingBoxPlatform(
             vpnService = vpnService,
-            enabled = vpnService != null,
             settings = settings,
-            onOpenTun = { options -> onTunOpened(options) },
+            buildTun = buildTun,
             onLog = { message -> log(message) }
         )
         val handler = Handler()
