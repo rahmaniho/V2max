@@ -58,15 +58,15 @@ class CoreLogicTest {
             trojan://pw@b.example.com:443#B
         """.trimIndent()
         val list = LinkParser.parseAll(text)
-        assertEquals(2, list.size)
+        assertTrue("باید دو کانفیگ پارس شود، دریافتی: ${list.size}", list.size == 2)
     }
 
     // ---------------------------------------------------------------- scoring
 
     @Test
     fun `score prefers faster server`() {
-        val slow = ServerConfig(bestPing = 100, speedKbps = 500)
-        val fast = ServerConfig(bestPing = 120, speedKbps = 8000)
+        val slow = ServerConfig(googlePing = 100, speedKbps = 500)
+        val fast = ServerConfig(googlePing = 120, speedKbps = 8000)
         assertTrue(fast.score() < slow.score())
     }
 
