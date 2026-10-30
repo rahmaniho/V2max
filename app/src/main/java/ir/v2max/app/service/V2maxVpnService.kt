@@ -87,7 +87,7 @@ class V2maxVpnService : VpnService() {
     private fun coreTraffic(): LongArray =
         if (usingSingBox) SingBoxCore.trafficSinceLastQuery() else XrayCore.trafficSinceLastQuery()
 
-    private fun totalDown = 0L
+    private var totalDown = 0L
     private var failoverAttempts = 0
     private var connectToken = 0
     private var failoverPending = false

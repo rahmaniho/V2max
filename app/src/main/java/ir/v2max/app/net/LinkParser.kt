@@ -444,6 +444,18 @@ object LinkParser {
                 )
                 "ss://$cred@${cfg.address}:${cfg.port}#${cfg.name.replace(" ", "%20")}"
             }
+
+            Proto.TUIC ->
+                "tuic://${cfg.uuid}:${cfg.password}@${cfg.address}:${cfg.port}" +
+                    "?sni=${cfg.sni}&alpn=${cfg.alpn}#${cfg.name.replace(" ", "%20")}"
+
+            Proto.ANYTLS ->
+                "anytls://${cfg.password}@${cfg.address}:${cfg.port}?sni=${cfg.sni}#${cfg.name.replace(" ", "%20")}"
+
+            Proto.WIREGUARD ->
+                "wireguard://${cfg.wgPrivateKey}@${cfg.address}:${cfg.port}" +
+                    "?publickey=${cfg.wgPublicKey}&address=${cfg.wgAddress}&reserved=${cfg.wgReserved}" +
+                    "#${cfg.name.replace(" ", "%20")}"
         }
     }
 }
