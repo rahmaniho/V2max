@@ -49,6 +49,7 @@ fun SettingsScreen(
     onOpenPerApp: () -> Unit = {},
     onSetFreeSources: (Boolean) -> Unit = {},
     onCheckUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
     onScanQr: () -> Unit = {},
     onOpenRouting: () -> Unit = {},
     onOpenDiag: () -> Unit = {},
@@ -372,9 +373,17 @@ fun SettingsScreen(
         item {
             SettingValue(
                 title = "بررسی به‌روزرسانی",
-                subtitle = "اگر نسخه‌ی جدیدی منتشر شده باشد، لینک دانلود نمایش داده می‌شود",
+                subtitle = "دانلود و نصب نسخه‌ی جدید از داخل برنامه (با بررسی امضا)",
                 value = "بررسی"
             ) { onCheckUpdate() }
+        }
+
+        item {
+            SettingValue(
+                title = "نصب به‌روزرسانی",
+                subtitle = "اگر نسخه‌ی جدید موجود باشد، مستقیم دانلود و نصب می‌شود",
+                value = "نصب"
+            ) { onInstallUpdate() }
         }
 
         item {

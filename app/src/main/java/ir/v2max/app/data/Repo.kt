@@ -42,6 +42,12 @@ object Repo {
     val network = MutableStateFlow(NetworkAssessment())
     val update = MutableStateFlow(UpdateInfo())
 
+    /** پیام نتیجه‌ی نصب به‌روزرسانی (از PackageInstaller) */
+    val installMessage = MutableStateFlow("")
+
+    /** پیشرفت دانلود به‌روزرسانی: 0..1 و صفر یعنی غیرفعال */
+    val updateProgress = MutableStateFlow(0f)
+
     @Volatile
     private var loaded = false
 

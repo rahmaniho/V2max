@@ -564,6 +564,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Repo.update.value = ir.v2max.app.data.UpdateInfo()
     }
 
+    /** دانلود و نصب مستقیم نسخه‌ی جدید (با بررسی امضا) */
+    fun downloadAndInstallUpdate() {
+        val info = Repo.update.value
+        val url = info.apkUrl.ifBlank { "" }
+        val app = getApplication<Application>()
+        if (url.isBlank()) {
+            showMessage("لینک APK در دسترس نیست؛ صفحه‌ی انتشار باز می‌شود")
+            openUpdatePage()
+            return
+        }
+        viewModelScope.launch {
+            Repo.updateProgress.value = 0.01f
+            showMessage("در حال دانلود به‌روزرسانی…")
+            val result = ir.v2max.app.net.UpdateInstaller.download(app, url) { done, total ->
+                if (total > 0) Repo.updateProgress.value = (done.toFloat() / total).coerceIn(0f, 0.99f)
+            }
+            Repo.updateProgress.value = 0f
+            when (result) {
+                is ir.v2max.app.net.UpdateInstaller.Result.Ready -> {
+                    val started = ir.v2max.app.net.UpdateInstaller.install(app, result.file)
+                    showMessage(
+                        if (started) "نصب‌کننده باز شد؛ تأیید کنید"
+                        else "شروع نصب ممکن نشد"
+                    )
+                }
+                is ir.v2max.app.net.UpdateInstaller.Result.Failure -> showMessage(result.message)
+                is ir.v2max.app.net.UpdateInstaller.Result.Progress -> Unit
+            }
+        }
+    }
+
     fun openUpdatePage() {
         val info = Repo.update.value
         val url = info.apkUrl.ifBlank { info.pageUrl }.ifBlank {

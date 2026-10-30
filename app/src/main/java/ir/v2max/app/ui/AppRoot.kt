@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.BuildConfig
+import ir.v2max.app.data.Repo
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
@@ -47,6 +48,8 @@ fun AppRoot(vm: AppViewModel) {
     val sync by vm.sync.collectAsStateWithLifecycle()
     val network by vm.network.collectAsStateWithLifecycle()
     val update by vm.update.collectAsStateWithLifecycle()
+    val updateProgress by Repo.updateProgress.collectAsStateWithLifecycle()
+    val installMessage by Repo.installMessage.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
@@ -109,6 +112,13 @@ fun AppRoot(vm: AppViewModel) {
     val backBlocked = showPerApp || showQr
     BackHandler(enabled = backBlocked) {
         if (showQr) showQr = false else showPerApp = false
+    }
+
+    LaunchedEffect(installMessage) {
+        if (installMessage.isNotBlank()) {
+            snackbarHostState.showSnackbar(installMessage)
+            Repo.installMessage.value = ""
+        }
     }
 
     LaunchedEffect(message) {
@@ -308,6 +318,8 @@ fun AppRoot(vm: AppViewModel) {
                         onRestart = { vm.restartScan() },
                         onRefreshNetwork = { vm.refreshNetworkAssessment() },
                         onOpenUpdate = { vm.openUpdatePage() },
+                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
+                        updateProgress = updateProgress,
                         onDismissUpdate = { vm.dismissUpdate() },
                         coreVersion = remember { vm.coreVersion() }
                     )
@@ -371,6 +383,7 @@ fun AppRoot(vm: AppViewModel) {
                         },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
+                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
                         onScanQr = { showQr = true },
                         onOpenRouting = { showRouting = true },
                         onOpenDiag = { showDiag = true }

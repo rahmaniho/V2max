@@ -76,6 +76,8 @@ fun HomeScreen(
     onRefreshNetwork: () -> Unit,
     onOpenUpdate: () -> Unit,
     onDismissUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit = {},
+    updateProgress: Float = 0f,
     coreVersion: String
 ) {
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
@@ -140,7 +142,9 @@ fun HomeScreen(
                 UpdateBanner(
                     version = update.version,
                     onOpen = onOpenUpdate,
-                    onDismiss = onDismissUpdate
+                    onDismiss = onDismissUpdate,
+                    onInstall = onInstallUpdate,
+                    progress = updateProgress
                 )
             }
         }

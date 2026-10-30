@@ -463,7 +463,13 @@ fun NetworkCard(network: NetworkAssessment, onRefresh: () -> Unit) {
 
 /** نوار اطلاع‌رسانی نسخه‌ی جدید */
 @Composable
-fun UpdateBanner(version: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
+fun UpdateBanner(
+    version: String,
+    onOpen: () -> Unit,
+    onDismiss: () -> Unit,
+    onInstall: () -> Unit = {},
+    progress: Float = 0f
+) {
     GlassCard(Modifier.fillMaxWidth(), onClick = onOpen) {
         Row(
             Modifier
@@ -479,10 +485,40 @@ fun UpdateBanner(version: String, onOpen: () -> Unit, onDismiss: () -> Unit) {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "برای دریافت آخرین نسخه ضربه بزنید",
+                    if (progress > 0f) "در حال دانلود… ${(progress * 100).toInt()}٪"
+                    else "نصب مستقیم از داخل برنامه، بدون خروج",
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                     color = V2.TextMuted
                 )
+                if (progress > 0f) {
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(V2.SurfaceHigh)
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(progress.coerceIn(0f, 1f))
+                                .height(4.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(V2.Mint)
+                        )
+                    }
+                } else {
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(V2.Mint.copy(alpha = 0.14f))
+                            .clickable { onInstall() }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Text("دانلود و نصب", color = V2.Mint, fontSize = 11.sp)
+                    }
+                }
             }
             Box(
                 Modifier
