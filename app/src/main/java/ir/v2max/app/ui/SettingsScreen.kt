@@ -440,6 +440,14 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
+                title = "Kill Switch (مسدودسازی هنگام قطعی)",
+                subtitle = "اگر تانل ناخواسته قطع شود، اینترنت مسدود می‌ماند تا داده‌ای بیرون از تانل نرود؛ با اعلان یا دکمه‌ی «رفع مسدودی» برمی‌گردد",
+                checked = settings.killSwitch
+            ) { value -> onChange { it.copy(killSwitch = value) } }
+        }
+
+        item {
+            SettingSwitch(
                 title = "قفل برنامه",
                 subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
                 checked = settings.appLock

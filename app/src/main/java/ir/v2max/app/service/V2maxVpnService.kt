@@ -38,6 +38,9 @@ class V2maxVpnService : VpnService() {
         const val ACTION_START = "ir.v2max.app.action.START_TUNNEL"
         const val ACTION_NEXT = "ir.v2max.app.action.NEXT_SERVER"
         const val ACTION_RETEST = "ir.v2max.app.action.RETEST"
+
+        /** رفع مسدودی Kill Switch و بازگرداندن اینترنت عادی */
+        const val ACTION_UNBLOCK = "ir.v2max.app.action.UNBLOCK"
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
 
@@ -126,7 +129,7 @@ class V2maxVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
-        if (action == ACTION_STOP) {
+        if (action == ACTION_STOP || action == ACTION_UNBLOCK) {
             stopTunnel()
             return START_NOT_STICKY
         }
@@ -720,6 +723,20 @@ class V2maxVpnService : VpnService() {
     private fun fail(message: String) {
         running = false
         XrayCore.stop()
+
+        // Kill Switch: رابط TUN باز می‌ماند تا هیچ بسته‌ای بیرون از تانل نرود
+        val killSwitch = Repo.settings.value.killSwitch && tun != null
+        if (killSwitch) {
+            Repo.tunnel.value = Repo.tunnel.value.copy(
+                status = TunnelStatus.ERROR,
+                message = "ترافیک مسدود شد (Kill Switch) — $message",
+                downSpeed = 0,
+                upSpeed = 0
+            )
+            Notifier.blocked(this, message)
+            return
+        }
+
         closeTun()
         Repo.tunnel.value = Repo.tunnel.value.copy(
             status = TunnelStatus.ERROR,

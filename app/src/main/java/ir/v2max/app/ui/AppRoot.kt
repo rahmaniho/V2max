@@ -320,6 +320,9 @@ fun AppRoot(vm: AppViewModel) {
                         onOpenUpdate = { vm.openUpdatePage() },
                         onInstallUpdate = { vm.downloadAndInstallUpdate() },
                         updateProgress = updateProgress,
+                        killSwitchBlocked = settings.killSwitch &&
+                            tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
+                        onUnblock = { vm.disconnectTunnel() },
                         onDismissUpdate = { vm.dismissUpdate() },
                         coreVersion = remember { vm.coreVersion() }
                     )

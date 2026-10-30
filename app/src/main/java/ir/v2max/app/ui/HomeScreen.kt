@@ -77,6 +77,8 @@ fun HomeScreen(
     onOpenUpdate: () -> Unit,
     onDismissUpdate: () -> Unit,
     onInstallUpdate: () -> Unit = {},
+    killSwitchBlocked: Boolean = false,
+    onUnblock: () -> Unit = {},
     updateProgress: Float = 0f,
     coreVersion: String
 ) {
@@ -134,6 +136,30 @@ fun HomeScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+            }
+        }
+
+        if (killSwitchBlocked) {
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            "اینترنت مسدود است (Kill Switch)",
+                            style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                            color = V2.Red
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "تانل قطع شده و برای محافظت از حریم خصوصی، ترافیک مسدود مانده است.",
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                            color = V2.TextMuted
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        GhostButton(text = "رفع مسدودی و بازگشت اینترنت", modifier = Modifier.fillMaxWidth()) {
+                            onUnblock()
+                        }
+                    }
+                }
             }
         }
 

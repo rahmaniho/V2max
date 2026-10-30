@@ -164,6 +164,41 @@ object Notifier {
         }
     }
 
+    /** اعلان حالت Kill Switch: ترافیک مسدود است و دکمه‌ی رفع مسدودی دارد */
+    fun blocked(context: Context, reason: String) {
+        ensureChannel(context)
+        val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        val open = PendingIntent.getActivity(
+            context,
+            20,
+            Intent(context, MainActivity::class.java),
+            flags
+        )
+        val unblock = PendingIntent.getService(
+            context,
+            21,
+            Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_UNBLOCK
+            },
+            flags
+        )
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("ترافیک مسدود است (Kill Switch)")
+            .setContentText(reason.ifBlank { "تانل قطع شد؛ برای بازگشت اینترنت، مسدودی را بردارید" })
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setContentIntent(open)
+            .addAction(0, "رفع مسدودی", unblock)
+            .build()
+        runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.notify(NOTIFICATION_ID, notification)
+        }
+    }
+
     fun cancel(context: Context) {
         runCatching {
             val manager = context.getSystemService(NotificationManager::class.java) ?: return
