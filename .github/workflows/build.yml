@@ -88,6 +88,15 @@ jobs:
               echo "::error title=tests::$line"
             done
           fi
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+              for case in ET.parse(path).iter('testcase'):
+                  for failure in case.findall('failure'):
+                      msg = (failure.get('message') or failure.text or '')[:8000]
+                      msg = msg.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                      print(f"::error title={case.get('classname')}.{case.get('name')}::{msg}")
+          PY
 
       - name: Build release APK
         run: |
