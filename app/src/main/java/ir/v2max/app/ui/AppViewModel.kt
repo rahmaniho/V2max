@@ -615,6 +615,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** پشتیبان رمزدار (AES-GCM + PBKDF2) */
+    fun exportEncryptedBackup(password: String): String? =
+        ir.v2max.app.util.SecureBackup.encrypt(exportBackup(), password)
+
+    fun importEncryptedBackup(text: String, password: String): Boolean {
+        if (!ir.v2max.app.util.SecureBackup.isEncrypted(text)) return false
+        val plain = ir.v2max.app.util.SecureBackup.decrypt(text, password) ?: return false
+        return Repo.restoreBackup(plain)
+    }
+
     fun resetData() {
         TunnelController.stop(getApplication())
         Repo.resetEverything()

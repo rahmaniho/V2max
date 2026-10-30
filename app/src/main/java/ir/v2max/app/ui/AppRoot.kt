@@ -4,15 +4,23 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.BuildConfig
 
@@ -49,6 +58,11 @@ fun AppRoot(vm: AppViewModel) {
     var showRouting by rememberSaveable { mutableStateOf(false) }
     var showDiag by rememberSaveable { mutableStateOf(false) }
     var editingId by rememberSaveable { mutableStateOf("") }
+    var backupPassword by remember { mutableStateOf("") }
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var pendingRestoreText by remember { mutableStateOf("") }
+    var showRestoreDialog by remember { mutableStateOf(false) }
+    var restoreError by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -56,11 +70,20 @@ fun AppRoot(vm: AppViewModel) {
     ) { uri ->
         if (uri != null) {
             runCatching {
+                val payload = if (backupPassword.isBlank()) {
+                    vm.exportBackup()
+                } else {
+                    vm.exportEncryptedBackup(backupPassword) ?: vm.exportBackup()
+                }
                 context.contentResolver.openOutputStream(uri)?.use { output ->
-                    output.write(vm.exportBackup().toByteArray())
+                    output.write(payload.toByteArray())
                 }
             }
-            vm.showMessage("فایل پشتیبان ذخیره شد")
+            vm.showMessage(
+                if (backupPassword.isBlank()) "فایل پشتیبان ساده ذخیره شد"
+                else "فایل پشتیبان رمزدار ذخیره شد"
+            )
+            backupPassword = ""
         }
     }
 
@@ -71,7 +94,15 @@ fun AppRoot(vm: AppViewModel) {
             val text = runCatching {
                 context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
             }.getOrNull()
-            if (text.isNullOrBlank()) vm.showMessage("خواندن فایل ناموفق بود") else vm.importBackup(text)
+            when {
+                text.isNullOrBlank() -> vm.showMessage("خواندن فایل ناموفق بود")
+                ir.v2max.app.util.SecureBackup.isEncrypted(text) -> {
+                    pendingRestoreText = text
+                    restoreError = ""
+                    showRestoreDialog = true
+                }
+                else -> vm.importBackup(text)
+            }
         }
     }
 
@@ -97,6 +128,95 @@ fun AppRoot(vm: AppViewModel) {
                 clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("V2max", qrDialogContent))
                 qrDialogContent = ""
                 vm.showMessage("لینک کپی شد")
+            }
+        )
+    }
+
+    if (showBackupDialog) {
+        var password by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showBackupDialog = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("پشتیبان‌گیری", color = V2.TextPrimary) },
+            text = {
+                Column {
+                    Text(
+                        "اگر رمز وارد کنید، فایل با AES-256 رمزگذاری می‌شود و بدون رمز قابل بازیابی نیست. " +
+                            "خالی گذاشتن رمز = فایل ساده (فقط برای انتقال امن نگه‌داری کنید).",
+                        fontSize = 11.sp,
+                        color = V2.TextMuted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        singleLine = true,
+                        label = { Text("رمز (اختیاری)", fontSize = 11.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = V2.Mint,
+                            unfocusedBorderColor = V2.Stroke,
+                            cursorColor = V2.Mint
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    backupPassword = password
+                    showBackupDialog = false
+                    exportLauncher.launch("v2max-backup.json")
+                }) { Text("ذخیره", color = V2.Mint) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackupDialog = false }) { Text("انصراف", color = V2.TextMuted) }
+            }
+        )
+    }
+
+    if (showRestoreDialog) {
+        var password by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showRestoreDialog = false; pendingRestoreText = "" },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("بازیابی پشتیبان رمزدار", color = V2.TextPrimary) },
+            text = {
+                Column {
+                    Text("رمز فایل پشتیبان را وارد کنید.", fontSize = 11.sp, color = V2.TextMuted)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        singleLine = true,
+                        label = { Text("رمز", fontSize = 11.sp) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = V2.Mint,
+                            unfocusedBorderColor = V2.Stroke,
+                            cursorColor = V2.Mint
+                        )
+                    )
+                    if (restoreError.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(restoreError, fontSize = 11.sp, color = V2.Red)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (vm.importEncryptedBackup(pendingRestoreText, password)) {
+                        showRestoreDialog = false
+                        pendingRestoreText = ""
+                        vm.showMessage("پشتیبان بازیابی شد")
+                    } else {
+                        restoreError = "رمز اشتباه است یا فایل خراب است"
+                    }
+                }) { Text("بازیابی", color = V2.Mint) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRestoreDialog = false; pendingRestoreText = "" }) {
+                    Text("انصراف", color = V2.TextMuted)
+                }
             }
         )
     }
@@ -245,7 +365,10 @@ fun AppRoot(vm: AppViewModel) {
                         onClearAll = { vm.resetData() },
                         onOpenPerApp = { showPerApp = true },
                         onSetFreeSources = { vm.setFreeSourcesEnabled(it) },
-                        onBackup = { exportLauncher.launch("v2max-backup.json") },
+                        onBackup = {
+                            backupPassword = ""
+                            showBackupDialog = true
+                        },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
                         onScanQr = { showQr = true },
