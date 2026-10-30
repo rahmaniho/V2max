@@ -217,8 +217,7 @@ fun AppRoot(vm: AppViewModel) {
                         onBackup = { exportLauncher.launch("v2max-backup.json") },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
-                        onScanQr = { showQr = true },
-                        onQrContent = { qrDialogContent = it }
+                        onScanQr = { showQr = true }
                     )
                 }
             }
