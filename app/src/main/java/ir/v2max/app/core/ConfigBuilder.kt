@@ -3,6 +3,7 @@ package ir.v2max.app.core
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
+import com.google.gson.JsonParser
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.Proto
 import ir.v2max.app.data.RoutingMode
@@ -307,9 +308,10 @@ object ConfigBuilder {
             }
         )
 
-        // 3) ربودن (hijack) همه‌ی درخواست‌های DNS برنامه‌ها
+        // فقط DNS ورودیِ TUN را بگیریم؛ درخواست‌های خود هسته نباید دوباره hijack شوند.
         rules.add(
             JsonObject().apply {
+                add("inboundTag", JsonArray().apply { add("tun") })
                 addProperty("network", "tcp,udp")
                 addProperty("port", "53")
                 addProperty("outboundTag", TAG_DNS_OUT)
@@ -354,6 +356,13 @@ object ConfigBuilder {
 
         // 6) قواعد سفارشی کاربر (ویرایش‌شده در صفحه‌ی مسیریابی)
         buildCustomRules(settings, useBalancer).forEach { rules.add(it) }
+        if (useBalancer) {
+            // Without a catch-all Xray falls back to the first outbound, bypassing the balancer.
+            rules.add(JsonObject().apply {
+                addProperty("network", "tcp,udp")
+                setProxyTarget(true)
+            })
+        }
 
         val routing = JsonObject()
         routing.addProperty("domainStrategy", "AsIs")
@@ -435,7 +444,8 @@ object ConfigBuilder {
         o.addProperty("protocol", protocolName(server))
 
         val address = server.address.trim()
-        val port = server.port.coerceIn(1, 65535)
+        require(address.isNotBlank() && server.port in 1..65535) { "آدرس یا پورت سرور معتبر نیست" }
+        val port = server.port
 
         when (server.proto) {
             Proto.VMESS -> {
@@ -609,13 +619,7 @@ object ConfigBuilder {
                 ss.add(
                     "wsSettings", JsonObject().apply {
                         addProperty("path", server.path.ifBlank { "/" })
-                        if (server.host.isNotBlank()) {
-                            add(
-                                "headers", JsonObject().apply {
-                                    addProperty("Host", server.host)
-                                }
-                            )
-                        }
+                        if (server.host.isNotBlank()) addProperty("host", server.host)
                     }
                 )
             }
@@ -663,22 +667,40 @@ object ConfigBuilder {
                         addProperty("path", server.path.ifBlank { "/" })
                         if (server.host.isNotBlank()) addProperty("host", server.host)
                         if (server.mode.isNotBlank()) addProperty("mode", server.mode)
+                        if (server.xhttpExtra.isNotBlank()) {
+                            val extra = JsonParser.parseString(server.xhttpExtra)
+                            require(extra.isJsonObject) { "تنظیمات extra برای XHTTP باید یک شیء JSON باشد" }
+                            add("extra", extra)
+                        }
                     }
                 )
             }
 
             "kcp", "mkcp" -> {
-                ss.add(
-                    "kcpSettings", JsonObject().apply {
-                        addProperty("mtu", 1350)
-                        addProperty("tti", 50)
-                        add(
-                            "header", JsonObject().apply {
-                                addProperty("type", server.headerType.ifBlank { "none" })
-                            }
-                        )
-                    }
-                )
+                ss.addProperty("network", "kcp")
+                ss.add("kcpSettings", JsonObject().apply {
+                    addProperty("mtu", server.kcpMtu)
+                    addProperty("tti", server.kcpTti)
+                })
+                // Xray جدید دیگر seed/header قدیمی داخل kcpSettings را نمی‌خواند.
+                // مانند v2rayNG آن‌ها را به ماسک‌های mkcp-legacy تبدیل می‌کنیم.
+                val masks = JsonArray()
+                masks.add(JsonObject().apply {
+                    addProperty("type", "mkcp-legacy")
+                    if (server.kcpSeed.isNotBlank()) add("settings", JsonObject().apply {
+                        addProperty("value", server.kcpSeed)
+                    })
+                })
+                if (server.headerType.isNotBlank() && server.headerType != "none") {
+                    masks.add(JsonObject().apply {
+                        addProperty("type", "mkcp-legacy")
+                        add("settings", JsonObject().apply {
+                            addProperty("header", if (server.headerType == "wechat-video") "wechat" else server.headerType)
+                            if (server.headerType == "dns" && server.host.isNotBlank()) addProperty("value", server.host)
+                        })
+                    })
+                }
+                ss.add("finalmask", JsonObject().apply { add("udp", masks) })
             }
 
             "quic" -> {
@@ -734,14 +756,19 @@ object ConfigBuilder {
         ss.addProperty("security", security)
 
         val sni = server.effectiveSni()
-        val alpnList = server.alpn.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        val alpnList = server.alpn.ifBlank { if (server.proto == Proto.HYSTERIA2) "h3" else "" }
+            .split(",").map { it.trim() }.filter { it.isNotEmpty() }
 
         when (security) {
             "tls" -> {
                 ss.add(
                     "tlsSettings", JsonObject().apply {
                         addProperty("serverName", sni)
-                        addProperty("allowInsecure", server.allowInsecure)
+                        // A pin takes precedence over the deprecated insecure flag, as in v2rayNG.
+                        addProperty("allowInsecure", server.allowInsecure && server.pinnedPeerCertSha256.isBlank())
+                        if (server.echConfigList.isNotBlank()) addProperty("echConfigList", server.echConfigList)
+                        if (server.verifyPeerCertByName.isNotBlank()) addProperty("verifyPeerCertByName", server.verifyPeerCertByName)
+                        if (server.pinnedPeerCertSha256.isNotBlank()) addProperty("pinnedPeerCertSha256", server.pinnedPeerCertSha256)
                         if (server.fingerprint.isNotBlank()) {
                             addProperty("fingerprint", server.fingerprint)
                         }
@@ -760,15 +787,22 @@ object ConfigBuilder {
                         addProperty("publicKey", server.publicKey)
                         addProperty("shortId", server.shortId)
                         addProperty("spiderX", server.spiderX.ifBlank { "/" })
+                        if (server.mldsa65Verify.isNotBlank()) addProperty("mldsa65Verify", server.mldsa65Verify)
                     }
                 )
             }
         }
 
+        // Explicit masks from a share link take precedence over generated fragmentation.
+        if (server.finalMask.isNotBlank()) {
+            val mask = JsonParser.parseString(server.finalMask)
+            require(mask.isJsonObject) { "تنظیمات finalmask باید یک شیء JSON باشد" }
+            ss.add("finalmask", mask)
+        }
+
         // ---- fragment (عبور از DPI)
-        // تعداد تکه‌ها و فاصله‌ی زمانی از پروفایل انتخاب‌شده می‌آید
-        // (الهام‌گرفته از MahsaNG و gfw_resist_tls_proxy)
-        if (settings.fragment && security in listOf("tls", "reality") && network != "hysteria") {
+        if (server.finalMask.isBlank() && settings.fragment && security in listOf("tls", "reality") &&
+            network !in listOf("hysteria", "kcp", "mkcp", "quic")) {
             val existing = ss.getAsJsonObject("finalmask")
             val mask = existing ?: JsonObject().also { ss.add("finalmask", it) }
             if (!mask.has("tcp")) {

@@ -180,11 +180,14 @@ fun SettingsScreen(
         }
 
         item {
-            SettingSwitch(
-                title = "تست کامل قبل از اتصال",
-                subtitle = "تا پایان همه‌ی تست‌ها هیچ اتصالی برقرار نمی‌شود (پایدارتر، کمی کندتر)",
-                checked = settings.requireFullTest
-            ) { value -> onChange { it.copy(requireFullTest = value) } }
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("تست واقعی پیش از اتصال", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
+                    Spacer(Modifier.height(3.dp))
+                    Text("همیشه قبل از اتصال، کانفیگ با هسته و مقصد تست بررسی می‌شود؛ پینگ TCP به‌تنهایی کافی نیست.",
+                        style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                }
+            }
         }
 
         item {
@@ -244,17 +247,20 @@ fun SettingsScreen(
         }
 
         item {
-            SettingSwitch(
-                title = "حذف سرورهای بدون پاسخ",
-                subtitle = "سرورهایی که در تست‌ها به هیچ مقصدی وصل نمی‌شوند از فهرست پاک می‌شوند",
-                checked = settings.dropDeadServers
-            ) { value -> onChange { it.copy(dropDeadServers = value) } }
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("محافظت از کانفیگ‌ها", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
+                    Spacer(Modifier.height(3.dp))
+                    Text("ناموفق بودن تست می‌تواند موقتی باشد؛ کانفیگ‌ها به‌خاطر خطای تست خودکار حذف نمی‌شوند.",
+                        style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                }
+            }
         }
 
         item {
             SettingSwitch(
                 title = "به‌روزرسانی خودکار در شروع",
-                subtitle = "در هر بار باز شدن برنامه، همه‌ی اشتراک‌ها تازه می‌شوند و بهترین سرور انتخاب می‌شود",
+                subtitle = "هنگام شروع، اشتراک‌های قدیمی به‌روزرسانی و سرورها بررسی می‌شوند",
                 checked = settings.autoRefreshOnOpen
             ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
         }
@@ -440,7 +446,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "صرفه‌جویی باتری",
-                subtitle = "با خاموش بودن صفحه، فاصله‌ی تست‌های سلامت از ۲ ثانیه به ۱۵ ثانیه می‌رسد",
+                subtitle = "با خاموش بودن صفحه، فاصله‌ی بررسی سلامت بیشتر می‌شود تا مصرف باتری کاهش یابد",
                 checked = settings.batterySaver
             ) { value -> onChange { it.copy(batterySaver = value) } }
         }

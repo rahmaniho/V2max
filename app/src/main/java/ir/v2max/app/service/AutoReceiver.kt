@@ -37,11 +37,8 @@ class AutoReceiver : BroadcastReceiver() {
             MainActivity.ACTION_TOGGLE -> TunnelController.toggle(app)
 
             MainActivity.ACTION_SMART -> {
-                // انتخاب بهترین سرور سالم و اتصال؛ تست‌های سنگین در سرویس انجام می‌شود
-                val best = Repo.servers.value
-                    .filter { it.hasUsableEndpoint() }
-                    .minByOrNull { it.score() }
-                if (best != null) TunnelController.start(app, best.id)
+                // The service runs the full batch of real tests before choosing a server.
+                if (Repo.servers.value.isNotEmpty()) TunnelController.start(app, smart = true)
             }
 
             MainActivity.ACTION_IMPORT -> {

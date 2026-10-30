@@ -12,7 +12,7 @@ import ir.v2max.app.service.V2maxVpnService
  */
 object TunnelController {
 
-    fun start(context: Context, serverId: String? = null) {
+    fun start(context: Context, serverId: String? = null, verified: Boolean = false, smart: Boolean = false) {
         val id = serverId ?: Repo.selectedId.value.ifBlank {
             Repo.servers.value.firstOrNull()?.id.orEmpty()
         }
@@ -21,6 +21,8 @@ object TunnelController {
         val intent = Intent(context.applicationContext, V2maxVpnService::class.java).apply {
             action = V2maxVpnService.ACTION_START
             putExtra(V2maxVpnService.EXTRA_SERVER_ID, id)
+            putExtra(V2maxVpnService.EXTRA_PRETEST_COMPLETE, verified)
+            putExtra(V2maxVpnService.EXTRA_SMART_SELECT, smart)
         }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

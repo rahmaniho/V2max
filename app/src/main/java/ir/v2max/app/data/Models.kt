@@ -57,6 +57,12 @@ data class ServerConfig(
     var serviceName: String = "",
     var mode: String = "",
     var authority: String = "",
+    // پارامترهای لینک v2rayNG که باید بدون تغییر تا هسته حفظ شوند
+    var xhttpExtra: String = "",
+    var finalMask: String = "",
+    var kcpSeed: String = "",
+    var kcpMtu: Int = 1350,
+    var kcpTti: Int = 50,
 
     // امنیت
     var security: String = "",
@@ -67,6 +73,10 @@ data class ServerConfig(
     var shortId: String = "",
     var spiderX: String = "",
     var allowInsecure: Boolean = false,
+    var echConfigList: String = "",
+    var verifyPeerCertByName: String = "",
+    var pinnedPeerCertSha256: String = "",
+    var mldsa65Verify: String = "",
 
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
@@ -99,6 +109,10 @@ data class ServerConfig(
     var failCount: Int = 0,
 
     var testedAt: Long = 0L,
+    /** شرایط دقیق آخرین تست واقعی موفق؛ TCP به‌تنهایی به معنی سلامت نیست. */
+    var testedFragment: Boolean = false,
+    var testedFragmentProfile: FragmentProfile = FragmentProfile.BALANCED,
+    var testedUrl: String = "",
     var addedAt: Long = System.currentTimeMillis()
 ) {
     val endpoint: String get() = "$address:$port"
@@ -157,16 +171,20 @@ data class ServerConfig(
     fun proxyHost(): String = host.ifBlank { address }
 
     fun effectiveSni(): String = sni.ifBlank {
-        when (network) {
-            "ws", "grpc", "h2", "http", "httpupgrade", "xhttp", "hysteria" -> host.ifBlank { address }
-            else -> address
+        val transportHost = when (network) {
+            "grpc" -> authority.ifBlank { host }
+            else -> host.substringBefore(',').trim()
         }
+        transportHost.ifBlank { address }
     }
 
-    /** کلید یکتاسازی برای حذف کانفیگ‌های تکراری */
+    /** پارامترهای مؤثر در اتصال نباید هنگام حذف تکراری‌ها از بین بروند. */
     fun dedupeKey(): String = listOf(
-        proto.name, address, port.toString(), uuid, password, method, network,
-        host, path, serviceName, security, sni, publicKey, shortId, flow, obfsPassword
+        proto.name, address, port.toString(), uuid, password, method, flow, network,
+        headerType, host, path, serviceName, mode, authority, xhttpExtra, finalMask,
+        kcpSeed, kcpMtu.toString(), kcpTti.toString(), security, sni, alpn, fingerprint,
+        publicKey, shortId, spiderX, allowInsecure.toString(), echConfigList,
+        verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword
     ).joinToString("|")
 
     /** شناسه پایداری که مستقل از id است (برای تطبیق با کانفیگ قبلی پس از به‌روزرسانی اشتراک) */
@@ -270,7 +288,7 @@ data class AppSettings(
      * استخر سرورها (Balancer): چند سرور برتر همزمان در کانفیگ قرار می‌گیرند و
      * هسته با استراتژی leastPing خودش سالم‌ترین را انتخاب می‌کند؛ نتیجه: قطعی کمتر و سرعت بیشتر.
      */
-    var balancer: Boolean = true,
+    var balancer: Boolean = false,
 
     /** حداکثر تعداد سرور در استخر (۲ تا ۶) */
     var balancerSize: Int = 3,

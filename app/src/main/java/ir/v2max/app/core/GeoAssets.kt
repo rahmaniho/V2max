@@ -56,17 +56,10 @@ object GeoAssets {
         geositeTag = findTag(File(d, GEOSITE_FILE), listOf("category-ir", "geolocation-ir", "ir"))
     }
 
-    /**
-     * tag موجود در فایل protobuf را پیدا می‌کند؛ چون tagها به‌صورت رشته در فایل ذخیره شده‌اند
-     * جست‌وجوی بایتی کافی و ارزان است.
-     */
+    /** فقط نام واقعی دسته‌های protobuf را می‌خوانیم، نه زیررشته‌های داخل دامنه‌ها. */
     private fun findTag(file: File, candidates: List<String>): String? {
         if (!file.exists() || file.length() < 1024) return null
-        return runCatching {
-            val bytes = file.readBytes()
-            val text = String(bytes, Charsets.ISO_8859_1)
-            candidates.firstOrNull { text.contains(it) }
-        }.getOrNull()
+        return GeoDataTags.find(file, candidates)
     }
 
     fun hasGeoip(): Boolean = geoipTag != null

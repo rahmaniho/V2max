@@ -53,6 +53,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val pendingVpnRequest: StateFlow<Boolean> = _pendingVpnRequest.asStateFlow()
 
     private var pendingServerId: String? = null
+    private var pendingScanSubId: String? = null
     private var pendingSmartScan = false
     private var pendingRestart = false
     private var pendingQuickConnect = false
@@ -73,13 +74,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(errorHandler) { startup() }
     }
 
-    /**
-     * جریان شروع برنامه:
-     *  ۱) منابع رایگان داخلی ساخته می‌شوند
-     *  ۲) همه‌ی اشتراک‌ها به‌صورت موازی به‌روزرسانی می‌شوند
-     *  ۳) پیش از هر اتصالی، همه‌ی سرورها با سه مقصد (گوگل/اینستاگرام/یوتیوب) پینگ می‌شوند
-     *  ۴) سرورهای بدون پاسخ حذف و بهترین گزینه وصل می‌شود
-     */
+    /** آماده‌سازی منابع و بررسی نسخه، سپس تست واقعی پیش از اتصال خودکار. */
     private suspend fun startup() {
         val app = getApplication<Application>()
         val settings = Repo.settings.value
@@ -111,26 +106,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!autoConnectAllowed(app)) return
         val needsPermission = VpnService.prepare(app) != null
         if (needsPermission) {
-            if (settings.autoConnectOnOpen) {
-                pendingSmartScan = true
-                pendingScanSubId = null
-                _pendingVpnRequest.value = true
-            }
+            if (settings.autoConnectOnOpen) requestSmartConnect()
             return
         }
 
-        val lastScan = Repo.scan.value.finishedAt
-        val scannedRecently = lastScan > 0 && System.currentTimeMillis() - lastScan < 90_000L
+        // اتصال فقط پس از اتمام آزمون واقعی انجام می‌شود.
 
-        if (!settings.autoRefreshOnOpen && scannedRecently) {
-            // همین چند لحظه پیش اسکن شده؛ از همان نتیجه استفاده می‌شود
-            if (settings.autoConnectOnOpen && !Repo.tunnel.value.isActive) {
-                SmartConnect.fastStart(app)
-            }
-            return
-        }
-
-        // اسکن سه‌مرحله‌ای و اتصال به بهترین سرور (اتصال پس از پینگ انجام می‌شود)
         SmartConnect.scanAndConnect(
             app,
             autoConnect = settings.autoConnectOnOpen,
@@ -160,7 +141,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // --------------------------------------------------------------- connect
 
     fun toggleConnection() {
-        if (Repo.tunnel.value.isActive) {
+        if (Repo.scan.value.running) {
+            SmartConnect.cancelScan()
+            if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
+            else showMessage("تست اتصال لغو شد")
+        } else if (Repo.tunnel.value.isActive) {
             TunnelController.stop(getApplication())
         } else {
             quickConnect()
@@ -168,6 +153,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnectTunnel() {
+        SmartConnect.cancelScan()
         TunnelController.stop(getApplication())
     }
 
@@ -176,7 +162,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingServerId = serverId
+            pendingScanSubId = null
             pendingSmartScan = false
+            pendingQuickConnect = false
+            pendingRestart = false
             _pendingVpnRequest.value = true
             return
         }
@@ -196,6 +185,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (VpnService.prepare(app) != null) {
             pendingServerId = null
             pendingSmartScan = true
+            pendingQuickConnect = false
+            pendingRestart = false
             _pendingVpnRequest.value = true
             pendingScanSubId = subscriptionId
         } else {
@@ -203,28 +194,43 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private var pendingScanSubId: String? = null
+    private fun clearPendingVpnRequest() {
+        _pendingVpnRequest.value = false
+        pendingServerId = null
+        pendingScanSubId = null
+        pendingSmartScan = false
+        pendingQuickConnect = false
+        pendingRestart = false
+    }
 
     fun onVpnPermissionResult(granted: Boolean) {
-        _pendingVpnRequest.value = false
+        // Ignore a permission result arriving after the request was cancelled/reset.
+        if (!_pendingVpnRequest.value) return
+        val id = pendingServerId
+        val subscriptionId = pendingScanSubId
+        val restart = pendingRestart
+        val quickConnect = pendingQuickConnect
+        val smartScan = pendingSmartScan
+        clearPendingVpnRequest()
         if (!granted) {
             showMessage("برای اتصال، اجازه‌ی ساخت VPN لازم است")
             return
         }
-        if (pendingRestart) {
-            pendingRestart = false
+        if (restart) {
             launchRestart()
-        } else if (pendingQuickConnect) {
-            pendingQuickConnect = false
+        } else if (quickConnect) {
             viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(getApplication()) }
-        } else if (pendingSmartScan) {
-            launchSmartConnect(pendingScanSubId)
+        } else if (smartScan) {
+            launchSmartConnect(subscriptionId)
         } else {
-            TunnelController.start(getApplication(), pendingServerId)
+            viewModelScope.launch(errorHandler) {
+                val app = getApplication<Application>()
+                if (id == null) SmartConnect.quickConnect(app)
+                else if (!SmartConnect.connectVerified(app, id)) {
+                    showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+                }
+            }
         }
-        pendingSmartScan = false
-        pendingServerId = null
-        pendingScanSubId = null
     }
 
     private fun launchSmartConnect(subscriptionId: String?) {
@@ -237,10 +243,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun quickConnect() {
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
-            pendingSmartScan = true
+            pendingSmartScan = false
             pendingScanSubId = null
             pendingServerId = null
             pendingQuickConnect = true
+            pendingRestart = false
             _pendingVpnRequest.value = true
             return
         }
@@ -259,16 +266,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(errorHandler + Dispatchers.IO) {
             val server = Repo.serverById(id) ?: return@launch
             val settings = Repo.settings.value
-            val tcp = HealthScanner.tcpPing(server)
-            Repo.setTestResult(id, tcp, -1)
-            if (tcp <= 0) return@launch
-
-            val google = HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.GOOGLE.url)
-            val instagram = if (settings.multiPing)
-                HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.INSTAGRAM.url) else -1
-            val youtube = if (settings.multiPing)
-                HealthScanner.realDelay(server, settings, ir.v2max.app.data.PingTargets.YOUTUBE.url) else -1
-            Repo.setMultiPing(id, google, instagram, youtube, persist = true)
+            showMessage("در حال تست واقعی کانفیگ…")
+            val result = HealthScanner.scan(
+                context = getApplication(),
+                servers = listOf(server),
+                settings = settings,
+                preferredId = id,
+                onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping) },
+                onReal = { cfg, probe -> Repo.setVerifiedResult(cfg.id, probe) },
+                onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing) },
+                onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false) }
+            )
+            Repo.persistNow()
+            showMessage(result.best?.let { "تست واقعی موفق بود: ${it.realPing}ms" } ?: result.message)
         }
     }
 
@@ -281,8 +291,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingServerId = null
-            pendingSmartScan = true
+            pendingSmartScan = false
             pendingScanSubId = null
+            pendingQuickConnect = false
             pendingRestart = true
             _pendingVpnRequest.value = true
             return
@@ -334,8 +345,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Repo.addSubscription(sub)
             result.configs.forEach { it.subId = sub.id }
             Repo.replaceSubscriptionServers(sub.id, result.configs)
-            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد؛ در حال انتخاب سریع‌ترین…")
-            launchSmartConnect(sub.id)
+            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد؛ در حال بررسی…")
+            requestSmartConnect(sub.id)
         }
     }
 
@@ -470,7 +481,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
         viewModelScope.launch(errorHandler) {
             syncAll(announce = false)
-            launchSmartConnect(null)
+            requestSmartConnect(null)
         }
     }
 
@@ -678,6 +689,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun resetData() {
+        clearPendingVpnRequest()
+        SmartConnect.cancelScan()
         TunnelController.stop(getApplication())
         Repo.resetEverything()
         showMessage("همه‌ی داده‌ها پاک شد")

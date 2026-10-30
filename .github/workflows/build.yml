@@ -66,7 +66,16 @@ jobs:
             printf 'storeFile=keystore.jks\nstorePassword=v2max123\nkeyAlias=v2max\nkeyPassword=v2max123\n' > keystore.properties
           fi
 
-      - name: Run unit tests
+      - name: Download matching Xray executable for compatibility tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/xray"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/xray.zip" \
+            "https://github.com/XTLS/Xray-core/releases/download/${LIBV2RAY_VERSION}/Xray-linux-64.zip"
+          unzip -q "$RUNNER_TEMP/xray.zip" -d "$RUNNER_TEMP/xray"
+          chmod +x "$RUNNER_TEMP/xray/xray"
+          echo "TEST_XRAY_BIN=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
+
+      - name: Run unit and local Xray integration tests
         run: |
           set -o pipefail
           gradle --no-daemon testReleaseUnitTest 2>&1 | tee test-out.log
@@ -79,6 +88,15 @@ jobs:
               echo "::error title=tests::$line"
             done
           fi
+          python3 - <<'PY'
+          import glob, xml.etree.ElementTree as ET
+          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+              for case in ET.parse(path).iter('testcase'):
+                  for failure in case.findall('failure'):
+                      msg = (failure.get('message') or failure.text or '')[:8000]
+                      msg = msg.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                      print(f"::error title={case.get('classname')}.{case.get('name')}::{msg}")
+          PY
 
       - name: Build release APK
         run: |
@@ -102,6 +120,21 @@ jobs:
             exit 1
           fi
 
+      - name: Enable emulator hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Android VPN/TUN smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/run-android-vpn-smoke.sh
+
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
@@ -111,7 +144,7 @@ jobs:
 
       # انتشار APK در بخش Releases تا لینک دانلود مستقیم و همیشگی داشته باشد
       - name: Publish APKs to GitHub Release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -83,6 +83,9 @@ fun HomeScreen(
     coreVersion: String
 ) {
     val selected = servers.firstOrNull { it.id == selectedId } ?: servers.firstOrNull()
+    val displayStatus = if (scan.running && tunnel.status != TunnelStatus.CONNECTED) {
+        TunnelStatus.CONNECTING
+    } else tunnel.status
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     // تیک ثانیه‌ای فقط وقتی اتصال برقرار است (به‌جای بازسازی مداوم صفحه در حالت قطع)
@@ -114,7 +117,7 @@ fun HomeScreen(
                     .padding(top = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
-                ConnectOrb(tunnel.status, onToggle)
+                ConnectOrb(displayStatus, onToggle)
             }
         }
 
@@ -124,14 +127,18 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = statusTitle(tunnel),
+                    text = if (scan.running) "در حال بررسی هوشمند" else statusTitle(tunnel),
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
-                    color = statusColor(tunnel.status)
+                    color = statusColor(displayStatus)
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    text = tunnel.serverName.ifBlank { "سروری انتخاب نشده" },
+                    text = when {
+                        scan.running -> "تست پیش از اتصال؛ برای لغو دکمه را لمس کنید"
+                        tunnel.message.isNotBlank() && tunnel.status == TunnelStatus.CONNECTING -> tunnel.message
+                        else -> tunnel.serverName.ifBlank { selected?.displayName() ?: "سروری انتخاب نشده" }
+                    },
                     fontSize = 12.5.sp,
                     color = V2.TextMuted,
                     maxLines = 1,
@@ -288,7 +295,8 @@ fun HomeScreen(
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    PingBadge(selected?.bestPing() ?: -1)
+                    // A TCP handshake alone is not a successful VPN test.
+                    PingBadge(selected?.realPing ?: -1)
                 }
             }
         }
