@@ -59,11 +59,12 @@ class AndroidVpnSmokeTest {
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
 
             // The shell runs outside the VPN app's excluded UID, so this is a TUN datapath test.
-            val command = "toybox timeout 20 toybox wget -q -O - http://198.51.100.1:18081/tun-check 2>&1"
+            val command = "toybox timeout 20 toybox wget -q -O - http://198.51.100.1:18081/tun-check 2>&1; " +
+                "status=\$?; printf '\\nWGET_EXIT=%s\\n' \"\$status\""
             val descriptor = instrumentation.uiAutomation.executeShellCommand(command)
             val output = descriptor.use { FileInputStream(it.fileDescriptor).bufferedReader().readText() }.trim()
             assertEquals("No traffic through Android TUN: $output\n${XrayCore.logs().joinToString("\n")}",
-                "v2max-tun-ok", output)
+                "v2max-tun-ok\nWGET_EXIT=0", output)
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
