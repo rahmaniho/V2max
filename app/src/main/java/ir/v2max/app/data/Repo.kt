@@ -272,21 +272,18 @@ object Repo {
         if (persist) persistServers()
     }
 
-    /** شروع آزمون جدید؛ نتایج قدیمی نباید سرور شکست‌خورده را سالم نشان دهند. */
+    /** TCP is only a preliminary result and must not erase an older real test. */
     @Synchronized
     fun setPretest(id: String, tcpPing: Int) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) return
-        list[idx] = list[idx].copy(
-            tcpPing = tcpPing, realPing = -1, googlePing = -1, instagramPing = -1,
-            youtubePing = -1, testedAt = 0L, testedUrl = ""
-        )
+        list[idx] = list[idx].copy(tcpPing = tcpPing)
         _servers.value = list
     }
 
     @Synchronized
-    fun setVerifiedResult(id: String, result: ir.v2max.app.net.ProbeResult?) {
+    fun setVerifiedResult(id: String, result: ir.v2max.app.net.ProbeResult?, clearOtherTargets: Boolean = true) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) return
@@ -294,6 +291,8 @@ object Repo {
         list[idx] = old.copy(
             realPing = result?.delayMs ?: -1,
             googlePing = if (result?.url == PingTargets.GOOGLE.url) result.delayMs else -1,
+            instagramPing = if (clearOtherTargets) -1 else old.instagramPing,
+            youtubePing = if (clearOtherTargets) -1 else old.youtubePing,
             testedAt = if (result != null) System.currentTimeMillis() else 0L,
             testedUrl = result?.url.orEmpty(),
             testedFragment = result?.fragment ?: false,

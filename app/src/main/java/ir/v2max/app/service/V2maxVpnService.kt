@@ -405,7 +405,7 @@ class V2maxVpnService : VpnService() {
             Repo.setVerifiedResult(server.id, ProbeResult(
                 primaryVerification.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
                 primaryVerification.second, settings.fragment, settings.fragmentProfile
-            ))
+            ), clearOtherTargets = false)
             Repo.persistNow()
 
             running = true

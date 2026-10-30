@@ -197,6 +197,8 @@ object XrayCore {
             val safe = when {
                 reason.contains("allowInsecure", ignoreCase = true) ->
                     "هسته‌ی Xray گزینه‌ی allowInsecure را حذف کرده است؛ گواهی معتبر یا اثرانگشت گواهی لازم است"
+                reason.contains("without TLS", ignoreCase = true) ->
+                    "این نسخه‌ی Xray کانفیگ VLESS یا Trojan بدون TLS روی سرور عمومی را نمی‌پذیرد"
                 reason.contains("config load error", ignoreCase = true) ||
                     reason.contains("instance creation failed", ignoreCase = true) ->
                     "فرمت یا تنظیمات کانفیگ با هسته‌ی Xray سازگار نیست"

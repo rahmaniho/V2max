@@ -48,7 +48,7 @@ class XrayIntegrationTest {
         requireBinary()
         val key = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(32) { (it + 1).toByte() })
         val links = listOf(
-            "vless://$uuid@example.org:443?type=tcp&security=none",
+            "vless://$uuid@127.0.0.1:443?type=tcp&security=none",
             "vless://$uuid@example.org:443?type=ws&security=tls&host=cdn.example.org&path=%2Fws%3Fed%3D2048&sni=cdn.example.org",
             "vless://$uuid@example.org:443?type=grpc&security=tls&serviceName=example&authority=cdn.example.org&mode=multi",
             "vless://$uuid@example.org:443?type=tcp&security=reality&sni=example.org&fp=chrome&pbk=$key&sid=abcd&flow=xtls-rprx-vision",
@@ -66,7 +66,7 @@ class XrayIntegrationTest {
             validate(ConfigBuilder.vpnConfig(cfg, settings))
         }
         val primary = LinkParser.parseLine(links.first())!!
-        val other = primary.copy(id = "second", address = "other.example.org")
+        val other = primary.copy(id = "second", address = "10.0.0.2")
         validate(ConfigBuilder.vpnConfig(primary, settings.copy(balancer = true), listOf(primary, other)))
     }
 
@@ -155,7 +155,8 @@ class XrayIntegrationTest {
                 val response = input.readNBytes(10)
                 assertTrue("SOCKS connect failed ($proto/$network): ${response.toList()}\n${serverLog.readText()}\n${clientLog.readText()}",
                     response.size == 10 && response[1] == 0.toByte())
-                output.write("GET / HTTP/1.1\r\nHost: local.test\r\nConnection: close\r\n\r\n".toByteArray())
+                // Xray sniffing routes by the HTTP Host. Keep it identical to the local target.
+                output.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray())
                 output.flush()
                 val body = input.readBytes().toString(Charsets.UTF_8)
                 assertTrue("Traffic failed ($proto/$network): $body\n${serverLog.readText()}\n${clientLog.readText()}", body.contains("v2max"))
