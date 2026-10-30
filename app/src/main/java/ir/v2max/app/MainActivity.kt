@@ -19,6 +19,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.data.Repo
 import ir.v2max.app.ui.AppRoot
 import ir.v2max.app.ui.AppViewModel
+import ir.v2max.app.ui.LockScreen
 import ir.v2max.app.ui.V2maxTheme
 
 class MainActivity : FragmentActivity() {

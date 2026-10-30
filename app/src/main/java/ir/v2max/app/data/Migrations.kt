@@ -35,16 +35,16 @@ object Migrations {
     }
 
     /** یک شیء JSON را با مدل فعلی هم‌تراز می‌کند */
-    fun <T> heal(json: String, defaults: T): T? = runCatching {
+    fun <T : Any> heal(json: String, defaults: T): T? = runCatching {
         val parsed = JsonParser.parseString(json)
         if (!parsed.isJsonObject) return@runCatching null
         val obj = parsed.asJsonObject
         fill(obj, template(defaults))
-        gson.fromJson(obj, defaults!!::class.java)
+        gson.fromJson(obj, defaults::class.java)
     }.getOrNull()
 
     /** یک آرایه‌ی JSON را با مدل فعلی هم‌تراز می‌کند */
-    fun <T> healList(json: String, defaults: T): List<T>? = runCatching {
+    fun <T : Any> healList(json: String, defaults: T): List<T>? = runCatching {
         val parsed = JsonParser.parseString(json)
         if (!parsed.isJsonArray) return@runCatching null
         val array: JsonArray = parsed.asJsonArray
@@ -52,7 +52,7 @@ object Migrations {
         array.forEach { item ->
             if (item.isJsonObject) fill(item.asJsonObject, tpl)
         }
-        val type = com.google.gson.reflect.TypeToken.getParameterized(List::class.java, defaults!!::class.java).type
+        val type = com.google.gson.reflect.TypeToken.getParameterized(List::class.java, defaults::class.java).type
         gson.fromJson<List<T>>(array, type)
     }.getOrNull()
 
