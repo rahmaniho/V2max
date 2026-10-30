@@ -57,8 +57,8 @@ android {
         applicationId = "ir.v2max.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.13.0"
+        versionCode = 15
+        versionName = "1.14.0"
         resourceConfigurations += listOf("fa", "en")
     }
 
@@ -84,8 +84,9 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // کاهش حجم و بهینه‌سازی: R8 + حذف منابع بی‌استفاده
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
