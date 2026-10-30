@@ -133,24 +133,23 @@ fun DiagScreen(
         }
 
         // ---- تشخیص خودکار با اقدام پیشنهادی
-        val findings = remember(exit, dns, tunnel, settings) {
-            val alive = Repo.servers.value.count { it.bestPing() > 0 || it.tcpPing > 0 }
-            Diagnostics.advise(
-                connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
-                connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
-                killSwitchBlocked = settings.killSwitch && tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
-                exitOk = exit.ok,
-                dnsDohOk = dns.dohOk,
-                dnsConsistent = dns.consistent,
-                totalServers = Repo.servers.value.size,
-                aliveServers = alive,
-                balancerEnabled = settings.balancer,
-                geoReady = ir.v2max.app.core.GeoAssets.isReady(),
-                fragmentProfile = settings.fragmentProfile.name
-            )
-        }
-
         item {
+            val findings = remember(exit, dns, tunnel, settings) {
+                val alive = Repo.servers.value.count { it.bestPing() > 0 || it.tcpPing > 0 }
+                Diagnostics.advise(
+                    connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
+                    connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
+                    killSwitchBlocked = settings.killSwitch && tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
+                    exitOk = exit.ok,
+                    dnsDohOk = dns.dohOk,
+                    dnsConsistent = dns.consistent,
+                    totalServers = Repo.servers.value.size,
+                    aliveServers = alive,
+                    balancerEnabled = settings.balancer,
+                    geoReady = ir.v2max.app.core.GeoAssets.isReady(),
+                    fragmentProfile = settings.fragmentProfile.name
+                )
+            }
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Text(
