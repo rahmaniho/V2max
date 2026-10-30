@@ -119,7 +119,17 @@ class XrayIntegrationTest {
                     })
                 })
             })
-            add("outbounds", JsonArray().apply { add(JsonObject().apply { addProperty("protocol", "freedom") }) })
+            add("outbounds", JsonArray().apply { add(JsonObject().apply {
+                addProperty("protocol", "freedom")
+                // Xray blocks private targets from remote inbound protocols by default.
+                // Permit only this disposable loopback fixture.
+                add("settings", JsonObject().apply {
+                    add("finalRules", JsonArray().apply { add(JsonObject().apply {
+                        addProperty("action", "allow")
+                        add("ip", JsonArray().apply { add("127.0.0.1/32") })
+                    }) })
+                })
+            }) })
         }.toString()
         val serverLog = File.createTempFile("v2max-server-", ".log").apply { deleteOnExit() }
         val clientLog = File.createTempFile("v2max-client-", ".log").apply { deleteOnExit() }

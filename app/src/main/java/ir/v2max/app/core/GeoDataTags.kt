@@ -9,7 +9,6 @@ import java.util.Locale
 /** Reads only the code field of GeoIPList/GeoSiteList protobuf entries, not domain contents. */
 internal object GeoDataTags {
     fun find(file: File, candidates: List<String>): String? = runCatching {
-        val wanted = candidates.associateBy { it.lowercase(Locale.ROOT) }
         val found = mutableSetOf<String>()
         BufferedInputStream(file.inputStream()).use { input ->
             var remaining = file.length()
@@ -25,7 +24,7 @@ internal object GeoDataTags {
                 remaining -= length
             }
         }
-        candidates.firstOrNull { it.lowercase(Locale.ROOT) in found && it.lowercase(Locale.ROOT) in wanted }
+        candidates.firstOrNull { it.lowercase(Locale.ROOT) in found }
     }.getOrNull()
 
     private fun readEntry(input: InputStream, size: Long): String? {

@@ -51,6 +51,7 @@ class V2maxVpnService : VpnService() {
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
         const val EXTRA_PRETEST_COMPLETE = "extra_pretest_complete"
+        const val EXTRA_SMART_SELECT = "extra_smart_select"
 
         /** هر چند ثانیه یک‌بار کیفیت اتصال سنجیده می‌شود (پایش هر ثانیه‌ای) */
         private const val PROBE_INTERVAL_MS = 30_000L
@@ -216,7 +217,9 @@ class V2maxVpnService : VpnService() {
             ))
             preflightJob = scope.launch {
                 try {
-                    val preferred = serverId.takeIf { it.isNotBlank() }?.let { id ->
+                    val preferred = serverId.takeIf {
+                        it.isNotBlank() && intent?.getBooleanExtra(EXTRA_SMART_SELECT, false) != true
+                    }?.let { id ->
                         ir.v2max.app.core.SmartConnect.scanAndConnect(
                             applicationContext, autoConnect = false, limit = 1, preferredId = id
                         )

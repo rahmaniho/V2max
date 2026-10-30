@@ -26,7 +26,10 @@ cat > "$work/xray.json" <<'JSON'
       "clients": [{"id": "11111111-2222-3333-4444-555555555555"}]
     }
   }],
-  "outbounds": [{"protocol": "freedom", "settings": {"redirect": "127.0.0.1:18081"}}]
+  "outbounds": [{"protocol": "freedom", "settings": {
+    "redirect": "127.0.0.1:18081",
+    "finalRules": [{"action": "allow", "ip": ["127.0.0.1/32"]}]
+  }}]
 }
 JSON
 "$TEST_XRAY_BIN" run -config "$work/xray.json" > "$work/xray.log" 2>&1 &
