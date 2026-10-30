@@ -71,8 +71,42 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
+    /**
+     * API اتوماسیون (Tasker / Automate / adb):
+     *   am start -a ir.v2max.app.action.CONNECT   [-e id <serverId>]
+     *   am start -a ir.v2max.app.action.DISCONNECT
+     *   am start -a ir.v2max.app.action.TOGGLE
+     *   am start -a ir.v2max.app.action.IMPORT  -e text "vless://…"
+     *   am start -a ir.v2max.app.action.SMART   (تست کامل و اتصال خودکار)
+     *   am broadcast -a ir.v2max.app.action.CONNECT --es id <serverId>
+     */
     private fun handleIntent(intent: Intent?) {
         intent ?: return
+        when (intent.action) {
+            ACTION_CONNECT, ACTION_SMART -> {
+                val id = intent.getStringExtra(EXTRA_ID)
+                if (intent.action == ACTION_SMART || id.isNullOrBlank()) {
+                    viewModel.requestSmartConnect(null)
+                } else {
+                    viewModel.requestConnect(id)
+                }
+                return
+            }
+            ACTION_DISCONNECT -> {
+                viewModel.disconnectTunnel()
+                return
+            }
+            ACTION_TOGGLE -> {
+                viewModel.toggleConnection()
+                return
+            }
+            ACTION_IMPORT -> {
+                val text = intent.getStringExtra(EXTRA_TEXT)
+                if (!text.isNullOrBlank()) viewModel.importText(text)
+                return
+            }
+        }
+
         val text = when (intent.action) {
             Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
             Intent.ACTION_VIEW -> intent.dataString
@@ -81,6 +115,16 @@ class MainActivity : ComponentActivity() {
         if (!text.isNullOrBlank()) {
             viewModel.importText(text)
         }
+    }
+
+    companion object {
+        const val ACTION_CONNECT = "ir.v2max.app.action.CONNECT"
+        const val ACTION_DISCONNECT = "ir.v2max.app.action.DISCONNECT"
+        const val ACTION_TOGGLE = "ir.v2max.app.action.TOGGLE"
+        const val ACTION_IMPORT = "ir.v2max.app.action.IMPORT"
+        const val ACTION_SMART = "ir.v2max.app.action.SMART"
+        const val EXTRA_ID = "id"
+        const val EXTRA_TEXT = "text"
     }
 
     private fun askNotificationPermission() {

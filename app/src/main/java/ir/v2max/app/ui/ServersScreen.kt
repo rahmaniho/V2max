@@ -80,6 +80,7 @@ fun ServersScreen(
     onCopyLink: (String) -> Unit,
     showFlags: Boolean = true,
     onQrContent: (String) -> String = { "" },
+    onEdit: (String) -> Unit = {},
     onBulkDelete: (List<String>) -> Unit = {},
     onBulkFavorite: (List<String>, Boolean) -> Unit = { _, _ -> }
 ) {
@@ -264,6 +265,7 @@ fun ServersScreen(
                 onToggleFavorite = { onToggleFavorite(server.id) },
                 onCopyLink = { onCopyLink(server.id) },
                 onShowQr = { qrContent = onQrContent(server.id) },
+                onEdit = { onEdit(server.id) },
                 onDelete = { pendingDelete = server }
             )
         }
@@ -320,7 +322,8 @@ private fun ServerRow(
     onToggleFavorite: () -> Unit,
     onCopyLink: () -> Unit,
     onDelete: () -> Unit,
-    onShowQr: () -> Unit = {}
+    onShowQr: () -> Unit = {},
+    onEdit: () -> Unit = {}
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -470,6 +473,10 @@ private fun ServerRow(
                     DropdownMenuItem(
                         text = { Text("نمایش QR", color = V2.TextPrimary, fontSize = 13.sp) },
                         onClick = { menuOpen = false; onShowQr() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("ویرایش / کپی", color = V2.TextPrimary, fontSize = 13.sp) },
+                        onClick = { menuOpen = false; onEdit() }
                     )
                     DropdownMenuItem(
                         leadingIcon = {

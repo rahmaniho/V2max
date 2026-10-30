@@ -145,6 +145,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun disconnectTunnel() {
+        TunnelController.stop(getApplication())
+    }
+
     /** درخواست اتصال؛ در صورت نیاز مجوز VPN از کاربر گرفته می‌شود */
     fun requestConnect(serverId: String?) {
         val app = getApplication<Application>()
@@ -505,6 +509,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (Repo.tunnel.value.isActive) {
             requestConnect(id)
         }
+    }
+
+    fun saveEditedServer(server: ServerConfig) {
+        Repo.updateServer(server)
+        showMessage("کانفیگ ذخیره شد")
+    }
+
+    fun cloneServer(copy: ServerConfig) {
+        Repo.updateServer(copy)
+        Repo.setSelected(copy.id)
+        showMessage("نسخه‌ی کپی ساخته شد")
     }
 
     fun deleteServers(ids: List<String>) {

@@ -283,6 +283,16 @@ data class AppSettings(
     var showSpeedInNotification: Boolean = true,
     var dynamicColor: Boolean = false,
 
+    /**
+     * قواعد مسیریابی سفارشی کاربر.
+     * هر قاعده یک خط با قالب «عمل|نوع|مقدار» است، مثلاً:
+     *   direct|domain|example.com
+     *   proxy|ip|8.8.8.8/32
+     *   block|domain|ads.example.org
+     * مقدارها می‌توانند با کاما از هم جدا شوند.
+     */
+    var customRoutingRules: List<String> = emptyList(),
+
     // پروکسی برنامه‌به‌برنامه
     var perAppMode: PerAppMode = PerAppMode.OFF,
     var perAppPackages: List<String> = emptyList()

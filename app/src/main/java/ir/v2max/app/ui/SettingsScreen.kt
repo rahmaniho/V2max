@@ -50,6 +50,8 @@ fun SettingsScreen(
     onSetFreeSources: (Boolean) -> Unit = {},
     onCheckUpdate: () -> Unit = {},
     onScanQr: () -> Unit = {},
+    onOpenRouting: () -> Unit = {},
+    onOpenDiag: () -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {}
 ) {
@@ -381,6 +383,32 @@ fun SettingsScreen(
                 subtitle = "اسکن کد QR مخزن یا لینک اشتراک با دوربین",
                 value = "اسکن"
             ) { onScanQr() }
+        }
+
+        item { GroupTitle("ابزارهای پیشرفته") }
+
+        item {
+            SettingValue(
+                title = "مسیریابی سفارشی",
+                subtitle = "قواعد دلخواه برای دامنه، IP و پورت (direct / proxy / block)",
+                value = "${settings.customRoutingRules.size} قاعده"
+            ) { onOpenRouting() }
+        }
+
+        item {
+            SettingValue(
+                title = "عیب‌یابی و گزارش",
+                subtitle = "لاگ زنده‌ی هسته، IP و کشور خروجی، بررسی DNS و ارسال گزارش",
+                value = "باز کردن"
+            ) { onOpenDiag() }
+        }
+
+        item {
+            SettingValue(
+                title = "اتوماسیون با Intent",
+                subtitle = "اتصال/قطع/واردکردن کانفیگ از Tasker یا سایر برنامه‌ها",
+                value = "راهنما"
+            ) { onOpenDiag() }
         }
 
         item { GroupTitle("درباره") }

@@ -299,10 +299,52 @@ object ConfigBuilder {
             )
         }
 
+        // 6) قواعد سفارشی کاربر (ویرایش‌شده در صفحه‌ی مسیریابی)
+        buildCustomRules(settings).forEach { rules.add(it) }
+
         val routing = JsonObject()
         routing.addProperty("domainStrategy", "AsIs")
         routing.add("rules", rules)
         return routing
+    }
+
+    /**
+     * قواعد مسیریابی کاربر را به آیتم‌های routing.xray تبدیل می‌کند.
+     * خطاهای قالب نادیده گرفته می‌شوند تا یک خط اشتباه کل اتصال را خراب نکند.
+     */
+    fun buildCustomRules(settings: AppSettings): List<JsonObject> {
+        val out = ArrayList<JsonObject>()
+        for (raw in settings.customRoutingRules) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#")) continue
+            val parts = line.split("|").map { it.trim() }
+            if (parts.size < 3) continue
+            val action = parts[0].lowercase()
+            val outbound = when (action) {
+                "direct" -> TAG_DIRECT
+                "proxy" -> TAG_PROXY
+                "block", "reject" -> TAG_BLOCK
+                else -> continue
+            }
+            val type = parts[1].lowercase()
+            val values = parts.drop(2).joinToString(",").split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            if (values.isEmpty()) continue
+
+            val rule = JsonObject()
+            when (type) {
+                "domain" -> rule.add("domain", JsonArray().apply {
+                    values.forEach { add(if (it.startsWith("domain:") || it.startsWith("full:") || it.startsWith("regexp:") || it.startsWith("keyword:")) it else "domain:$it") }
+                })
+                "ip" -> rule.add("ip", JsonArray().apply { values.forEach { add(it) } })
+                "port" -> rule.addProperty("port", values.joinToString(","))
+                else -> continue
+            }
+            rule.addProperty("outboundTag", outbound)
+            out.add(rule)
+        }
+        return out
     }
 
     // ------------------------------------------------------------- outbound
