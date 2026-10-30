@@ -96,9 +96,11 @@ fun ServersScreen(
             }
             .sortedWith(
                 when (sort) {
-                    FASTEST -> compareBy { it.score() }
-                    SortMode.NAME -> compareBy { it.displayName() }
-                    SortMode.NEWEST -> compareByDescending { it.addedAt }
+                    SortMode.FASTEST -> compareBy<ServerConfig> { it.score() }
+                    SortMode.SPEED -> compareByDescending<ServerConfig> { it.speedKbps }
+                    SortMode.STABLE -> compareByDescending<ServerConfig> { it.stability() }
+                    SortMode.NAME -> compareBy<ServerConfig> { it.displayName() }
+                    SortMode.NEWEST -> compareByDescending<ServerConfig> { it.addedAt }
                 }
             )
     }
