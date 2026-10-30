@@ -34,6 +34,8 @@ class V2maxVpnService : VpnService() {
     companion object {
         private const val TAG = "V2maxVpn"
         const val ACTION_START = "ir.v2max.app.action.START_TUNNEL"
+        const val ACTION_NEXT = "ir.v2max.app.action.NEXT_SERVER"
+        const val ACTION_RETEST = "ir.v2max.app.action.RETEST"
         const val ACTION_STOP = "ir.v2max.app.action.STOP_TUNNEL"
         const val EXTRA_SERVER_ID = "extra_server_id"
 
@@ -119,6 +121,38 @@ class V2maxVpnService : VpnService() {
         if (action == ACTION_STOP) {
             stopTunnel()
             return START_NOT_STICKY
+        }
+
+        if (action == ACTION_NEXT) {
+            // تغییر فوری به سرور بعدی از فهرست سالم‌ها
+            val current = currentServer?.id ?: Repo.tunnel.value.serverId
+            val next = Failover.findReplacement(current)
+            if (next != null) {
+                Failover.markFailed(current)
+                failoverPending = true
+                connect(next.id)
+            }
+            return START_STICKY
+        }
+
+        if (action == ACTION_RETEST) {
+            // تست دوباره‌ی سرور فعلی و جابه‌جایی در صورت خرابی
+            scope.launch {
+                val id = currentServer?.id ?: Repo.tunnel.value.serverId
+                val server = Repo.serverById(id)
+                if (server != null) {
+                    val ping = withContext(Dispatchers.IO) {
+                        ir.v2max.app.net.HealthScanner.realDelay(server, Repo.settings.value)
+                    }
+                    if (ping <= 0) {
+                        rotate("تست مجدد ناموفق بود")
+                    } else {
+                        Repo.setTestResult(server.id, server.tcpPing, ping)
+                        publish(Repo.tunnel.value.copy(ping = ping, message = "تست مجدد: ${ping}ms"))
+                    }
+                }
+            }
+            return START_STICKY
         }
 
         // اعلان فوری برای رعایت مهلت startForeground
@@ -672,6 +706,7 @@ class V2maxVpnService : VpnService() {
 
     private fun publish(state: TunnelUiState) {
         Repo.tunnel.value = state
+        runCatching { V2maxWidget.refresh(this) }
         if (!isForeground) {
             startForegroundCompat(state)
             isForeground = true

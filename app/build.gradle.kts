@@ -57,8 +57,8 @@ android {
         applicationId = "ir.v2max.app"
         minSdk = 24
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.4.0"
+        versionCode = 6
+        versionName = "1.5.0"
         resourceConfigurations += listOf("fa", "en")
     }
 
@@ -144,6 +144,9 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.1")
     implementation("androidx.camera:camera-view:1.4.1")
     implementation("com.google.zxing:core:3.5.3")
+
+    // به‌روزرسانی پس‌زمینه‌ی اشتراک‌ها
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

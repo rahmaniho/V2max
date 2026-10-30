@@ -507,6 +507,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun deleteServers(ids: List<String>) {
+        Repo.removeServers(ids)
+        showMessage("${Format.number(ids.size)} سرور حذف شد")
+    }
+
+    fun setFavorite(ids: List<String>, favorite: Boolean) {
+        ids.forEach { Repo.setFavorite(it, favorite) }
+        showMessage(if (favorite) "به علاقه‌مندی‌ها اضافه شد" else "از علاقه‌مندی‌ها حذف شد")
+    }
+
     fun shareLink(serverId: String): String? {
         val server = Repo.serverById(serverId) ?: return null
         return LinkParser.toLink(server)

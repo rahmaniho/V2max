@@ -84,6 +84,9 @@ fun ServersScreen(
     var sort by remember { mutableStateOf(SortMode.FASTEST) }
     var onlyFavorites by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<ServerConfig?>(null) }
+    var qrContent by remember { mutableStateOf<String?>(null) }
+    var selectionMode by remember { mutableStateOf(false) }
+    val selectedIds = remember { androidx.compose.runtime.mutableStateListOf<String>() }
 
     val filtered = remember(servers, query, sort, onlyFavorites) {
         servers
@@ -124,6 +127,15 @@ fun ServersScreen(
                         color = V2.TextMuted
                     )
                 }
+                GhostButton(
+                    text = if (selectionMode) "پایان" else "انتخاب",
+                    modifier = Modifier.width(88.dp),
+                    onClick = {
+                        selectionMode = !selectionMode
+                        selectedIds.clear()
+                    }
+                )
+                Spacer(Modifier.width(8.dp))
                 GhostButton(
                     text = if (scan.running) "در حال تست" else "تست همه",
                     modifier = Modifier.width(112.dp),
@@ -191,22 +203,80 @@ fun ServersScreen(
             }
         }
 
+        if (selectionMode) {
+            item {
+                GlassCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "${Format.number(selectedIds.size)} سرور انتخاب شده",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = V2.TextPrimary
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            GhostButton(text = "همه", modifier = Modifier.width(72.dp)) {
+                                if (selectedIds.size == filtered.size) selectedIds.clear()
+                                else {
+                                    selectedIds.clear()
+                                    selectedIds.addAll(filtered.map { it.id })
+                                }
+                            }
+                            GhostButton(text = "علاقه‌مندی", modifier = Modifier.weight(1f)) {
+                                if (selectedIds.isNotEmpty()) {
+                                    onBulkFavorite(selectedIds.toList(), true)
+                                    selectedIds.clear()
+                                    selectionMode = false
+                                }
+                            }
+                            GhostButton(text = "حذف", modifier = Modifier.width(88.dp)) {
+                                if (selectedIds.isNotEmpty()) {
+                                    onBulkDelete(selectedIds.toList())
+                                    selectedIds.clear()
+                                    selectionMode = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         items(filtered, key = { it.id }) { server ->
             ServerRow(
                 server = server,
                 showFlags = showFlags,
                 selected = server.id == selectedId,
                 connected = tunnel.status == TunnelStatus.CONNECTED && tunnel.serverId == server.id,
-                onClick = { onSelect(server.id) },
+                selectable = selectionMode,
+                checked = server.id in selectedIds,
+                onClick = {
+                    if (selectionMode) {
+                        if (server.id in selectedIds) selectedIds.remove(server.id) else selectedIds.add(server.id)
+                    } else {
+                        onSelect(server.id)
+                    }
+                },
                 onConnect = { onConnect(server.id) },
                 onTest = { onTest(server.id) },
                 onToggleFavorite = { onToggleFavorite(server.id) },
                 onCopyLink = { onCopyLink(server.id) },
+                onShowQr = { qrContent = onQrContent(server.id) },
                 onDelete = { pendingDelete = server }
             )
         }
 
         item { Spacer(Modifier.height(10.dp)) }
+    }
+
+    qrContent?.let { content ->
+        if (content.isNotBlank()) {
+            QrDialog(
+                title = "کد QR سرور",
+                content = content,
+                onDismiss = { qrContent = null },
+                onCopy = { qrContent = null }
+            )
+        }
     }
 
     pendingDelete?.let { server ->
@@ -237,6 +307,8 @@ fun ServersScreen(
 private fun ServerRow(
     server: ServerConfig,
     showFlags: Boolean,
+    selectable: Boolean = false,
+    checked: Boolean = false,
     selected: Boolean,
     connected: Boolean,
     onClick: () -> Unit,
@@ -244,7 +316,8 @@ private fun ServerRow(
     onTest: () -> Unit,
     onToggleFavorite: () -> Unit,
     onCopyLink: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onShowQr: () -> Unit = {}
 ) {
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -275,6 +348,19 @@ private fun ServerRow(
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (selectable) {
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (checked) V2.Mint else V2.SurfaceHigh)
+                        .border(1.dp, if (checked) V2.Mint else V2.Stroke, RoundedCornerShape(6.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (checked) Text("✓", color = V2.Background, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.width(10.dp))
+            }
             Box(
                 Modifier
                     .size(38.dp)
@@ -377,6 +463,10 @@ private fun ServerRow(
                     DropdownMenuItem(
                         text = { Text("کپی لینک", color = V2.TextPrimary, fontSize = 13.sp) },
                         onClick = { menuOpen = false; onCopyLink() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("نمایش QR", color = V2.TextPrimary, fontSize = 13.sp) },
+                        onClick = { menuOpen = false; onShowQr() }
                     )
                     DropdownMenuItem(
                         leadingIcon = {

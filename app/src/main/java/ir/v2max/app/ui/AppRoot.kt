@@ -45,6 +45,7 @@ fun AppRoot(vm: AppViewModel) {
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
     var showPerApp by rememberSaveable { mutableStateOf(false) }
     var showQr by rememberSaveable { mutableStateOf(false) }
+    var qrDialogContent by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -81,6 +82,20 @@ fun AppRoot(vm: AppViewModel) {
             snackbarHostState.showSnackbar(message)
             vm.clearMessage()
         }
+    }
+
+    if (qrDialogContent.isNotBlank()) {
+        QrDialog(
+            title = "کد QR اشتراک",
+            content = qrDialogContent,
+            onDismiss = { qrDialogContent = "" },
+            onCopy = {
+                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("V2max", qrDialogContent))
+                qrDialogContent = ""
+                vm.showMessage("لینک کپی شد")
+            }
+        )
     }
 
     AppBackground {
@@ -159,6 +174,9 @@ fun AppRoot(vm: AppViewModel) {
                         onToggleFavorite = { vm.toggleFavorite(it) },
                         onDelete = { vm.deleteServer(it) },
                         showFlags = settings.showFlags,
+                        onQrContent = { id -> vm.shareLink(id).orEmpty() },
+                        onBulkDelete = { ids -> vm.deleteServers(ids) },
+                        onBulkFavorite = { ids, fav -> vm.setFavorite(ids, fav) },
                         onCopyLink = { id ->
                             val link = vm.shareLink(id)
                             if (link != null) {
@@ -184,7 +202,8 @@ fun AppRoot(vm: AppViewModel) {
                         onSmartScan = { vm.requestSmartConnect(it) },
                         onImportText = { vm.importText(it) },
                         onAddFreeSources = { vm.addFreeSources() },
-                        onScanQr = { showQr = true }
+                        onScanQr = { showQr = true },
+                        onQrContent = { qrDialogContent = it }
                     )
 
                     Tab.SETTINGS -> SettingsScreen(
@@ -198,7 +217,8 @@ fun AppRoot(vm: AppViewModel) {
                         onBackup = { exportLauncher.launch("v2max-backup.json") },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
-                        onScanQr = { showQr = true }
+                        onScanQr = { showQr = true },
+                        onQrContent = { qrDialogContent = it }
                     )
                 }
             }

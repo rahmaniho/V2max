@@ -63,6 +63,24 @@ object Notifier {
             flags
         )
 
+        val nextIntent = PendingIntent.getService(
+            context,
+            2,
+            Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_NEXT
+            },
+            flags
+        )
+
+        val retestIntent = PendingIntent.getService(
+            context,
+            3,
+            Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_RETEST
+            },
+            flags
+        )
+
         val title = when {
             state.status == ir.v2max.app.data.TunnelStatus.CONNECTED ->
                 state.serverName.ifBlank { "متصل" }
@@ -91,7 +109,9 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openIntent)
-            .addAction(0, "قطع اتصال", stopIntent)
+            .addAction(0, "سرور بعدی", nextIntent)
+            .addAction(0, "تست مجدد", retestIntent)
+            .addAction(0, "قطع", stopIntent)
             .build()
     }
 

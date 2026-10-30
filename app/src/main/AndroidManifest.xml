@@ -89,6 +89,19 @@
         </service>
 
         <receiver
+            android:name=".service.V2maxWidget"
+            android:exported="true"
+            android:label="V2max">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="ir.v2max.app.widget.TOGGLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_info" />
+        </receiver>
+
+        <receiver
             android:name=".service.BootReceiver"
             android:enabled="true"
             android:exported="false">
