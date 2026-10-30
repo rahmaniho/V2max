@@ -26,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.LaunchedEffect
@@ -52,7 +53,8 @@ import kotlinx.coroutines.launch
 fun DiagScreen(
     appVersion: String,
     coreVersion: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onAction: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val tunnel by Repo.tunnel.collectAsStateWithLifecycle()
@@ -126,6 +128,71 @@ fun DiagScreen(
                 Column(Modifier.weight(1f)) {
                     Text("عیب‌یابی و گزارش", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
                     Text("وضعیت خروج، DNS و لاگ زنده‌ی هسته", style = androidx.compose.material3.MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                }
+            }
+        }
+
+        // ---- تشخیص خودکار با اقدام پیشنهادی
+        val findings = remember(exit, dns, tunnel, settings) {
+            val alive = Repo.servers.value.count { it.bestPing() > 0 || it.tcpPing > 0 }
+            Diagnostics.advise(
+                connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
+                connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
+                killSwitchBlocked = settings.killSwitch && tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
+                exitOk = exit.ok,
+                dnsDohOk = dns.dohOk,
+                dnsConsistent = dns.consistent,
+                totalServers = Repo.servers.value.size,
+                aliveServers = alive,
+                balancerEnabled = settings.balancer,
+                geoReady = ir.v2max.app.core.GeoAssets.isReady(),
+                fragmentProfile = settings.fragmentProfile.name
+            )
+        }
+
+        item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text(
+                        "تشخیص خودکار",
+                        style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                        color = V2.TextPrimary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    findings.forEach { finding ->
+                        val color = when (finding.severity) {
+                            Diagnostics.Severity.CRITICAL -> V2.Red
+                            Diagnostics.Severity.WARN -> V2.Amber
+                            Diagnostics.Severity.INFO -> V2.Sky
+                            Diagnostics.Severity.OK -> V2.Mint
+                        }
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Box(
+                                Modifier
+                                    .padding(top = 5.dp)
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(color)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(finding.title, fontSize = 12.sp, color = color)
+                                Text(finding.detail, fontSize = 10.5.sp, color = V2.TextMuted)
+                                if (finding.actionId.isNotBlank()) {
+                                    Spacer(Modifier.height(6.dp))
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(color.copy(alpha = 0.14f))
+                                            .clickable { onAction(finding.actionId) }
+                                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(finding.actionLabel, fontSize = 10.5.sp, color = color)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

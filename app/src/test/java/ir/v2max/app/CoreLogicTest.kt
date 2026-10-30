@@ -151,6 +151,66 @@ class CoreLogicTest {
         assertEquals(null, json.getAsJsonObject("routing").get("balancers"))
     }
 
+    // ------------------------------------------------------------ diagnostics
+
+    @Test
+    fun `diagnostics suggests aggressive profile when traffic does not pass`() {
+        val findings = ir.v2max.app.net.Diagnostics.advise(
+            connected = true,
+            connecting = false,
+            killSwitchBlocked = false,
+            exitOk = false,
+            dnsDohOk = false,
+            dnsConsistent = false,
+            totalServers = 20,
+            aliveServers = 12,
+            balancerEnabled = true,
+            geoReady = true,
+            fragmentProfile = "BALANCED"
+        )
+        assertTrue(findings.any { it.actionId == ir.v2max.app.net.Diagnostics.Action.AGGRESSIVE_FRAGMENT })
+    }
+
+    @Test
+    fun `diagnostics reports healthy when everything is fine`() {
+        val findings = ir.v2max.app.net.Diagnostics.advise(
+            connected = true,
+            connecting = false,
+            killSwitchBlocked = false,
+            exitOk = true,
+            dnsDohOk = true,
+            dnsConsistent = true,
+            totalServers = 30,
+            aliveServers = 25,
+            balancerEnabled = true,
+            geoReady = true,
+            fragmentProfile = "BALANCED"
+        )
+        assertEquals(1, findings.size)
+        assertEquals(ir.v2max.app.net.Diagnostics.Severity.OK, findings.first().severity)
+    }
+
+    @Test
+    fun `kill switch blocked is critical`() {
+        val findings = ir.v2max.app.net.Diagnostics.advise(
+            connected = false,
+            connecting = false,
+            killSwitchBlocked = true,
+            exitOk = false,
+            dnsDohOk = false,
+            dnsConsistent = false,
+            totalServers = 10,
+            aliveServers = 10,
+            balancerEnabled = false,
+            geoReady = true,
+            fragmentProfile = "BALANCED"
+        )
+        assertTrue(findings.any {
+            it.severity == ir.v2max.app.net.Diagnostics.Severity.CRITICAL &&
+                it.actionId == ir.v2max.app.net.Diagnostics.Action.UNBLOCK
+        })
+    }
+
     // ----------------------------------------------------------------- format
 
     @Test

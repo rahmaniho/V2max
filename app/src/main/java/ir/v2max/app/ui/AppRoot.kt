@@ -26,6 +26,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -69,6 +71,38 @@ fun AppRoot(vm: AppViewModel) {
     var showRestoreDialog by remember { mutableStateOf(false) }
     var restoreError by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+
+    fun handleDiagAction(action: String) {
+        when (action) {
+            ir.v2max.app.net.Diagnostics.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
+            ir.v2max.app.net.Diagnostics.Action.AGGRESSIVE_FRAGMENT -> {
+                vm.updateSettings {
+                    it.copy(
+                        fragmentProfile = ir.v2max.app.data.FragmentProfile.AGGRESSIVE,
+                        autoTuneFragment = false,
+                        fragment = true
+                    )
+                }
+                vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
+            }
+            ir.v2max.app.net.Diagnostics.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
+            ir.v2max.app.net.Diagnostics.Action.SYNC_GEO -> {
+                scope.launch {
+                    vm.showMessage("در حال دانلود فایل‌های مسیریابی…")
+                    val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        ir.v2max.app.core.GeoAssets.syncIfNeeded(context, force = true)
+                    }
+                    vm.showMessage(if (ok) "فایل‌های مسیریابی به‌روز شد" else "دانلود ناموفق بود؛ اتصال اینترنت را بررسی کنید")
+                }
+            }
+            ir.v2max.app.net.Diagnostics.Action.UNBLOCK -> vm.disconnectTunnel()
+            ir.v2max.app.net.Diagnostics.Action.DISABLE_BALANCER -> {
+                vm.updateSettings { it.copy(balancer = false) }
+                vm.showMessage("استخر خودکار خاموش شد")
+            }
+        }
+    }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -280,7 +314,8 @@ fun AppRoot(vm: AppViewModel) {
                     DiagScreen(
                         appVersion = BuildConfig.VERSION_NAME,
                         coreVersion = remember { vm.coreVersion() },
-                        onBack = { showDiag = false }
+                        onBack = { showDiag = false },
+                        onAction = { action -> handleDiagAction(action) }
                     )
                 } else if (showRouting) {
                     RoutingScreen(
