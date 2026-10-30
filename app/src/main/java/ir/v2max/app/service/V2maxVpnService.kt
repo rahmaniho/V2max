@@ -288,6 +288,8 @@ class V2maxVpnService : VpnService() {
 
             XrayCore.init(applicationContext)
 
+            Repo.clearLatencyHistory()
+
             // استخر سرورها: چند سرور سالم برتر برای انتخاب خودکار توسط هسته (balancer)
             val pool = if (baseSettings.balancer) {
                 val healthy = Repo.servers.value
@@ -299,6 +301,7 @@ class V2maxVpnService : VpnService() {
             } else {
                 listOf(server)
             }
+            Repo.poolSize.value = pool.size
 
             // ---- نردبان نفوذ: پروفایل‌های فرگمنت به‌ترتیب امتحان می‌شوند تا تانل واقعاً بالا بیاید
             val attempts = ladder
@@ -619,6 +622,7 @@ class V2maxVpnService : VpnService() {
                 if (ping > 0) {
                     if (failures > 0) Log.i(TAG, "connection recovered after $failures failures")
                     failures = 0
+                    Repo.pushLatency(ping.toInt())
                     Repo.setTestResult(
                         Repo.tunnel.value.serverId,
                         Repo.serverById(Repo.tunnel.value.serverId)?.tcpPing ?: -1,
@@ -714,6 +718,7 @@ class V2maxVpnService : VpnService() {
         XrayCore.stop()
         closeTun()
         running = false
+        Repo.poolSize.value = 0
         Repo.tunnel.value = TunnelUiState(status = TunnelStatus.DISCONNECTED)
         Notifier.cancel(this)
         stopForegroundCompat()

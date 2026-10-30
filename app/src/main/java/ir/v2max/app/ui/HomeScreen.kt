@@ -79,6 +79,8 @@ fun HomeScreen(
     onInstallUpdate: () -> Unit = {},
     killSwitchBlocked: Boolean = false,
     onUnblock: () -> Unit = {},
+    latencySamples: List<Int> = emptyList(),
+    poolSize: Int = 0,
     updateProgress: Float = 0f,
     coreVersion: String
 ) {
@@ -173,6 +175,14 @@ fun HomeScreen(
                     progress = updateProgress
                 )
             }
+        }
+
+        item {
+            LatencyCard(
+                samples = latencySamples,
+                poolSize = poolSize,
+                connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED
+            )
         }
 
         item { NetworkCard(network, onRefreshNetwork) }

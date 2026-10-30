@@ -50,6 +50,8 @@ fun AppRoot(vm: AppViewModel) {
     val update by vm.update.collectAsStateWithLifecycle()
     val updateProgress by Repo.updateProgress.collectAsStateWithLifecycle()
     val installMessage by Repo.installMessage.collectAsStateWithLifecycle()
+    val latencySamples by Repo.latencyHistory.collectAsStateWithLifecycle()
+    val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
 
@@ -323,6 +325,8 @@ fun AppRoot(vm: AppViewModel) {
                         killSwitchBlocked = settings.killSwitch &&
                             tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
                         onUnblock = { vm.disconnectTunnel() },
+                        latencySamples = latencySamples,
+                        poolSize = poolSize,
                         onDismissUpdate = { vm.dismissUpdate() },
                         coreVersion = remember { vm.coreVersion() }
                     )
