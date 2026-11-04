@@ -13,7 +13,7 @@ core/
   model/     ir.v2max.core.model      domain types, settings, measurements
   protocol/  ir.v2max.core.protocol   share-link parsing, JSON reader
   config/    ir.v2max.core.config     Xray config generation, JSON writer
-  domain/    ir.v2max.core.domain     server selection and failover heuristics
+  domain/    ir.v2max.core.domain     selection, list policy, merge rules, advice
   format/    ir.v2max.core.format     Persian digits, sizes, durations, Jalali
   geo/       ir.v2max.core.geo        country detection from a server name
   testsuite/ ir.v2max.core.test       test suite and runner
