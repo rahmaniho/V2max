@@ -105,6 +105,37 @@ jobs:
           print(f'core suite ran: {total} test case(s) across {len(paths)} result file(s)')
           PY
 
+      - name: Verify the app unit tests actually ran
+        run: |
+          set -e
+          # Same guard, other direction. Gradle test tasks pick classes up by
+          # pattern or by scanning, and a class named outside the convention can
+          # be silently excluded — the build stays green over tests that never
+          # ran. So assert the specific comparison suite executed, by name.
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          paths = glob.glob('app/build/test-results/**/*.xml', recursive=True)
+          if not paths:
+              print('::error title=app-tests::no app test results — testReleaseUnitTest did not run')
+              sys.exit(1)
+          total = 0
+          names = set()
+          for p in paths:
+              for tc in ET.parse(p).iter('testcase'):
+                  total += 1
+                  names.add(tc.get('classname') or '')
+          if total < 1:
+              print('::error title=app-tests::app test results contain no test cases')
+              sys.exit(1)
+          required = 'ir.v2max.app.ConfigGeneratorTest'
+          if not any(n.startswith(required) for n in names):
+              print(f'::error title=app-tests::{required} did not execute — '
+                    f'check the test include pattern. Classes seen: {sorted(names)}')
+              sys.exit(1)
+          print(f'app unit tests ran: {total} test case(s) across {len(paths)} file(s)')
+          print(f'{required} confirmed among {len(names)} test class(es)')
+          PY
+
       - name: Report test failures
         if: always()
         run: |

@@ -29,7 +29,7 @@ import org.junit.Test
  * `ServerMapping.kt` is lossy, or one of the two generators is wrong. Both are
  * worth knowing before the switch, not after.
  */
-class ConfigGeneratorTests {
+class ConfigGeneratorTest {
 
     private val links = listOf(
         "vless://11111111-2222-3333-4444-555555555555@example.com:443" +

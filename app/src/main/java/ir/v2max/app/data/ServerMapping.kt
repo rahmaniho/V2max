@@ -30,7 +30,7 @@ import ir.v2max.core.model.Transport
  * coerced server appears in the list, passes a TCP ping, and never carries
  * traffic. Mapping one here falls through to [Transport.Tcp] and would recreate
  * exactly that. Callers must reject those values before mapping, the same way
- * the parser does. See `ConfigGeneratorTests`.
+ * the parser does. See `ConfigGeneratorTest`.
  */
 fun ServerConfig.toCoreServer(): Server = Server(
     id = id,
