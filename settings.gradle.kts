@@ -30,5 +30,6 @@ include(
     ":core:protocol",
     ":core:config",
     ":core:domain",
+    ":core:format",
     ":core:testsuite",
 )

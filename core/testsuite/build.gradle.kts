@@ -11,6 +11,7 @@ dependencies {
     testImplementation(project(":core:protocol"))
     testImplementation(project(":core:config"))
     testImplementation(project(":core:domain"))
+    testImplementation(project(":core:format"))
     testImplementation("junit:junit:4.13.2")
 }
 

@@ -80,6 +80,7 @@ fun runAllSuites(): Int {
     ServerSelectorTests.run()
     ServerListPolicyTests.run()
     SubscriptionUsageTests.run()
+    FormatTests.run()
 
     return T.report()
 }
