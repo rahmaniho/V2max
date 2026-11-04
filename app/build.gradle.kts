@@ -138,6 +138,13 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.biometric:biometric:1.1.0")
     testImplementation("junit:junit:4.13.2")
+    // Test-only on purpose. ConfigGeneratorTests compares core's XrayConfig
+    // against the app's ConfigBuilder to prove they agree before any call site
+    // moves. Adding it to `implementation` would put two config generators in
+    // main, which the convention above forbids; when the app actually switches,
+    // this becomes `implementation` and ConfigBuilder is deleted in the same
+    // commit.
+    testImplementation(project(":core:config"))
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     implementation("androidx.activity:activity-compose:1.9.3")
