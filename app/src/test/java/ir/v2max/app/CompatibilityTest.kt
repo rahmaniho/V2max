@@ -2,7 +2,6 @@ package ir.v2max.app
 
 import com.google.gson.JsonParser
 import ir.v2max.app.core.ConfigBuilder
-import ir.v2max.app.core.GeoDataTags
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.FragmentProfile
 import ir.v2max.app.data.PingTargets
@@ -13,8 +12,6 @@ import ir.v2max.app.net.ProbePlanner
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
-import java.io.ByteArrayOutputStream
-import java.io.File
 import java.util.Base64
 
 class CompatibilityTest {
@@ -158,25 +155,4 @@ class CompatibilityTest {
         assertEquals("selected", ProbePlanner.choose(listOf(fast, selected), "selected")!!.id)
     }
 
-    @Test fun `geo tags match protobuf entry names not text inside domains`() {
-        fun varint(value: Int): ByteArray {
-            var v = value
-            val out = ByteArrayOutputStream()
-            while (v >= 128) { out.write((v and 127) or 128); v = v ushr 7 }
-            out.write(v)
-            return out.toByteArray()
-        }
-        fun field(number: Int, bytes: ByteArray): ByteArray =
-            byteArrayOf(((number shl 3) or 2).toByte()) + varint(bytes.size) + bytes
-        fun entry(code: String, text: String): ByteArray = field(1, field(1, code.toByteArray()) + field(2, text.toByteArray()))
-        val file = File.createTempFile("geodata", ".dat")
-        try {
-            file.writeBytes(entry("US", "persia.ir"))
-            assertNull(GeoDataTags.find(file, listOf("ir")))
-            file.writeBytes(entry("US", "x") + entry("IR", "domain"))
-            assertEquals("ir", GeoDataTags.find(file, listOf("ir")))
-            file.appendBytes(byteArrayOf(10, 100)) // truncated entry invalidates the whole file
-            assertNull(GeoDataTags.find(file, listOf("ir")))
-        } finally { file.delete() }
-    }
 }

@@ -1,4 +1,4 @@
-package ir.v2max.app.core
+package ir.v2max.core.geo
 
 import java.io.BufferedInputStream
 import java.io.EOFException
@@ -6,8 +6,19 @@ import java.io.File
 import java.io.InputStream
 import java.util.Locale
 
-/** Reads only the code field of GeoIPList/GeoSiteList protobuf entries, not domain contents. */
-internal object GeoDataTags {
+/**
+ * Reads only the code field of GeoIPList/GeoSiteList protobuf entries, not
+ * domain contents.
+ *
+ * The distinction is the whole point: a geosite file for the United States can
+ * contain `persia.ir` among its domains, and matching on file text would report
+ * that the Iranian category is installed when it is not. Only field 1 of each
+ * entry is decoded; every other field is skipped by wire type.
+ *
+ * Moved out of the app unchanged. It was `internal` there and is public now
+ * because the app calls it across a module boundary.
+ */
+object GeoDataTags {
     fun find(file: File, candidates: List<String>): String? = runCatching {
         val found = mutableSetOf<String>()
         BufferedInputStream(file.inputStream()).use { input ->

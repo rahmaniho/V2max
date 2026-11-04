@@ -2,6 +2,7 @@ package ir.v2max.app.core
 
 import android.content.Context
 import android.util.Log
+import ir.v2max.core.geo.GeoDataTags
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File

@@ -83,6 +83,7 @@ fun runAllSuites(): Int {
     SubscriptionUsageTests.run()
     FormatTests.run()
     CountryFlagsTests.run()
+    GeoDataTagsTests.run()
 
     return T.report()
 }
