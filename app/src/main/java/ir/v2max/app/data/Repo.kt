@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import ir.v2max.core.domain.ServerListPolicy
+import ir.v2max.core.domain.SubscriptionMerger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -190,46 +191,49 @@ object Repo {
     @Synchronized
     fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>) {
         val existing = _servers.value.filter { it.subId == subId }
-        val byKey = existing.associateBy { it.fingerprint() }
-        val merged = mutableListOf<ServerConfig>()
-        val seen = HashSet<String>()
-        incoming.filter { it.hasUsableEndpoint() }.forEach { cfg ->
-            val key = cfg.fingerprint()
-            if (!seen.add(key)) return@forEach
-            val old = byKey[key]
-            merged.add(
-                if (old != null) {
-                    cfg.id = old.id
-                    cfg.favorite = old.favorite
-                    cfg.tcpPing = old.tcpPing
-                    cfg.realPing = old.realPing
-                    cfg.googlePing = old.googlePing
-                    cfg.instagramPing = old.instagramPing
-                    cfg.youtubePing = old.youtubePing
-                    cfg.speedKbps = old.speedKbps
-                    cfg.countryCode = old.countryCode
-                    cfg.countryName = old.countryName
-                    cfg.successCount = old.successCount
-                    cfg.failCount = old.failCount
-                    cfg.testedAt = old.testedAt
-                    cfg.testedFragment = old.testedFragment
-                    cfg.testedFragmentProfile = old.testedFragmentProfile
-                    cfg.testedUrl = old.testedUrl
-                    cfg.addedAt = old.addedAt
-                    cfg
-                } else cfg
-            )
-        }
-        // Keep the live server until disconnect even if an updated subscription no longer lists it.
-        val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
-        existing.firstOrNull { it.id == liveId && merged.none { updated -> updated.id == it.id } }
-            ?.let { merged.add(it) }
+        val merged = SubscriptionMerger.merge(
+            existing = existing,
+            incoming = incoming,
+            liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive },
+            fingerprintOf = { it.fingerprint() },
+            isUsable = { it.hasUsableEndpoint() },
+            idOf = { it.id },
+            carryOver = ::carryOverExisting,
+        )
         val others = _servers.value.filter { it.subId != subId }
         _servers.value = capped(others + merged)
         persistServers()
         if (serverById(_selectedId.value) == null) {
             setSelected(_servers.value.firstOrNull()?.id.orEmpty())
         }
+    }
+
+    /**
+     * هویت و تاریخچه‌ی تست کانفیگ قبلی را روی کانفیگ تازه‌ی همان اشتراک نگه می‌دارد.
+     *
+     * این فهرست، همان چیزی است که نباید در یک به‌روزرسانی اشتراک از دست برود:
+     * شناسه (تا انتخاب کاربر نشکند)، علاقه‌مندی، نتایج پینگ و سرعت، کشور، و
+     * اطلاعات تست فرگمنت. قوانین ادغام در `SubscriptionMerger` تست شده‌اند.
+     */
+    private fun carryOverExisting(old: ServerConfig, updated: ServerConfig): ServerConfig {
+        updated.id = old.id
+        updated.favorite = old.favorite
+        updated.tcpPing = old.tcpPing
+        updated.realPing = old.realPing
+        updated.googlePing = old.googlePing
+        updated.instagramPing = old.instagramPing
+        updated.youtubePing = old.youtubePing
+        updated.speedKbps = old.speedKbps
+        updated.countryCode = old.countryCode
+        updated.countryName = old.countryName
+        updated.successCount = old.successCount
+        updated.failCount = old.failCount
+        updated.testedAt = old.testedAt
+        updated.testedFragment = old.testedFragment
+        updated.testedFragmentProfile = old.testedFragmentProfile
+        updated.testedUrl = old.testedUrl
+        updated.addedAt = old.addedAt
+        return updated
     }
 
     @Synchronized
