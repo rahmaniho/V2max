@@ -79,6 +79,7 @@ fun runAllSuites(): Int {
     XrayConfigTests.run()
     ServerSelectorTests.run()
     ServerListPolicyTests.run()
+    SubscriptionUsageTests.run()
 
     return T.report()
 }
