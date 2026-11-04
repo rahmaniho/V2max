@@ -84,6 +84,7 @@ fun runAllSuites(): Int {
     FormatTests.run()
     CountryFlagsTests.run()
     GeoDataTagsTests.run()
+    ConnectionAdviceTests.run()
 
     return T.report()
 }

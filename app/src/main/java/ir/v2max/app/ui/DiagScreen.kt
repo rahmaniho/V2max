@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.Diagnostics
+import ir.v2max.core.domain.ConnectionAdvice
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -61,8 +62,8 @@ fun DiagScreen(
     val settings by Repo.settings.collectAsStateWithLifecycle()
 
     var logs by remember { mutableStateOf(XrayCore.logs()) }
-    var exit by remember { mutableStateOf(Diagnostics.ExitInfo()) }
-    var dns by remember { mutableStateOf(Diagnostics.DnsInfo()) }
+    var exit by remember { mutableStateOf(ConnectionAdvice.ExitInfo()) }
+    var dns by remember { mutableStateOf(ConnectionAdvice.DnsInfo()) }
     var busy by remember { mutableStateOf(false) }
     var lastCheck by remember { mutableStateOf("") }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -87,7 +88,7 @@ fun DiagScreen(
     }
 
     fun shareReport() {
-        val report = Diagnostics.buildReport(
+        val report = ConnectionAdvice.buildReport(
             appVersion = appVersion,
             coreVersion = coreVersion,
             deviceInfo = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · اندروید ${android.os.Build.VERSION.RELEASE}",
@@ -136,7 +137,7 @@ fun DiagScreen(
         item {
             val findings = remember(exit, dns, tunnel, settings) {
                 val alive = Repo.servers.value.count { it.bestPing() > 0 || it.tcpPing > 0 }
-                Diagnostics.advise(
+                ConnectionAdvice.advise(
                     connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
                     connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
                     killSwitchBlocked = settings.killSwitch && tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
@@ -160,10 +161,10 @@ fun DiagScreen(
                     Spacer(Modifier.height(8.dp))
                     findings.forEach { finding ->
                         val color = when (finding.severity) {
-                            Diagnostics.Severity.CRITICAL -> V2.Red
-                            Diagnostics.Severity.WARN -> V2.Amber
-                            Diagnostics.Severity.INFO -> V2.Sky
-                            Diagnostics.Severity.OK -> V2.Mint
+                            ConnectionAdvice.Severity.CRITICAL -> V2.Red
+                            ConnectionAdvice.Severity.WARN -> V2.Amber
+                            ConnectionAdvice.Severity.INFO -> V2.Sky
+                            ConnectionAdvice.Severity.OK -> V2.Mint
                         }
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                             Box(

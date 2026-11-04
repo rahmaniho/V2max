@@ -75,8 +75,8 @@ fun AppRoot(vm: AppViewModel) {
 
     fun handleDiagAction(action: String) {
         when (action) {
-            ir.v2max.app.net.Diagnostics.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
-            ir.v2max.app.net.Diagnostics.Action.AGGRESSIVE_FRAGMENT -> {
+            ir.v2max.core.domain.ConnectionAdvice.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
+            ir.v2max.core.domain.ConnectionAdvice.Action.AGGRESSIVE_FRAGMENT -> {
                 vm.updateSettings {
                     it.copy(
                         fragmentProfile = ir.v2max.app.data.FragmentProfile.AGGRESSIVE,
@@ -86,8 +86,8 @@ fun AppRoot(vm: AppViewModel) {
                 }
                 vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
             }
-            ir.v2max.app.net.Diagnostics.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
-            ir.v2max.app.net.Diagnostics.Action.SYNC_GEO -> {
+            ir.v2max.core.domain.ConnectionAdvice.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
+            ir.v2max.core.domain.ConnectionAdvice.Action.SYNC_GEO -> {
                 scope.launch {
                     vm.showMessage("در حال دانلود فایل‌های مسیریابی…")
                     val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -96,8 +96,8 @@ fun AppRoot(vm: AppViewModel) {
                     vm.showMessage(if (ok) "فایل‌های مسیریابی به‌روز شد" else "دانلود ناموفق بود؛ اتصال اینترنت را بررسی کنید")
                 }
             }
-            ir.v2max.app.net.Diagnostics.Action.UNBLOCK -> vm.disconnectTunnel()
-            ir.v2max.app.net.Diagnostics.Action.DISABLE_BALANCER -> {
+            ir.v2max.core.domain.ConnectionAdvice.Action.UNBLOCK -> vm.disconnectTunnel()
+            ir.v2max.core.domain.ConnectionAdvice.Action.DISABLE_BALANCER -> {
                 vm.updateSettings { it.copy(balancer = false) }
                 vm.showMessage("استخر خودکار خاموش شد")
             }
