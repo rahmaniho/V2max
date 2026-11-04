@@ -396,7 +396,7 @@ private fun ServerRow(
                     }
                     if (showFlags && server.hasFlag()) {
                         Text(
-                            ir.v2max.app.data.CountryFlags.emojiFor(server.countryCode),
+                            ir.v2max.core.geo.CountryFlags.emojiFor(server.countryCode),
                             fontSize = 12.sp
                         )
                         Spacer(Modifier.width(4.dp))

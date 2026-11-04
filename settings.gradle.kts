@@ -31,5 +31,6 @@ include(
     ":core:config",
     ":core:domain",
     ":core:format",
+    ":core:geo",
     ":core:testsuite",
 )

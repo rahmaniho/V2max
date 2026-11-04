@@ -82,6 +82,7 @@ fun runAllSuites(): Int {
     SubscriptionMergerTests.run()
     SubscriptionUsageTests.run()
     FormatTests.run()
+    CountryFlagsTests.run()
 
     return T.report()
 }

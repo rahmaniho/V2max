@@ -6,6 +6,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import ir.v2max.core.domain.ServerListPolicy
 import ir.v2max.core.domain.SubscriptionMerger
+import ir.v2max.core.geo.CountryFlags
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -96,8 +97,8 @@ object Repo {
     private fun withCountry(cfg: ServerConfig): ServerConfig {
         if (cfg.countryCode.isNotBlank()) return cfg
         val resolved = CountryFlags.resolve(cfg.name) ?: return cfg
-        cfg.countryCode = resolved.first
-        cfg.countryName = resolved.second
+        cfg.countryCode = resolved.code
+        cfg.countryName = resolved.name
         return cfg
     }
 

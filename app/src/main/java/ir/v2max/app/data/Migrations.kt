@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import ir.v2max.core.geo.CountryFlags
 
 /**
  * مهاجرت‌های داده (معادل schema version برای مخزن JSON برنامه).
@@ -74,6 +75,6 @@ object Migrations {
     private fun ServerConfig.withCountryIfNeeded(): ServerConfig {
         if (countryCode.isNotBlank()) return this
         val resolved = CountryFlags.resolve(name) ?: CountryFlags.resolve("$host $path $sni") ?: return this
-        return copy(countryCode = resolved.first, countryName = resolved.second)
+        return copy(countryCode = resolved.code, countryName = resolved.name)
     }
 }

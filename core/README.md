@@ -14,6 +14,8 @@ core/
   protocol/  ir.v2max.core.protocol   share-link parsing, JSON reader
   config/    ir.v2max.core.config     Xray config generation, JSON writer
   domain/    ir.v2max.core.domain     server selection and failover heuristics
+  format/    ir.v2max.core.format     Persian digits, sizes, durations, Jalali
+  geo/       ir.v2max.core.geo        country detection from a server name
   testsuite/ ir.v2max.core.test       test suite and runner
 ```
 
@@ -117,7 +119,19 @@ persistence, subscription fetching, the update checker, WorkManager scheduling,
 notifications and the widget. Those layers depend on platform APIs that cannot
 be compiled or run in a headless environment.
 
-The `core` modules are wired into the Gradle build as plain JVM modules, but
-**`:app` does not depend on them yet** — it still uses its own `data`, `net` and
-`core` packages. So the Android build and its behaviour are unchanged; migrating
-`app/` onto these modules is the next step.
+The `core` modules are plain JVM modules in the Gradle build, and `:app` depends
+on four of them — `:core:model`, `:core:format`, `:core:domain` and
+`:core:geo`. Where core and the app had duplicate logic, the app's copy was
+deleted rather than left to drift: `Format`/`Jalali`, `CountryFlags`, the
+built-in server cap (`Repo.capped`) and the subscription merge
+(`Repo.replaceSubscriptionServers`) all now run core code.
+
+Two of those call into core through accessor lambdas, because the app still
+holds its own mutable `ServerConfig` and has not adopted core's immutable
+`Server`. `ServerListPolicy.capBuiltIn` and `SubscriptionMerger.merge` are
+generic over the element type for that reason, and their `Server`-typed
+overloads delegate to the same implementation, so both paths stay covered.
+
+`:core:protocol` and `:core:config` are built and tested but not yet consumed
+by `:app`; wiring them in means adopting core's `Server` type in the app, which
+is the next stage of the rewrite.
