@@ -162,27 +162,28 @@ object Repo {
 
     /**
      * افزودن کانفیگ‌های جدید با حذف تکراری‌ها.
+     *
+     * قانون حذف تکراری در `ServerListPolicy.appendNew` تست شده است: کانفیگی که
+     * از قبل در فهرست است هرگز جایگزین نمی‌شود، پس واردکردن دوباره‌ی یک سرور
+     * تاریخچه‌ی پینگ و نامی که کاربر رویش گذاشته از بین نمی‌برد.
+     *
      * @return تعداد کانفیگ‌های افزوده‌شده
      */
     @Synchronized
     fun addServers(incoming: List<ServerConfig>): Int {
-        if (incoming.isEmpty()) return 0
-        val current = _servers.value.toMutableList()
-        val known = current.map { it.fingerprint() }.toHashSet()
-        var added = 0
-        incoming.filter { it.hasUsableEndpoint() }.map { withCountry(it) }.forEach { cfg ->
-            val key = cfg.fingerprint()
-            if (known.add(key)) {
-                current.add(cfg)
-                added++
-            }
-        }
-        if (added > 0) {
-            _servers.value = capped(current)
-            persistServers()
-            if (_selectedId.value.isBlank()) setSelected(_servers.value.lastOrNull()?.id.orEmpty())
-        }
-        return added
+        val result = ServerListPolicy.appendNew(
+            existing = _servers.value,
+            incoming = incoming,
+            fingerprintOf = { it.fingerprint() },
+            isUsable = { it.hasUsableEndpoint() },
+            prepare = ::withCountry,
+        )
+        if (!result.changed) return 0
+
+        _servers.value = capped(result.servers)
+        persistServers()
+        if (_selectedId.value.isBlank()) setSelected(_servers.value.lastOrNull()?.id.orEmpty())
+        return result.added
     }
 
     /**

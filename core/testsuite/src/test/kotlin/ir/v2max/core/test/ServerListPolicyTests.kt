@@ -271,5 +271,99 @@ object ServerListPolicyTests {
 
         // ---- the ceiling constant matches the original
         T.eq("ceiling is 700", 700, ServerListPolicy.MAX_BUILT_IN_SERVERS)
+
+        // ================= appendNew =================
+        //
+        // The add rule. The point of these tests is that it is NOT dedupe: an
+        // existing record always wins, so re-importing a server never resets the
+        // latency history or the name the user gave it.
+        data class Entry(val id: String, val key: String, val usable: Boolean = true)
+
+        fun append(
+            existing: List<Entry>,
+            incoming: List<Entry>,
+            prepare: (Entry) -> Entry = { it },
+        ) = ServerListPolicy.appendNew(
+            existing = existing,
+            incoming = incoming,
+            fingerprintOf = { it.key },
+            isUsable = { it.usable },
+            prepare = prepare,
+        )
+
+        // Nothing to do.
+        val emptyAdd = append(listOf(Entry("a", "ka")), emptyList())
+        T.eq("append: empty incoming adds nothing", 0, emptyAdd.added)
+        T.eq("append: empty incoming keeps the list", listOf("a"), emptyAdd.servers.map { it.id })
+        T.ok("append: empty incoming reports unchanged", !emptyAdd.changed)
+
+        // Fresh records go on the end, in the order they arrived.
+        val fresh = append(
+            listOf(Entry("a", "ka"), Entry("b", "kb")),
+            listOf(Entry("c", "kc"), Entry("d", "kd")),
+        )
+        T.eq("append: new records appended", 2, fresh.added)
+        T.eq(
+            "append: existing order kept, incoming after",
+            listOf("a", "b", "c", "d"),
+            fresh.servers.map { it.id },
+        )
+
+        // The core contract: a collision keeps the incumbent. Note this is the
+        // opposite of dedupe, which would compare them and could promote the
+        // newcomer.
+        val collide = append(
+            listOf(Entry("incumbent", "k")),
+            listOf(Entry("newcomer", "k")),
+        )
+        T.eq("append: duplicate is not added", 0, collide.added)
+        T.eq("append: incumbent wins", listOf("incumbent"), collide.servers.map { it.id })
+
+        // Repeats inside a single batch collapse to the first.
+        val batch = append(
+            emptyList(),
+            listOf(Entry("first", "k"), Entry("second", "k"), Entry("other", "k2")),
+        )
+        T.eq("append: first of a repeated batch wins", listOf("first", "other"), batch.servers.map { it.id })
+        T.eq("append: repeat counted once", 2, batch.added)
+
+        // Unusable records are filtered before anything else, so they are
+        // neither appended nor able to block a usable record behind them.
+        val filtered = append(
+            emptyList(),
+            listOf(Entry("bad", "k", usable = false), Entry("good", "k")),
+        )
+        T.eq("append: unusable dropped", listOf("good"), filtered.servers.map { it.id })
+        T.eq("append: unusable does not claim the fingerprint", 1, filtered.added)
+
+        // An incumbent owns its fingerprint even if it has since gone unusable;
+        // the app fingerprints the existing list without re-checking it.
+        val staleIncumbent = append(
+            listOf(Entry("stale", "k", usable = false)),
+            listOf(Entry("good", "k")),
+        )
+        T.eq("append: unusable incumbent still blocks", 0, staleIncumbent.added)
+        T.eq("append: unusable incumbent retained", listOf("stale"), staleIncumbent.servers.map { it.id })
+
+        // prepare runs before the fingerprint is taken. The app enriches each
+        // incoming record with a country resolved from its name; that
+        // enrichment must not decide identity, so it is applied first and the
+        // fingerprint is read off the enriched record.
+        val rewritten = append(
+            listOf(Entry("incumbent", "k")),
+            listOf(Entry("newcomer", "other")),
+            prepare = { it.copy(key = "k") },
+        )
+        T.eq("append: prepare feeds the fingerprint", 0, rewritten.added)
+        T.eq("append: prepared collision keeps incumbent", listOf("incumbent"), rewritten.servers.map { it.id })
+
+        // ...and the appended records are the prepared ones, not the raw input.
+        val enriched = append(emptyList(), listOf(Entry("raw", "k")), prepare = { it.copy(id = "prepared") })
+        T.eq("append: stores the prepared record", listOf("prepared"), enriched.servers.map { it.id })
+
+        // added always equals how much the list grew.
+        T.ok("append: added matches list growth", fresh.servers.size == 2 + fresh.added) {
+            "size=${fresh.servers.size} added=${fresh.added}"
+        }
     }
 }

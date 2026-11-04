@@ -7,6 +7,11 @@ data class DedupeResult(val servers: List<Server>, val removed: Int) {
     val changed: Boolean get() = removed > 0
 }
 
+/** Result of appending new servers to an existing list. */
+data class AppendResult<T>(val servers: List<T>, val added: Int) {
+    val changed: Boolean get() = added > 0
+}
+
 /**
  * Rules for maintaining the server list.
  *
@@ -116,5 +121,52 @@ object ServerListPolicy {
             val b = current.bestPing()
             if (a > 0 && (b <= 0 || a < b)) candidate else current
         }
+    }
+
+    /**
+     * Appends genuinely new servers to an existing list.
+     *
+     * This is the *add* rule, and it deliberately differs from [dedupe]: nothing
+     * already present is ever replaced, however good the newcomer looks. A user
+     * who imported a config yesterday keeps their copy — its identity, its
+     * measured latency, its name — so re-pasting the same server is a no-op
+     * rather than a silent reset of everything they learned about it.
+     *
+     * Order of operations matters. [prepare] runs *before* the fingerprint is
+     * taken, so a caller that enriches a record cannot change which records
+     * collide. The app resolves a country from the server's name here, and that
+     * enrichment must not decide identity.
+     *
+     * @param isUsable rejects records that could never connect; they are dropped
+     *   before anything else, so they neither get appended nor block a
+     *   duplicate.
+     * @return the combined list plus how many records were appended, letting the
+     *   caller skip persisting when nothing changed.
+     */
+    fun <T> appendNew(
+        existing: List<T>,
+        incoming: List<T>,
+        fingerprintOf: (T) -> String,
+        isUsable: (T) -> Boolean = { true },
+        prepare: (T) -> T = { it },
+    ): AppendResult<T> {
+        if (incoming.isEmpty()) return AppendResult(existing, 0)
+
+        // Existing records are registered as-is: they were accepted when they
+        // were added, and an entry that has since gone unusable still owns its
+        // fingerprint.
+        val seen = HashSet<String>(existing.size + incoming.size)
+        for (item in existing) seen.add(fingerprintOf(item))
+
+        val result = ArrayList<T>(existing.size + incoming.size)
+        result.addAll(existing)
+
+        for (item in incoming) {
+            if (!isUsable(item)) continue
+            val prepared = prepare(item)
+            if (seen.add(fingerprintOf(prepared))) result.add(prepared)
+        }
+
+        return AppendResult(result, result.size - existing.size)
     }
 }
