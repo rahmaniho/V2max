@@ -78,7 +78,32 @@ jobs:
       - name: Run unit and local Xray integration tests
         run: |
           set -o pipefail
-          gradle --no-daemon testReleaseUnitTest 2>&1 | tee test-out.log
+          # :core:testsuite is a plain JVM module, so it has no
+          # testReleaseUnitTest; it must be named explicitly or its checks never
+          # run and a regression in link parsing or config generation would ship.
+          gradle --no-daemon :core:testsuite:test testReleaseUnitTest 2>&1 | tee test-out.log
+
+      - name: Verify the core suite actually ran
+        run: |
+          set -e
+          # Guards against the suite being silently skipped again: if the task
+          # is ever renamed or dropped from the invocation above, this fails the
+          # build instead of reporting success over tests that never executed.
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          paths = glob.glob('core/*/build/test-results/**/*.xml', recursive=True)
+          if not paths:
+              print('::error title=core-tests::no core test results — :core:testsuite:test did not run')
+              sys.exit(1)
+          total = 0
+          for p in paths:
+              for _ in ET.parse(p).iter('testcase'):
+                  total += 1
+          if total < 1:
+              print('::error title=core-tests::core test results contain no test cases')
+              sys.exit(1)
+          print(f'core suite ran: {total} test case(s) across {len(paths)} result file(s)')
+          PY
 
       - name: Report test failures
         if: always()
@@ -90,7 +115,12 @@ jobs:
           fi
           python3 - <<'PY'
           import glob, xml.etree.ElementTree as ET
-          for path in glob.glob('app/build/test-results/**/*.xml', recursive=True):
+          patterns = [
+              'app/build/test-results/**/*.xml',
+              'core/*/build/test-results/**/*.xml',
+          ]
+          paths = [p for pat in patterns for p in glob.glob(pat, recursive=True)]
+          for path in paths:
               for case in ET.parse(path).iter('testcase'):
                   for failure in case.findall('failure'):
                       msg = (failure.get('message') or failure.text or '')[:8000]

@@ -53,7 +53,7 @@ import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
 import ir.v2max.app.data.UpdateInfo
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 import kotlinx.coroutines.delay
 
 @Composable

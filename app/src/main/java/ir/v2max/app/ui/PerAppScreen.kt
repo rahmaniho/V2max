@@ -46,7 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PerAppMode
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

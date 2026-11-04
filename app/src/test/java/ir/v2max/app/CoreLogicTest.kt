@@ -215,8 +215,8 @@ class CoreLogicTest {
 
     @Test
     fun `byte formatting is readable`() {
-        assertTrue(ir.v2max.app.util.Format.bytes(0).isNotBlank())
-        assertTrue(ir.v2max.app.util.Format.bytes(1024 * 1024).contains("MB"))
-        assertTrue(ir.v2max.app.util.Format.speed(2_000_000).isNotBlank())
+        assertTrue(ir.v2max.core.format.Format.bytes(0).isNotBlank())
+        assertTrue(ir.v2max.core.format.Format.bytes(1024 * 1024).contains("MB"))
+        assertTrue(ir.v2max.core.format.Format.speed(2_000_000).isNotBlank())
     }
 }

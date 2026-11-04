@@ -49,7 +49,7 @@ import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 
 @Composable
 fun SubsScreen(

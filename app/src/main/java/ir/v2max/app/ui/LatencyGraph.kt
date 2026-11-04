@@ -24,7 +24,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 
 /**
  * کارت کیفیت اتصال: نمودار زنده‌ی تأخیر (۶۰ نمونه‌ی آخر) + میانگین و لرزش (jitter).

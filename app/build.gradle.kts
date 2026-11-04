@@ -127,6 +127,14 @@ android {
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
 
+    // Pure-JVM core modules. Migrated incrementally: each call site moves over
+    // and its old duplicate in app/data, app/net or app/core is deleted, so the
+    // two implementations never coexist for the same responsibility.
+    implementation(project(":core:model"))
+    implementation(project(":core:format"))
+    implementation(project(":core:domain"))
+    implementation(project(":core:geo"))
+
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.biometric:biometric:1.1.0")
     testImplementation("junit:junit:4.13.2")

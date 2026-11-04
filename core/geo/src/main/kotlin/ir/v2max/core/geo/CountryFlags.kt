@@ -1,8 +1,16 @@
-package ir.v2max.app.data
+package ir.v2max.core.geo
+
+/** A country identified from a server name. */
+data class CountryMatch(val code: String, val name: String)
 
 /**
  * تشخیص کشور سرور از روی نام کانفیگ (پرچم ایموجی یا نام کشور/کد دوحرفی).
  * کاملاً آفلاین است و هیچ درخواست شبکه‌ای نمی‌فرستد.
+ *
+ * Moved out of the app unchanged apart from the return type: `Pair<String,
+ * String>` became [CountryMatch] so call sites read `.code` and `.name`
+ * instead of `.first` and `.second`. The matching order and the table are the
+ * shipped behaviour and are deliberately untouched.
  */
 object CountryFlags {
 
@@ -68,33 +76,31 @@ object CountryFlags {
         Country("PH", "فیلیپین", "philippines", "🇵🇭")
     )
 
-    private val byEmoji: Map<String, Country> = COUNTRIES.associateBy { it.emoji }
-
     /**
      * کشور را از نام سرور تشخیص می‌دهد.
      * اولویت: پرچم ایموجی → نام کامل فارسی/انگلیسی → کد دوحرفی جدا.
      */
-    fun resolve(name: String): Pair<String, String>? {
+    fun resolve(name: String): CountryMatch? {
         if (name.isBlank()) return null
 
         // ۱) پرچم ایموجی
         COUNTRIES.forEach { country ->
-            if (name.contains(country.emoji)) return country.code to country.name
+            if (name.contains(country.emoji)) return country.toMatch()
         }
 
         val lower = name.lowercase()
 
         // ۲) نام کامل
         COUNTRIES.forEach { country ->
-            if (lower.contains(country.english)) return country.code to country.name
-            if (name.contains(country.name)) return country.code to country.name
+            if (lower.contains(country.english)) return country.toMatch()
+            if (name.contains(country.name)) return country.toMatch()
         }
 
         // ۳) کد دوحرفی به‌صورت جدا (DE, NL, ...)
         val tokens = name.uppercase().split(' ', '_', '-', '|', '·', '(', ')', '[', ']', ',', ':')
             .map { it.trim() }
         COUNTRIES.forEach { country ->
-            if (tokens.any { it == country.code }) return country.code to country.name
+            if (tokens.any { it == country.code }) return country.toMatch()
         }
         return null
     }
@@ -111,4 +117,6 @@ object CountryFlags {
 
     private fun byCodeEmoji(code: String): String? =
         COUNTRIES.firstOrNull { it.code.equals(code, true) }?.emoji
+
+    private fun Country.toMatch() = CountryMatch(code, name)
 }
