@@ -87,6 +87,7 @@ fun runAllSuites(): Int {
     ConnectionAdviceTests.run()
     ProbePlannerTests.run()
     ServerHealthTests.run()
+    PublicSourcesTests.run()
 
     return T.report()
 }

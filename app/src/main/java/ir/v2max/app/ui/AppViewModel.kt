@@ -7,7 +7,7 @@ import androidx.lifecycle.viewModelScope
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.AppSettings
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription

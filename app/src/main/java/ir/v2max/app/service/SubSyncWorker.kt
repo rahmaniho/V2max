@@ -8,7 +8,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.SubscriptionFetcher
 import kotlinx.coroutines.Dispatchers
@@ -46,7 +46,10 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             coroutineScope {
                 subs.map { sub ->
                     async(Dispatchers.IO) {
-                        if (sub.builtIn && !PublicSources.ALL.any { it.url.trim() == sub.url.trim() }) return@async
+                        // Looked up through forUrl so the URL is normalised the
+                        // same way everywhere else; a stored built-in source with
+                        // a trailing slash used to fail this check and stop syncing.
+                        if (sub.builtIn && PublicSources.forUrl(sub.url) == null) return@async
                         val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url) }
                         if (result.ok) {
                             val cap = PublicSources.forUrl(sub.url)?.maxConfigs ?: 400
