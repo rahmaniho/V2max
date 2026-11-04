@@ -2,6 +2,7 @@ package ir.v2max.app.net
 
 import android.util.Base64
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.core.model.SubscriptionUsage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -97,14 +98,14 @@ object SubscriptionFetcher {
                 if (configs.isEmpty()) {
                     return@withContext Result(error = "هیچ کانفیگ معتبری در اشتراک یافت نشد")
                 }
-                val usage = parseUserInfo(response.header("subscription-userinfo"))
+                val usage = SubscriptionUsage.parseHeader(response.header("subscription-userinfo"))
                 val title = response.header("profile-title")?.let { decodeTitle(it) }.orEmpty()
                 Result(
                     configs = configs,
-                    upload = usage[0],
-                    download = usage[1],
-                    total = usage[2],
-                    expireAt = usage[3],
+                    upload = usage.upload,
+                    download = usage.download,
+                    total = usage.total,
+                    expireAt = usage.expireAt,
                     title = title
                 )
             }
@@ -121,23 +122,6 @@ object SubscriptionFetcher {
         } catch (t: Throwable) {
             raw
         }
-    }
-
-    /** upload=..; download=..; total=..; expire=.. */
-    private fun parseUserInfo(header: String?): LongArray {
-        val out = longArrayOf(0, 0, 0, 0)
-        if (header.isNullOrBlank()) return out
-        header.split(';').forEach { part ->
-            val key = part.substringBefore('=').trim().lowercase()
-            val value = part.substringAfter('=', "").trim().toLongOrNull() ?: return@forEach
-            when (key) {
-                "upload" -> out[0] = value
-                "download" -> out[1] = value
-                "total" -> out[2] = value
-                "expire" -> out[3] = value
-            }
-        }
-        return out
     }
 
     /** خواندن متن کانفیگ از آدرس (برای import لینک subscription یا QR) */
