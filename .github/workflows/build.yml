@@ -83,6 +83,28 @@ jobs:
           # run and a regression in link parsing or config generation would ship.
           gradle --no-daemon :core:testsuite:test testReleaseUnitTest 2>&1 | tee test-out.log
 
+      - name: Verify the core suite actually ran
+        run: |
+          set -e
+          # Guards against the suite being silently skipped again: if the task
+          # is ever renamed or dropped from the invocation above, this fails the
+          # build instead of reporting success over tests that never executed.
+          python3 - <<'PY'
+          import glob, sys, xml.etree.ElementTree as ET
+          paths = glob.glob('core/*/build/test-results/**/*.xml', recursive=True)
+          if not paths:
+              print('::error title=core-tests::no core test results — :core:testsuite:test did not run')
+              sys.exit(1)
+          total = 0
+          for p in paths:
+              for _ in ET.parse(p).iter('testcase'):
+                  total += 1
+          if total < 1:
+              print('::error title=core-tests::core test results contain no test cases')
+              sys.exit(1)
+          print(f'core suite ran: {total} test case(s) across {len(paths)} result file(s)')
+          PY
+
       - name: Report test failures
         if: always()
         run: |
