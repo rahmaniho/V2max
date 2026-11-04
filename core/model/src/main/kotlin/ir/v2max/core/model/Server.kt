@@ -65,21 +65,15 @@ data class Server(
     /**
      * Combined ranking score; **lower is better**.
      *
-     * Byte-for-byte the same arithmetic as the previous implementation so that
-     * server ordering does not silently change for existing users.
+     * The arithmetic lives in [ServerHealth] so the app's persistence layer,
+     * which still holds flat fields instead of a [Measurement], ranks servers
+     * identically instead of keeping its own copy.
      */
-    fun score(): Int {
-        val base = bestPing().let { if (it > 0) it else 3500 }
-        var score = base
-        if (measurement.speedKbps <= 0) {
-            score += 150
-        } else {
-            // every 500 kbps of measured speed removes 10 points, capped at 140
-            score -= (measurement.speedKbps / 500).coerceAtMost(14) * 10
-        }
-        score += (100 - measurement.stability()) * 2
-        return score.coerceAtLeast(1)
-    }
+    fun score(): Int = ServerHealth.score(
+        bestPing = bestPing(),
+        speedKbps = measurement.speedKbps,
+        stability = measurement.stability(),
+    )
 
     /** Best observed real latency in ms, or -1 when never measured. */
     fun bestPing(): Int = measurement.bestPing()
@@ -176,25 +170,12 @@ data class Measurement(
     val testedFragmentProfile: FragmentProfile = FragmentProfile.BALANCED,
     val testedUrl: String = "",
 ) {
-    fun reachCount(): Int {
-        var n = 0
-        if (googlePing > 0) n++
-        if (instagramPing > 0) n++
-        if (youtubePing > 0) n++
-        return n
-    }
+    fun reachCount(): Int = ServerHealth.reachCount(googlePing, instagramPing, youtubePing)
 
     /** Reliability as a percentage, 0..100 (100 = no failures). Unmeasured = 70. */
-    fun stability(): Int {
-        val total = successCount + failCount
-        if (total <= 0) return 70
-        return ((successCount * 100) / total).coerceIn(0, 100)
-    }
+    fun stability(): Int = ServerHealth.stability(successCount, failCount)
 
     /** Best real latency, falling back to TCP, or -1 when nothing was measured. */
-    fun bestPing(): Int {
-        val candidates = listOf(googlePing, instagramPing, youtubePing, realPing).filter { it > 0 }
-        if (candidates.isNotEmpty()) return candidates.min()
-        return if (tcpPing > 0) tcpPing else -1
-    }
+    fun bestPing(): Int =
+        ServerHealth.bestPing(tcpPing, realPing, googlePing, instagramPing, youtubePing)
 }

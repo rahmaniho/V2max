@@ -1,5 +1,7 @@
 package ir.v2max.app.data
 
+import ir.v2max.core.model.Endpoint
+import ir.v2max.core.model.ServerHealth
 import java.util.UUID
 
 /** پروتکل‌های پشتیبانی‌شده */
@@ -118,53 +120,30 @@ data class ServerConfig(
     val endpoint: String get() = "$address:$port"
 
     /** تعداد مقصدهایی که سرور به آن‌ها پاسخ داده است (۰ تا ۳) */
-    fun reachCount(): Int {
-        var n = 0
-        if (googlePing > 0) n++
-        if (instagramPing > 0) n++
-        if (youtubePing > 0) n++
-        return n
-    }
+    fun reachCount(): Int = ServerHealth.reachCount(googlePing, instagramPing, youtubePing)
 
     /** آیا آدرس قابل استفاده است (حذف آدرس‌های محلی/نامعتبر داخل کانفیگ‌ها) */
-    fun hasUsableEndpoint(): Boolean {
-        val a = address.trim().lowercase()
-        if (a.isEmpty() || port !in 1..65535) return false
-        if (a == "localhost" || a == "0.0.0.0" || a == "::" || a == "::1") return false
-        if (a.startsWith("127.")) return false
-        if (a == "[::1]") return false
-        return true
-    }
+    fun hasUsableEndpoint(): Boolean = Endpoint(address, port).usable
 
     /** درصد پایداری بین ۰ تا ۱۰۰ (۱۰۰ = بدون شکست) */
-    fun stability(): Int {
-        val total = successCount + failCount
-        if (total <= 0) return 70
-        return ((successCount * 100) / total).coerceIn(0, 100)
-    }
+    fun stability(): Int = ServerHealth.stability(successCount, failCount)
 
-    /** امتیاز ترکیبی؛ کمتر بهتر. تأخیر + جریمه‌ی سرعت پایین + جریمه‌ی ناپایداری */
-    fun score(): Int {
-        val base = bestPing().let { if (it > 0) it else 3500 }
-        var score = base
-        if (speedKbps <= 0) {
-            score += 150
-        } else {
-            // هر ۵۰۰ کیلوبیت سرعت بیشتر، ۱۰ امتیاز کمتر (تا ۱۴۰ امتیاز اثر)
-            score -= (speedKbps / 500).coerceAtMost(14) * 10
-        }
-        score += (100 - stability()) * 2
-        return score.coerceAtLeast(1)
-    }
+    /**
+     * امتیاز ترکیبی؛ کمتر بهتر. تأخیر + جریمه‌ی سرعت پایین + جریمه‌ی ناپایداری.
+     *
+     * محاسبه در `ir.v2max.core.model.ServerHealth` است، همان‌جایی که `Server`
+     * هم از آن استفاده می‌کند؛ پس رتبه‌بندی اینجا و در core یکی می‌ماند.
+     */
+    fun score(): Int = ServerHealth.score(
+        bestPing = bestPing(),
+        speedKbps = speedKbps,
+        stability = stability(),
+    )
 
     fun hasFlag(): Boolean = countryCode.isNotBlank()
 
-    fun bestPing(): Int {
-        val candidates = listOf(googlePing, instagramPing, youtubePing, realPing)
-            .filter { it > 0 }
-        if (candidates.isNotEmpty()) return candidates.min()
-        return if (tcpPing > 0) tcpPing else -1
-    }
+    fun bestPing(): Int =
+        ServerHealth.bestPing(tcpPing, realPing, googlePing, instagramPing, youtubePing)
 
     fun displayName(): String = name.ifBlank { endpoint }
 

@@ -86,6 +86,7 @@ fun runAllSuites(): Int {
     GeoDataTagsTests.run()
     ConnectionAdviceTests.run()
     ProbePlannerTests.run()
+    ServerHealthTests.run()
 
     return T.report()
 }
