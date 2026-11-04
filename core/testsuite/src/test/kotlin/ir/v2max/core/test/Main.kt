@@ -78,6 +78,7 @@ fun runAllSuites(): Int {
     RoundTripTests.run()
     XrayConfigTests.run()
     ServerSelectorTests.run()
+    ServerListPolicyTests.run()
 
     return T.report()
 }
