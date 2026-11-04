@@ -156,6 +156,14 @@ object LinkParser {
         }
         val port = str("port").toIntOrNull() ?: Proto.VMESS.defaultPort
         val network = str("net", "network").ifBlank { "tcp" }.lowercase()
+
+        // The same rule parseStandard applies. Without it a base64 VMess link
+        // carrying net=quic fell through transportFrom's TCP fallback and came
+        // out as a TCP server: listed, pingable, and unable to carry traffic.
+        if (network in REMOVED_TRANSPORTS) {
+            return ParseResult.Skipped(line, ParseResult.Reason.UNSUPPORTED)
+        }
+
         val securityRaw = str("tls")
 
         val transport = transportFrom(

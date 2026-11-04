@@ -44,7 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
@@ -492,7 +492,7 @@ private fun fieldColors(): androidx.compose.material3.TextFieldColors =
 @Composable
 private fun SourcePickerDialog(
     onDismiss: () -> Unit,
-    onPick: (ir.v2max.app.data.PublicSource) -> Unit,
+    onPick: (ir.v2max.core.model.PublicSource) -> Unit,
     onAddAll: () -> Unit,
     alreadyAdded: Set<String>
 ) {

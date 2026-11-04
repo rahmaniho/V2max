@@ -7,6 +7,7 @@ import com.google.gson.reflect.TypeToken
 import ir.v2max.core.domain.ServerListPolicy
 import ir.v2max.core.domain.SubscriptionMerger
 import ir.v2max.core.geo.CountryFlags
+import ir.v2max.core.model.PublicSources
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -397,8 +398,8 @@ object Repo {
     /** منابع رایگان داخلی را به لیست اشتراک‌ها اضافه می‌کند */
     @Synchronized
     fun ensureBuiltInSources(): Int {
-        val known = _subs.value.map { it.url.trim().trimEnd('/') }.toHashSet()
-        val toAdd = PublicSources.DEFAULT.filter { it.url.trim().trimEnd('/') !in known }.map {
+        val known = _subs.value.map { PublicSources.normalize(it.url) }.toHashSet()
+        val toAdd = PublicSources.DEFAULT.filter { PublicSources.normalize(it.url) !in known }.map {
             Subscription(name = it.name, url = it.url, builtIn = true)
         }
         if (toAdd.isEmpty()) return 0

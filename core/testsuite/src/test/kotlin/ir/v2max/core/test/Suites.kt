@@ -236,6 +236,45 @@ object LinkParserTests {
             (ssBad as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason,
         )
 
+        // ---- Transports the shipped Xray core no longer has.
+        //
+        // These must be *reported*, never coerced onto TCP. Coercing would give
+        // the user a server that appears in the list, passes a TCP ping, and
+        // then never carries traffic. There is deliberately no Transport variant
+        // for them, so adding one would reintroduce that silent failure.
+        for (net in listOf("quic", "h2", "http")) {
+            val removed = P.parseLine("vless://u@$net.example.com:443?type=$net")
+            T.ok("vless type=$net is reported unsupported", removed is ir.v2max.core.protocol.ParseResult.Skipped) {
+                "got $removed"
+            }
+            T.eq(
+                "vless type=$net reason is UNSUPPORTED",
+                ir.v2max.core.protocol.ParseResult.Reason.UNSUPPORTED,
+                (removed as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason,
+            )
+        }
+        // The same guard covers every protocol parseStandard handles, not just VLESS.
+        // The reason is asserted too, so a malformed fixture could not make this
+        // pass for the wrong reason.
+        val vmessQuic = P.parseLine(
+            "vmess://ew0KICAidiI6ICIyIiwNCiAgInBzIjogInRlc3QiLA0KICAiYWRkIjogInEuaG9zdCIsDQogICJwb3J0IjogIjQ0MyIsDQogICJpZCI6ICJ1IiwNCiAgImFpZCI6ICIwIiwNCiAgIm5ldCI6ICJxdWljIiwNCiAgInR5cGUiOiAibm9uZSIsDQogICJob3N0IjogIiIsDQogICJwYXRoIjogIiIsDQogICJ0bHMiOiAiIg0KfQ==",
+        )
+        T.eq(
+            "vmess net=quic reason is UNSUPPORTED",
+            ir.v2max.core.protocol.ParseResult.Reason.UNSUPPORTED,
+            (vmessQuic as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason,
+        )
+        // And an ordinary transport in the same shape still parses, so the
+        // rejections above are about the transport rather than the link format.
+        T.ok(
+            "type=tcp control still parses",
+            P.parseLine("vless://u@c.example.com:443?type=tcp") is ir.v2max.core.protocol.ParseResult.Ok,
+        )
+        T.ok(
+            "type=ws control still parses",
+            P.parseLine("vless://u@w.example.com:443?type=ws&path=%2Fw") is ir.v2max.core.protocol.ParseResult.Ok,
+        )
+
         // ---- SOCKS user:pass with a colon inside the password
         val socks = (P.parseLine("socks://user:p%3Ass%3Aword@s.example.com:1080#Socks")
             as? ir.v2max.core.protocol.ParseResult.Ok)?.server
