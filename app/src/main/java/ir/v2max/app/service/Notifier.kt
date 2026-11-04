@@ -11,7 +11,7 @@ import androidx.core.app.NotificationCompat
 import ir.v2max.app.MainActivity
 import ir.v2max.app.R
 import ir.v2max.app.data.TunnelUiState
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 
 /**
  * نوتیفیکیشن دائمی سرویس VPN همراه با نمایش سرعت لحظه‌ای.

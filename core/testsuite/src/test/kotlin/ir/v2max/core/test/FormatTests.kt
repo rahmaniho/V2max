@@ -3,7 +3,7 @@ package ir.v2max.core.test
 import ir.v2max.core.format.Format
 import ir.v2max.core.format.Jalali
 import ir.v2max.core.format.JalaliDate
-import java.time.ZoneId
+import java.util.TimeZone
 
 /**
  * Tests for display formatting and Jalali conversion.
@@ -11,10 +11,14 @@ import java.time.ZoneId
  * The Jalali cases are anchored to dates that can be checked independently of
  * this code, rather than to whatever the implementation happens to produce —
  * otherwise a wrong algorithm would generate its own expected values.
+ *
+ * `java.time` appears below for building test fixtures only, which is safe: the
+ * suite runs on the JVM. Production code deliberately avoids it, since the app's
+ * minSdk is 24.
  */
 object FormatTests {
 
-    private val UTC = ZoneId.of("UTC")
+    private val UTC = TimeZone.getTimeZone("UTC")
 
     fun run() {
         T.group("Format")
@@ -164,14 +168,16 @@ object FormatTests {
 
         // ---- date rendering is deterministic because the zone is explicit
         // 2024-03-20T12:34:56Z is 1403/01/01.
-        val millis = java.time.ZonedDateTime.of(2024, 3, 20, 12, 34, 56, 0, UTC)
+        // java.time is used here purely to build the fixture instant; the code
+        // under test takes a TimeZone.
+        val millis = java.time.ZonedDateTime.of(2024, 3, 20, 12, 34, 56, 0, UTC.toZoneId())
             .toInstant().toEpochMilli()
         T.eq("date with time", "۱۴۰۳/۰۱/۰۱ - ۱۲:۳۴", Format.date(millis, UTC))
         T.eq("dateOnly", "۱۴۰۳/۰۱/۰۱", Format.dateOnly(millis, UTC))
 
         // The same instant in a different zone renders a different local time,
         // which is the point of making the zone explicit.
-        val tehran = ZoneId.of("Asia/Tehran")
+        val tehran = TimeZone.getTimeZone("Asia/Tehran")
         T.eq("date in Tehran zone", "۱۴۰۳/۰۱/۰۱ - ۱۶:۰۴", Format.date(millis, tehran))
 
         T.eq("date of zero", "—", Format.date(0, UTC))

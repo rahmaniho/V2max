@@ -45,7 +45,7 @@ import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.NetworkAssessment
 import ir.v2max.app.data.SyncState
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 
 /** پس‌زمینه‌ی تخت برنامه (سبک‌تر از گرادیان: هر فریم ارزان‌تر رسم می‌شود) */
 @Composable

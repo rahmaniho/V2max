@@ -15,7 +15,7 @@ import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.SubscriptionFetcher
-import ir.v2max.app.util.Format
+import ir.v2max.core.format.Format
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async

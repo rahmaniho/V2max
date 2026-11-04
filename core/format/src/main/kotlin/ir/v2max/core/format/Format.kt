@@ -118,24 +118,44 @@ object Format {
 
     fun number(value: Int): String = toPersianDigits(value.toString())
 
-    /** Jalali date with time, or an em dash when there is no timestamp. */
-    fun date(millis: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+    /**
+     * Jalali date with time, or an em dash when there is no timestamp.
+     *
+     * Uses [java.util.Calendar] rather than `java.time`: the app's minSdk is 24
+     * and it does not otherwise use `java.time` anywhere, so introducing it here
+     * would make correct behaviour on API 24–25 depend entirely on core library
+     * desugaring — something CI cannot catch, because its emulator runs API 30
+     * where `java.time` is native.
+     */
+    fun date(millis: Long, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
         if (millis <= 0L) return "—"
-        val zdt = java.time.Instant.ofEpochMilli(millis).atZone(zone)
-        val j = Jalali.fromGregorian(zdt.year, zdt.monthValue, zdt.dayOfMonth)
+        val cal = java.util.Calendar.getInstance(zone)
+        cal.timeInMillis = millis
+        val j = Jalali.fromGregorian(
+            cal.get(java.util.Calendar.YEAR),
+            cal.get(java.util.Calendar.MONTH) + 1,
+            cal.get(java.util.Calendar.DAY_OF_MONTH),
+        )
         return toPersianDigits(
             "%04d/%02d/%02d - %02d:%02d".format(
-                j.year, j.month, j.day, zdt.hour, zdt.minute,
+                j.year, j.month, j.day,
+                cal.get(java.util.Calendar.HOUR_OF_DAY),
+                cal.get(java.util.Calendar.MINUTE),
             )
         )
     }
 
     /** Jalali date without time. */
-    fun dateOnly(millis: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String {
+    fun dateOnly(millis: Long, zone: java.util.TimeZone = java.util.TimeZone.getDefault()): String {
         if (millis <= 0L) return "—"
-        val zdt = java.time.Instant.ofEpochMilli(millis).atZone(zone)
+        val cal = java.util.Calendar.getInstance(zone)
+        cal.timeInMillis = millis
         return toPersianDigits(
-            Jalali.fromGregorian(zdt.year, zdt.monthValue, zdt.dayOfMonth).formatted
+            Jalali.fromGregorian(
+                cal.get(java.util.Calendar.YEAR),
+                cal.get(java.util.Calendar.MONTH) + 1,
+                cal.get(java.util.Calendar.DAY_OF_MONTH),
+            ).formatted
         )
     }
 
