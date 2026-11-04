@@ -41,6 +41,20 @@ while IFS= read -r -d '' f; do TESTS+=("$f"); done < <(
   find "$ROOT/core" -path '*/src/test/kotlin/*' -name '*.kt' -print0
 )
 
+# Skip JUnit-backed entry points. They exist so `gradle test` can run the same
+# suite, but JUnit is not fetchable here, and this harness is deliberately the
+# no-build-system path — the checks themselves live in runAllSuites(), which the
+# harness still exercises directly via main().
+FILTERED=()
+for f in "${TESTS[@]}"; do
+  if grep -q '^import org\.junit' "$f"; then
+    echo "== skipping JUnit-only source: ${f#$ROOT/} =="
+  else
+    FILTERED+=("$f")
+  fi
+done
+TESTS=("${FILTERED[@]}")
+
 if [[ ${#SOURCES[@]} -eq 0 ]]; then
   echo "ERROR: no core sources found under $ROOT/core" >&2
   exit 1

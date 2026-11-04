@@ -60,7 +60,14 @@ object T {
     }
 }
 
-fun main() {
+/**
+ * Runs every suite and returns the number of failed checks (0 means all passed).
+ *
+ * Shared by two entry points: [main], used by `tools/jvm.sh` for a fast local
+ * loop with no build system, and [CoreSuiteTest], which lets Gradle run the same
+ * suite under `gradle test` without duplicating the checks.
+ */
+fun runAllSuites(): Int {
     println("V2max core — JVM test suite")
     println("=".repeat(62))
 
@@ -72,5 +79,9 @@ fun main() {
     XrayConfigTests.run()
     ServerSelectorTests.run()
 
-    kotlin.system.exitProcess(T.report())
+    return T.report()
+}
+
+fun main() {
+    kotlin.system.exitProcess(runAllSuites())
 }

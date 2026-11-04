@@ -22,3 +22,13 @@ dependencyResolutionManagement {
 
 rootProject.name = "V2max"
 include(":app")
+
+// Platform-independent core modules. These are plain JVM modules, so they build
+// and test without the Android SDK.
+include(
+    ":core:model",
+    ":core:protocol",
+    ":core:config",
+    ":core:domain",
+    ":core:testsuite",
+)

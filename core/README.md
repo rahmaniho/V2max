@@ -14,17 +14,21 @@ core/
   protocol/  ir.v2max.core.protocol   share-link parsing, JSON reader
   config/    ir.v2max.core.config     Xray config generation, JSON writer
   domain/    ir.v2max.core.domain     server selection and failover heuristics
-  test/      ir.v2max.core.test       test suite and runner
+  testsuite/ ir.v2max.core.test       test suite and runner
 ```
 
 ## Running the tests
 
+The suite has two entry points that exercise the *same* checks via
+`runAllSuites()`, so there is no second copy of the assertions to drift:
+
 ```bash
-tools/jvm.sh              # compile core + run the suite
+tools/jvm.sh              # compile core + run the suite (no build system)
 tools/jvm.sh --compile    # compile only
+gradle :core:testsuite:test   # the same suite, under Gradle
 ```
 
-The harness needs a JDK 17+ and the Kotlin compiler, and looks for them under
+`tools/jvm.sh` needs a JDK 17+ and the Kotlin compiler, and looks for them under
 `$TOOLCHAIN_DIR` (default `~/.toolchain`):
 
 | Path | Used for |
@@ -33,8 +37,10 @@ The harness needs a JDK 17+ and the Kotlin compiler, and looks for them under
 | `kc/package/bin/kotlinc` | compiling |
 | `kc/package/lib/kotlin-stdlib.jar` | runtime classpath |
 
-Override with `JAVA_HOME` / `TOOLCHAIN_DIR` as needed. Nothing else is required
-— no Gradle, no Android SDK, no network access at test time.
+If those are missing, `tools/setup-toolchain.sh` fetches them (a Temurin 17 from
+the `jdk4py` PyPI wheel, and JetBrains' own `kotlin-compiler` package from npm).
+Override with `JAVA_HOME` / `TOOLCHAIN_DIR` as needed. No network access is
+required at test time.
 
 ## What changed from the previous implementation
 
@@ -111,6 +117,7 @@ persistence, subscription fetching, the update checker, WorkManager scheduling,
 notifications and the widget. Those layers depend on platform APIs that cannot
 be compiled or run in a headless environment.
 
-The `core` modules are also **not yet wired into the Gradle build**
-(`settings.gradle.kts` still includes only `:app`), so the Android build does not
-see them and `app/` remains unmodified and buildable.
+The `core` modules are wired into the Gradle build as plain JVM modules, but
+**`:app` does not depend on them yet** — it still uses its own `data`, `net` and
+`core` packages. So the Android build and its behaviour are unchanged; migrating
+`app/` onto these modules is the next step.
