@@ -173,6 +173,102 @@ object ServerListPolicyTests {
         T.eq("single element untouched", 1, ServerListPolicy.dedupe(listOf(server("a"))).servers.size)
         T.eq("empty list untouched", 0, ServerListPolicy.dedupe(emptyList()).servers.size)
 
+        // ---- the generic overload, for callers not on core's Server type
+        //
+        // The app's persistence layer still holds its own ServerConfig, so the
+        // policy is reachable through accessors. Row stands in for that type;
+        // what matters is that the rule is identical.
+        data class Row(val id: String, val subId: String, val favorite: Boolean, val score: Int)
+
+        fun capRows(list: List<Row>, selectedId: String = "", limit: Int = 2) =
+            ServerListPolicy.capBuiltIn(
+                list = list,
+                builtInSubscriptionIds = builtIn,
+                selectedId = selectedId,
+                limit = limit,
+                idOf = { it.id },
+                subscriptionIdOf = { it.subId },
+                isFavorite = { it.favorite },
+                scoreOf = { it.score },
+            )
+
+        val rows = listOf(
+            Row("w", "public", false, 3000),
+            Row("x", "public", false, 100),
+            Row("y", "public", false, 200),
+        )
+        T.eq("generic: trims to limit", 2, capRows(rows).size)
+        T.eq(
+            "generic: worst score is dropped first",
+            listOf("x", "y"),
+            capRows(rows).map { it.id },
+        )
+        T.eq("generic: order preserved", listOf("x", "y"), capRows(rows).map { it.id })
+
+        // A favourite survives even when it is the worst performer.
+        T.eq(
+            "generic: favourite protected despite worst score",
+            listOf("w", "x"),
+            capRows(rows.map { if (it.id == "w") it.copy(favorite = true) else it }).map { it.id },
+        )
+
+        // The selected server survives too, and the freed slot goes to the
+        // lowest-scoring remaining entry (x=100), not the best one.
+        T.eq(
+            "generic: selected protected",
+            listOf("w", "x"),
+            capRows(rows, selectedId = "w").map { it.id },
+        )
+
+        // Protecting more entries than the limit leaves no room for anything
+        // else, and every protected entry still survives rather than being
+        // truncated down to the limit.
+        val allFavorite = capRows(rows.map { it.copy(favorite = true) }, limit = 1)
+        T.eq(
+            "generic: protection can exceed the limit",
+            listOf("w", "x", "y"),
+            allFavorite.map { it.id },
+        )
+        T.ok("generic: nothing left for unprotected when all are protected", allFavorite.size == 3) {
+            "kept ${allFavorite.map { it.id }} under limit 1"
+        }
+
+        // Personal servers are never touched by the cap.
+        val withPersonal = rows + listOf(Row("p", "", false, 9999), Row("q", "mine", false, 9999))
+        val personalKept = capRows(withPersonal).filter { it.subId != "public" }.map { it.id }
+        T.eq("generic: personal servers untouched", listOf("p", "q"), personalKept)
+
+        // Below the limit nothing happens at all.
+        T.eq("generic: under limit is a no-op", 3, capRows(rows, limit = 3).size)
+        T.eq("generic: no built-in subscriptions is a no-op", 3, capRows(rows.map { it.copy(subId = "") }).size)
+
+        // ---- the generic path and the Server path must agree exactly.
+        //
+        // The Server overload delegates to the generic one, so building the same
+        // list both ways and comparing the survivors catches any drift between
+        // the two entry points.
+        val mixed = listOf(
+            server("s1", subId = "public", realPing = 400),
+            server("s2", subId = "public", realPing = 50),
+            server("s3", subId = "public", favorite = true, realPing = 900),
+            server("s4", subId = "public", realPing = 120),
+            server("s5", subId = "", realPing = 999),
+        )
+        val viaServer = ServerListPolicy.capBuiltIn(mixed, builtIn, selectedId = "s1", limit = 2).map { it.id }
+        val viaGeneric = capRows(
+            mixed.map { Row(it.id, it.subscriptionId, it.favorite, it.score()) },
+            selectedId = "s1",
+            limit = 2,
+        ).map { it.id }
+        T.eq(
+            "Server and generic overloads agree",
+            viaServer,
+            viaGeneric,
+        )
+        T.ok("both paths actually trimmed", viaServer.size < mixed.size) {
+            "kept=${viaServer.size} of ${mixed.size}"
+        }
+
         // ---- the ceiling constant matches the original
         T.eq("ceiling is 700", 700, ServerListPolicy.MAX_BUILT_IN_SERVERS)
     }

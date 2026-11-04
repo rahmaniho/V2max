@@ -132,6 +132,7 @@ dependencies {
     // two implementations never coexist for the same responsibility.
     implementation(project(":core:model"))
     implementation(project(":core:format"))
+    implementation(project(":core:domain"))
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.biometric:biometric:1.1.0")

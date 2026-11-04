@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import ir.v2max.core.domain.ServerListPolicy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -146,20 +147,16 @@ object Repo {
         prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
     }
 
-    /** محدودیت فقط برای منابع عمومی است؛ کانفیگ و اشتراک شخصی هرگز حذف نمی‌شوند. */
-    private const val MAX_BUILT_IN_SERVERS = 700
-
-    private fun capped(list: List<ServerConfig>): List<ServerConfig> {
-        val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet()
-        val builtIn = list.filter { it.subId in builtInIds }
-        if (builtIn.size <= MAX_BUILT_IN_SERVERS) return list
-        val protected = builtIn.filter { it.favorite || it.id == _selectedId.value }
-        val remaining = builtIn.filterNot { it.favorite || it.id == _selectedId.value }
-            .sortedBy { it.score() }
-        val keep = (protected + remaining.take((MAX_BUILT_IN_SERVERS - protected.size).coerceAtLeast(0)))
-            .map { it.id }.toHashSet()
-        return list.filter { it.subId !in builtInIds || it.id in keep }
-    }
+    private fun capped(list: List<ServerConfig>): List<ServerConfig> =
+        ServerListPolicy.capBuiltIn(
+            list = list,
+            builtInSubscriptionIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet(),
+            selectedId = _selectedId.value,
+            idOf = { it.id },
+            subscriptionIdOf = { it.subId },
+            isFavorite = { it.favorite },
+            scoreOf = { it.score() },
+        )
 
     /**
      * افزودن کانفیگ‌های جدید با حذف تکراری‌ها.

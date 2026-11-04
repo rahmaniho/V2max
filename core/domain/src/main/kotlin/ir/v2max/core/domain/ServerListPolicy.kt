@@ -39,23 +39,52 @@ object ServerListPolicy {
         builtInSubscriptionIds: Set<String>,
         selectedId: String = "",
         limit: Int = MAX_BUILT_IN_SERVERS,
-    ): List<Server> {
+    ): List<Server> = capBuiltIn(
+        list = list,
+        builtInSubscriptionIds = builtInSubscriptionIds,
+        selectedId = selectedId,
+        limit = limit,
+        idOf = { it.id },
+        subscriptionIdOf = { it.subscriptionId },
+        isFavorite = { it.favorite },
+        scoreOf = { it.score() },
+    )
+
+    /**
+     * The same rule expressed over any element type.
+     *
+     * Callers that have not migrated to [Server] yet — the app's persistence
+     * layer still holds its own `ServerConfig` — can apply the policy through
+     * accessors instead of building an adapter for a list that may hold
+     * hundreds of entries. The [Server] overload above delegates here, so both
+     * paths run this single implementation.
+     */
+    fun <T> capBuiltIn(
+        list: List<T>,
+        builtInSubscriptionIds: Set<String>,
+        selectedId: String = "",
+        limit: Int = MAX_BUILT_IN_SERVERS,
+        idOf: (T) -> String,
+        subscriptionIdOf: (T) -> String,
+        isFavorite: (T) -> Boolean,
+        scoreOf: (T) -> Int,
+    ): List<T> {
         if (builtInSubscriptionIds.isEmpty()) return list
 
-        val builtIn = list.filter { it.subscriptionId in builtInSubscriptionIds }
+        val builtIn = list.filter { subscriptionIdOf(it) in builtInSubscriptionIds }
         if (builtIn.size <= limit) return list
 
-        fun isProtected(s: Server) = s.favorite || s.id == selectedId
+        fun isProtected(s: T) = isFavorite(s) || idOf(s) == selectedId
 
         val protected = builtIn.filter(::isProtected)
-        val remaining = builtIn.filterNot(::isProtected).sortedBy { it.score() }
+        val remaining = builtIn.filterNot(::isProtected).sortedBy { scoreOf(it) }
 
         val keep = (protected + remaining.take((limit - protected.size).coerceAtLeast(0)))
-            .map { it.id }
+            .map { idOf(it) }
             .toHashSet()
 
         // Personal servers are untouched regardless of the cap.
-        return list.filter { it.subscriptionId !in builtInSubscriptionIds || it.id in keep }
+        return list.filter { subscriptionIdOf(it) !in builtInSubscriptionIds || idOf(it) in keep }
     }
 
     /**
