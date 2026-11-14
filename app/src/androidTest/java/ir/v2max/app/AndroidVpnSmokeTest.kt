@@ -23,6 +23,7 @@ import ir.v2max.app.data.TunnelUiState
 import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbeResult
+import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.SpeedTester
 import ir.v2max.app.net.UpdateInstaller
 import ir.v2max.app.service.Notifier
@@ -34,6 +35,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -79,11 +81,47 @@ class AndroidVpnSmokeTest {
             assertTrue("Pending update was not persisted", saved.contains("99.0.0"))
             assertTrue("Update notification was not posted", Notifier.updateAvailable(context, update.version))
             val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+            // NotificationManager enqueues delivery on a system thread; notify()
+            // may return before activeNotifications reflects the new record.
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            while (SystemClock.elapsedRealtime() < deadline &&
+                manager.activeNotifications.none { it.id == 1003 }) SystemClock.sleep(50)
             assertTrue("No system notification for update", manager.activeNotifications.any { it.id == 1003 })
         } finally {
             Notifier.cancelUpdate(context)
             Repo.saveUpdateInfo(previous)
             Repo.saveSettings(oldSettings)
+        }
+    }
+
+    @Test fun backupRestoreWritesAllSectionsDuringSuspendedListPersistence() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        Repo.init(context)
+        val previous = Repo.exportBackup()
+        val oldSettings = Repo.settings.value.copy()
+        val oldSelection = Repo.selectedId.value
+        val backup = """{"version":3,
+            "servers":[{"id":"backup-server","address":"example.org","uuid":"fixture"}],
+            "subs":[{"id":"backup-source","url":"https://example.org/sub"}],
+            "settings":{"multiPing":true,"autoUpdateCheck":false},
+            "selectedId":"backup-server"}"""
+        Repo.suspendPersist(true)
+        try {
+            assertTrue("Backup restore failed", Repo.restoreBackup(backup))
+            val storage = context.getSharedPreferences("v2max_store", Context.MODE_PRIVATE)
+            assertTrue(storage.getString("servers_v1", "").orEmpty().contains("backup-server"))
+            assertTrue(storage.getString("subs_v1", "").orEmpty().contains("backup-source"))
+            assertTrue(storage.getString("settings_v1", "").orEmpty().contains("\"multiPing\":true"))
+            assertEquals("backup-server", storage.getString("selected_v1", ""))
+            assertEquals("backup-server", Repo.selectedId.value)
+        } finally {
+            Repo.suspendPersist(false)
+            if (!Repo.restoreBackup(previous)) {
+                // An empty initial repository has no importable profiles.
+                Repo.resetEverything()
+                Repo.saveSettings(oldSettings)
+                Repo.setSelected(oldSelection)
+            }
         }
     }
 
@@ -227,6 +265,8 @@ class AndroidVpnSmokeTest {
         Repo.addServers(listOf(server))
         Repo.setSelected(server.id)
         assertNull("CI must grant ACTIVATE_VPN app-op before this test", VpnService.prepare(context))
+        val networkBeforeVpn = CarrierProbe.networkHandle(context)
+        assertNotNull("No active network before starting the VPN", networkBeforeVpn)
 
         try {
             assertTrue("Pre-connect protocol test failed: ${Repo.scan.value.message}\n${XrayCore.logs().joinToString("\n")}",
@@ -239,6 +279,19 @@ class AndroidVpnSmokeTest {
             assertEquals("VPN did not connect: ${Repo.tunnel.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
 
+            assertTunTraffic(instrumentation)
+            assertEquals("The VPN app's underlying network changed during tunnel setup",
+                networkBeforeVpn, CarrierProbe.networkHandle(context))
+
+            // Very fast local responses may take less than one whole millisecond.
+            // Repeated preflights must accept them without interrupting the live VPN.
+            repeat(5) { attempt ->
+                val result = runBlocking {
+                    SmartConnect.scanAndConnect(context, autoConnect = false, limit = 1, preferredId = server.id)
+                }
+                assertNotNull("Preflight $attempt failed: ${Repo.scan.value.message}", result)
+                assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            }
             assertTunTraffic(instrumentation)
 
             // Test real native Xray controllers with actual traffic before, during,
@@ -321,7 +374,8 @@ class AndroidVpnSmokeTest {
             assertTrue(V2maxVpnService.activeProfileMatches(server))
             assertTrue(!V2maxVpnService.activeProfileMatches(edited))
             Repo.updateServer(edited)
-            assertTrue(runBlocking { SmartConnect.connectVerified(context, edited.id) })
+            val editedPreflight = runBlocking { SmartConnect.connectVerified(context, edited.id) }
+            assertTrue("Edited profile preflight failed: ${Repo.scan.value.message}", editedPreflight)
             val editDeadline = SystemClock.elapsedRealtime() + 60_000
             while (SystemClock.elapsedRealtime() < editDeadline &&
                 !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(edited))) {

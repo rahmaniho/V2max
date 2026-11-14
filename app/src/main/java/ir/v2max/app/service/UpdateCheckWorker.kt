@@ -9,8 +9,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import ir.v2max.app.data.Repo
-import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.net.UpdateChecker
+import ir.v2max.app.net.UpdateCoordinator
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.TimeUnit
 
@@ -19,28 +19,15 @@ class UpdateCheckWorker(context: Context, params: WorkerParameters) : CoroutineW
     override suspend fun doWork(): Result {
         return try {
             Repo.init(applicationContext)
-            if (!Repo.settings.value.autoUpdateCheck) return Result.success()
-            val result = UpdateChecker.checkForUpdate()
-            // The user may have turned checks off while the request was in flight.
-            if (!Repo.settings.value.autoUpdateCheck) return Result.success()
-            when (result) {
-                is UpdateChecker.Result.Available -> {
-                    Repo.saveUpdateInfo(result.info)
-                    Repo.markUpdateChecked()
-                    if (Repo.lastNotifiedUpdate() != result.info.version &&
-                        Notifier.updateAvailable(applicationContext, result.info.version)) {
-                        Repo.markUpdateNotified(result.info.version)
-                    }
-                    Result.success()
-                }
-                UpdateChecker.Result.Current -> {
-                    Repo.saveUpdateInfo(UpdateInfo())
-                    Repo.markUpdateChecked()
+            val result = UpdateCoordinator.check(automatic = true) { info ->
+                if (info.version.isBlank()) {
                     Notifier.cancelUpdate(applicationContext)
-                    Result.success()
+                } else if (Repo.lastNotifiedUpdate() != info.version &&
+                    Notifier.updateAvailable(applicationContext, info.version)) {
+                    Repo.markUpdateNotified(info.version)
                 }
-                UpdateChecker.Result.Unavailable -> Result.retry()
             }
+            if (result == UpdateChecker.Result.Unavailable) Result.retry() else Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {

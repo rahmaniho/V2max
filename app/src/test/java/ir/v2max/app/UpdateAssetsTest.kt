@@ -29,5 +29,8 @@ class UpdateAssetsTest {
         assertNull(UpdateAssets.select(listOf(asset("app-universal-release.apk", "https://example.org/update.apk")), listOf("arm64-v8a")))
         assertNull(UpdateAssets.select(listOf(asset("app-universal-release.apk.sig")), listOf("arm64-v8a")))
         assertNull(UpdateAssets.select(emptyList(), listOf("arm64-v8a")))
+        assertFalse(UpdateAssets.isOfficialDownload("https://github.com.evil.example/rahmaniho/V2max/releases/download/v2/file.apk"))
+        assertFalse(UpdateAssets.isOfficialDownload("https://github.com/rahmaniho/V2max/releases/tag/v2"))
+        assertTrue(UpdateAssets.isOfficialDownload("https://github.com/rahmaniho/V2max/releases/download/v2/file.apk"))
     }
 }

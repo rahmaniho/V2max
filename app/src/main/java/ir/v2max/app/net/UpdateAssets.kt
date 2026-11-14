@@ -5,9 +5,11 @@ internal object UpdateAssets {
     data class Asset(val name: String, val url: String)
     private const val RELEASE_DOWNLOAD = "https://github.com/rahmaniho/V2max/releases/download/"
 
+    fun isOfficialDownload(url: String): Boolean = url.startsWith(RELEASE_DOWNLOAD, ignoreCase = true)
+
     fun select(assets: List<Asset>, supportedAbis: List<String>): Asset? {
         val apks = assets.filter {
-            it.name.endsWith(".apk", ignoreCase = true) && it.url.startsWith(RELEASE_DOWNLOAD, ignoreCase = true)
+            it.name.endsWith(".apk", ignoreCase = true) && isOfficialDownload(it.url)
         }
         // Universal APKs are preferable when available, including on emulators and 32-bit devices.
         apks.firstOrNull { it.name.contains("universal", ignoreCase = true) }?.let { return it }

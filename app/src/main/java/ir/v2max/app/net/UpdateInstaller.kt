@@ -49,85 +49,91 @@ object UpdateInstaller {
         url: String,
         onProgress: (Long, Long) -> Unit = { _, _ -> }
     ): Result = withContext(Dispatchers.IO) {
+        var target: File? = null
         try {
+            if (!UpdateAssets.isOfficialDownload(url)) {
+                return@withContext Result.Failure("آدرس دریافت به‌روزرسانی معتبر نیست")
+            }
             val dir = File(context.cacheDir, "updates").apply { mkdirs() }
-            dir.listFiles()?.forEach { it.delete() }
-            val target = File(dir, "v2max-update.apk")
+            // Only abandoned files are removed. Concurrent downloads use distinct
+            // paths, so cancellation cannot delete another update being installed.
+            val cutoff = System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1)
+            dir.listFiles()?.filter { it.lastModified() < cutoff }?.forEach { it.delete() }
+            val file = File.createTempFile("v2max-", ".apk", dir)
+            target = file
 
             val request = Request.Builder().url(url).header("User-Agent", "V2max").build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.Failure("دانلود ناموفق (${response.code})")
+            when (val transfer = UpdateTransfer.save(client.newCall(request), file, onProgress)) {
+                is UpdateTransfer.Result.Failure -> {
+                    file.delete()
+                    return@withContext Result.Failure(transfer.message)
                 }
-                val body = response.body ?: return@withContext Result.Failure("پاسخ خالی بود")
-                val total = body.contentLength()
-                body.byteStream().use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var downloaded = 0L
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            onProgress(downloaded, total)
-                        }
-                    }
-                }
+                UpdateTransfer.Result.Complete -> Unit
             }
-
-            if (!target.exists() || target.length() < 1_000_000L) {
-                target.delete()
+            coroutineContext.ensureActive()
+            if (!file.exists() || file.length() < 1_000_000L) {
+                file.delete()
                 return@withContext Result.Failure("فایل دانلودشده معتبر نیست")
             }
-
-            if (!sameSignature(context, target)) {
-                target.delete()
+            if (!sameSignature(context, file)) {
+                file.delete()
                 return@withContext Result.Failure("امضای فایل با نسخه‌ی نصب‌شده یکسان نیست؛ نصب لغو شد")
             }
-
-            Result.Ready(target)
+            Result.Ready(file)
         } catch (e: CancellationException) {
-            File(context.cacheDir, "updates/v2max-update.apk").delete()
+            target?.delete()
             throw e
         } catch (t: Exception) {
-            File(context.cacheDir, "updates/v2max-update.apk").delete()
+            target?.delete()
             Log.w(TAG, "download failed", t)
-            Result.Failure(t.message ?: "خطای شبکه")
+            Result.Failure("دریافت به‌روزرسانی ناموفق بود")
         }
     }
 
     /** نصب APK با PackageInstaller (بدون خروج از برنامه) */
-    fun install(context: Context, apk: File): Boolean = runCatching {
-        val installer = context.packageManager.packageInstaller
-        val params = PackageInstaller.SessionParams(
-            PackageInstaller.SessionParams.MODE_FULL_INSTALL
-        ).apply {
-            setAppPackageName(context.packageName)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
-            }
-        }
-        val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            apk.inputStream().use { input ->
-                session.openWrite("v2max.apk", 0, apk.length()).use { output ->
-                    input.copyTo(output)
-                    session.fsync(output)
+    fun install(context: Context, apk: File): Boolean {
+        var installer: PackageInstaller? = null
+        var sessionId: Int? = null
+        return try {
+            // Recheck immediately before handing the file to Android's installer.
+            if (!sameSignature(context, apk)) return false
+            val packageInstaller = context.packageManager.packageInstaller
+            installer = packageInstaller
+            val params = PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL
+            ).apply {
+                setAppPackageName(context.packageName)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
                 }
             }
-            val callbackIntent = Intent(context, InstallResultReceiver::class.java)
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE
-                else 0
-            val pending = PendingIntent.getBroadcast(context, sessionId, callbackIntent, flags)
-            session.commit(pending.intentSender)
+            val id = packageInstaller.createSession(params)
+            sessionId = id
+            packageInstaller.openSession(id).use { session ->
+                apk.inputStream().use { input ->
+                    session.openWrite("v2max.apk", 0, apk.length()).use { output ->
+                        input.copyTo(output)
+                        session.fsync(output)
+                    }
+                }
+                val callbackIntent = Intent(context, InstallResultReceiver::class.java)
+                val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+                val pending = PendingIntent.getBroadcast(context, id, callbackIntent, flags)
+                session.commit(pending.intentSender)
+            }
+            true
+        } catch (t: Exception) {
+            sessionId?.let { id -> runCatching { installer?.abandonSession(id) } }
+            Log.w(TAG, "install failed", t)
+            false
+        } finally {
+            // PackageInstaller has its own session copy; remove our private APK copy.
+            val isPrivateUpdate = runCatching {
+                apk.canonicalFile.parentFile == File(context.cacheDir, "updates").canonicalFile
+            }.getOrDefault(false)
+            if (isPrivateUpdate) apk.delete()
         }
-        true
-    }.getOrElse {
-        Log.w(TAG, "install failed", it)
-        false
     }
 
     /** مقایسه‌ی امضای APK دانلودشده با بسته‌ی نصب‌شده */

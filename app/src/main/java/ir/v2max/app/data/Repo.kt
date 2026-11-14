@@ -40,6 +40,8 @@ object Repo {
 
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
+    // Invalidates automatic checks even if the user switches the setting off and back on.
+    private var automaticUpdateEpoch = 0L
 
     private val _selectedId = MutableStateFlow("")
     val selectedId: StateFlow<String> = _selectedId.asStateFlow()
@@ -656,10 +658,33 @@ object Repo {
         prefs?.edit()?.putString(KEY_UPDATE_NOTIFIED, version)?.apply()
     }
 
+    /**
+     * Atomically gate automatic results against a setting change. The short
+     * notification callback runs under the same lock so disabling checks can
+     * never be followed by a late notification from an already-finished check.
+     */
+    @Synchronized
+    internal fun beginAutomaticUpdateCheck(): Long? =
+        automaticUpdateEpoch.takeIf { _settings.value.autoUpdateCheck }
+
+    @Synchronized
+    internal fun automaticUpdateCheckIsCurrent(epoch: Long): Boolean =
+        _settings.value.autoUpdateCheck && automaticUpdateEpoch == epoch
+
+    @Synchronized
+    internal fun completeUpdateCheck(info: UpdateInfo, automaticEpoch: Long?, onApplied: (UpdateInfo) -> Unit): Boolean {
+        if (automaticEpoch != null && !automaticUpdateCheckIsCurrent(automaticEpoch)) return false
+        saveUpdateInfo(info)
+        markUpdateChecked()
+        runCatching { onApplied(info) }
+        return true
+    }
+
     // ---------------------------------------------------------------- settings
 
     @Synchronized
     fun saveSettings(s: AppSettings) {
+        if (_settings.value.autoUpdateCheck != s.autoUpdateCheck) automaticUpdateEpoch++
         _settings.value = s
         persistSettings()
     }
@@ -683,28 +708,50 @@ object Repo {
         )
     )
 
+    /** Call from an I/O dispatcher: restore succeeds only after durable storage confirms the write. */
     @Synchronized
     fun restoreBackup(json: String): Boolean {
-        // Decode and migrate completely before replacing any live repository state.
+        val storage = prefs ?: return false
+        return restoreBackup(json) { servers, subscriptions, settings, selected ->
+            // SharedPreferences updates its memory cache even when commit fails.
+            // Keep the old values so a failed write does not expose a half-restore
+            // to later readers in this process; disk failure is still reported.
+            val keys = listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)
+            val before = runCatching { keys.map { storage.getString(it, null) } }.getOrNull()
+                ?: return@restoreBackup false
+            val written = runCatching {
+                storage.edit().putString(KEY_SERVERS, servers)
+                    .putString(KEY_SUBS, subscriptions)
+                    .putString(KEY_SETTINGS, settings)
+                    .putString(KEY_SELECTED, selected)
+                    .commit()
+            }.getOrDefault(false)
+            if (!written) runCatching {
+                val editor = storage.edit()
+                keys.zip(before).forEach { (key, value) -> editor.putString(key, value) }
+                editor.apply()
+            }
+            written
+        }
+    }
+
+    /** Storage is injectable so failure and all-or-nothing publication can be tested without Android. */
+    @Synchronized
+    internal fun restoreBackup(json: String, persist: (String, String, String, String) -> Boolean): Boolean {
         val payload = Migrations.decodeBackup(json) ?: return false
         if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
         val selected = payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
             ?: payload.servers.firstOrNull()?.id.orEmpty()
-        // Serialize first, then use one preferences transaction even if a
-        // subscription sync has temporarily suspended ordinary list writes.
         val encoded = runCatching {
             Triple(gson.toJson(payload.servers), gson.toJson(payload.subs), gson.toJson(payload.settings))
         }.getOrNull() ?: return false
-        val stored = runCatching {
-            prefs?.edit()?.putString(KEY_SERVERS, encoded.first)
-                ?.putString(KEY_SUBS, encoded.second)
-                ?.putString(KEY_SETTINGS, encoded.third)
-                ?.putString(KEY_SELECTED, selected)
-                ?.apply()
-        }.isSuccess
-        if (!stored) return false
+        // One transaction replaces all sections, even during suspended list writes.
+        if (!runCatching { persist(encoded.first, encoded.second, encoded.third, selected) }.getOrDefault(false)) {
+            return false
+        }
         _servers.value = payload.servers
         _subs.value = payload.subs
+        if (_settings.value.autoUpdateCheck != payload.settings.autoUpdateCheck) automaticUpdateEpoch++
         _settings.value = payload.settings
         _selectedId.value = selected
         return true

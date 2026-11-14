@@ -13,6 +13,7 @@ import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
+import ir.v2max.app.net.UpdateCoordinator
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.net.SubscriptionBootstrap
 import ir.v2max.app.net.SubscriptionPolicy
@@ -63,6 +64,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val syncMutex = kotlinx.coroutines.sync.Mutex()
     private val actionLock = Any()
     private var actionGeneration = 0L
+    private val updateDownloadLock = Any()
+    private var updateDownloadActive = false
+    private var updateDownloadAttempt = 0L
 
     private fun cancelStartupForUserAction(): Long {
         val generation = synchronized(actionLock) { ++actionGeneration }
@@ -635,17 +639,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch(errorHandler) {
             if (manual) showMessage("در حال بررسی نسخه‌ی جدید…")
-            val result = UpdateChecker.checkForUpdate()
-            if (!manual && !Repo.settings.value.autoUpdateCheck) return@launch
+            val result = UpdateCoordinator.check(automatic = !manual) { info ->
+                if (info.version.isBlank()) ir.v2max.app.service.Notifier.cancelUpdate(getApplication())
+            } ?: return@launch
             when (result) {
                 is UpdateChecker.Result.Available -> {
-                    Repo.markUpdateChecked()
-                    Repo.saveUpdateInfo(result.info)
                     if (!manual) showMessage("نسخه‌ی ${result.info.version} منتشر شده است")
                 }
                 UpdateChecker.Result.Current -> {
-                    Repo.markUpdateChecked()
-                    Repo.saveUpdateInfo(ir.v2max.app.data.UpdateInfo())
                     if (manual) showMessage("برنامه به‌روز است (نسخه‌ی فعلی)")
                 }
                 UpdateChecker.Result.Unavailable -> {
@@ -661,31 +662,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** دانلود و نصب مستقیم نسخه‌ی جدید (با بررسی امضا) */
     fun downloadAndInstallUpdate() {
-        val info = Repo.update.value
-        val url = info.apkUrl.ifBlank { "" }
+        val url = Repo.update.value.apkUrl
         val app = getApplication<Application>()
         if (url.isBlank()) {
             showMessage("لینک APK در دسترس نیست؛ صفحه‌ی انتشار باز می‌شود")
             openUpdatePage()
             return
         }
-        viewModelScope.launch(errorHandler) {
-            Repo.updateProgress.value = 0.01f
+        // Set before launching so two quick taps cannot start concurrent installs.
+        val attempt = synchronized(updateDownloadLock) {
+            if (updateDownloadActive || Repo.updateProgress.value > 0f) null else {
+                updateDownloadActive = true
+                Repo.updateProgress.value = 0.01f
+                updateDownloadAttempt += 1L
+                updateDownloadAttempt
+            }
+        }
+        if (attempt == null) {
+            showMessage("دریافت به‌روزرسانی در حال انجام است")
+            return
+        }
+        val job = viewModelScope.launch(errorHandler) {
             showMessage("در حال دانلود به‌روزرسانی…")
             val result = ir.v2max.app.net.UpdateInstaller.download(app, url) { done, total ->
-                if (total > 0) Repo.updateProgress.value = (done.toFloat() / total).coerceIn(0f, 0.99f)
+                synchronized(updateDownloadLock) {
+                    if (updateDownloadActive && updateDownloadAttempt == attempt && total > 0) {
+                        Repo.updateProgress.value = (done.toFloat() / total).coerceIn(0.01f, 0.99f)
+                    }
+                }
             }
-            Repo.updateProgress.value = 0f
             when (result) {
                 is ir.v2max.app.net.UpdateInstaller.Result.Ready -> {
-                    val started = ir.v2max.app.net.UpdateInstaller.install(app, result.file)
-                    showMessage(
-                        if (started) "نصب‌کننده باز شد؛ تأیید کنید"
-                        else "شروع نصب ممکن نشد"
-                    )
+                    // Copying a large APK into PackageInstaller must not block the UI thread.
+                    val installed = try {
+                        withContext(Dispatchers.IO) {
+                            ir.v2max.app.net.UpdateInstaller.install(app, result.file)
+                        }
+                    } finally {
+                        result.file.delete()
+                    }
+                    showMessage(if (installed) "نصب‌کننده باز شد؛ تأیید کنید" else "شروع نصب ممکن نشد")
                 }
                 is ir.v2max.app.net.UpdateInstaller.Result.Failure -> showMessage(result.message)
                 is ir.v2max.app.net.UpdateInstaller.Result.Progress -> Unit
+            }
+        }
+        job.invokeOnCompletion {
+            synchronized(updateDownloadLock) {
+                if (updateDownloadAttempt == attempt) {
+                    updateDownloadActive = false
+                    Repo.updateProgress.value = 0f
+                }
             }
         }
     }
@@ -746,11 +773,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun importBackup(text: String) {
         cancelStartupForUserAction()
-        if (Repo.restoreBackup(text)) {
-            syncUpdateSchedule()
-            showMessage("پشتیبان با موفقیت بازیابی شد")
-        } else {
-            showMessage("فایل پشتیبان معتبر نیست")
+        viewModelScope.launch(errorHandler) {
+            val restored = withContext(Dispatchers.IO) { Repo.restoreBackup(text) }
+            if (restored) {
+                syncUpdateSchedule()
+                showMessage("پشتیبان با موفقیت بازیابی شد")
+            } else {
+                showMessage("بازیابی انجام نشد؛ فایل و فضای ذخیره‌سازی را بررسی کنید")
+            }
         }
     }
 
@@ -758,11 +788,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun exportEncryptedBackup(password: String): String? =
         ir.v2max.app.util.SecureBackup.encrypt(exportBackup(), password)
 
-    fun importEncryptedBackup(text: String, password: String): Boolean {
+    suspend fun importEncryptedBackup(text: String, password: String): Boolean {
         if (!ir.v2max.app.util.SecureBackup.isEncrypted(text)) return false
-        val plain = ir.v2max.app.util.SecureBackup.decrypt(text, password) ?: return false
+        val plain = withContext(Dispatchers.Default) {
+            ir.v2max.app.util.SecureBackup.decrypt(text, password)
+        } ?: return false
         cancelStartupForUserAction()
-        return Repo.restoreBackup(plain).also { if (it) syncUpdateSchedule() }
+        val restored = withContext(Dispatchers.IO) { Repo.restoreBackup(plain) }
+        if (restored) syncUpdateSchedule()
+        return restored
     }
 
     fun resetData() {

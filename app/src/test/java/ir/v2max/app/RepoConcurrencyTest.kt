@@ -34,6 +34,8 @@ class RepoConcurrencyTest {
     private fun server(id: String, source: String, address: String = "$id.example.org") =
         ServerConfig(id = id, name = id, address = address, uuid = id, subId = source)
 
+    private fun restore(json: String): Boolean = Repo.restoreBackup(json) { _, _, _, _ -> true }
+
     @Test fun `only one overlapping response can replace a source revision`() {
         val source = Subscription(id = "source", url = "https://example.org/sub", updatedAt = 1)
         Repo.addSubscription(source)
@@ -82,7 +84,7 @@ class RepoConcurrencyTest {
             "settings":{"multiPing":true,"fragment":false},
             "selectedId":"legacy"
         }""".trimIndent()
-        assertTrue(Repo.restoreBackup(legacy))
+        assertTrue(restore(legacy))
         assertEquals("legacy", Repo.selectedId.value)
         assertEquals("old-sub", Repo.subs.value.single().id)
         assertTrue(Repo.settings.value.multiPing)
@@ -91,17 +93,49 @@ class RepoConcurrencyTest {
         assertEquals("pw", restored.obfsPassword)
         assertEquals("", restored.hoppingPorts)
         assertEquals("", restored.obfsMinPacketSize)
-        assertTrue(Repo.restoreBackup(Repo.exportBackup()))
+        assertTrue(restore(Repo.exportBackup()))
         assertEquals("legacy", Repo.selectedId.value)
         assertEquals("", Repo.servers.value.single().hoppingPorts)
     }
 
     @Test fun `legacy records with missing ids receive distinct generated ids`() {
-        assertTrue(Repo.restoreBackup("""{"version":2,"servers":[
+        assertTrue(restore("""{"version":2,"servers":[
             {"address":"one.example.org"},{"address":"two.example.org"}
         ],"subs":[{"url":"https://one.example.org"},{"url":"https://two.example.org"}]}"""))
         assertEquals(2, Repo.servers.value.map { it.id }.toSet().size)
         assertEquals(2, Repo.subs.value.map { it.id }.toSet().size)
+    }
+
+    @Test fun `failed or unavailable storage never reports a successful restore`() {
+        val backup = """{"version":2,"servers":[{"id":"incoming","address":"example.org"}]}"""
+        Repo.updateServer(server("keep", "personal"))
+        Repo.setSelected("keep")
+        // Unit tests do not initialize Android SharedPreferences.
+        assertFalse(Repo.restoreBackup(backup))
+        assertFalse(Repo.restoreBackup(backup) { _, _, _, _ -> false })
+        assertFalse(Repo.restoreBackup(backup) { _, _, _, _ -> throw IllegalStateException("storage failed") })
+        assertEquals("keep", Repo.selectedId.value)
+        assertEquals("keep", Repo.servers.value.single().id)
+    }
+
+    @Test fun `successful restore commits all sections before publishing state`() {
+        val backup = """{"version":2,"servers":[{"id":"incoming","address":"example.org"}],
+            "subs":[{"id":"source","url":"https://example.org/sub"}],
+            "settings":{"multiPing":true},"selectedId":"incoming"}"""
+        var writes = 0
+        assertTrue(Repo.restoreBackup(backup) { servers, subs, settings, selected ->
+            writes++
+            assertTrue(Repo.servers.value.isEmpty())
+            assertTrue(servers.contains("incoming"))
+            assertTrue(subs.contains("source"))
+            assertTrue(settings.contains("multiPing"))
+            assertEquals("incoming", selected)
+            true
+        })
+        assertEquals(1, writes)
+        assertEquals("incoming", Repo.selectedId.value)
+        assertEquals("source", Repo.subs.value.single().id)
+        assertTrue(Repo.settings.value.multiPing)
     }
 
     @Test fun `invalid and future backups leave repository untouched`() {
@@ -122,7 +156,7 @@ class RepoConcurrencyTest {
             "{\"version\":2,\"servers\":[{\"id\":\"same\"},{\"id\":\"same\"}]}",
             "{\"version\":2,\"subs\":[{\"id\":\"same\"},{\"id\":\"same\"}]}"
         ).forEach { input ->
-            assertFalse("Unexpectedly restored: $input", Repo.restoreBackup(input))
+            assertFalse("Unexpectedly restored: $input", restore(input))
             assertEquals("keep", Repo.selectedId.value)
             assertEquals("keep", Repo.servers.value.single().id)
         }

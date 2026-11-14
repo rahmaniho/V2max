@@ -173,7 +173,7 @@ object XrayCore {
         return try {
             val c = controller ?: return -1L
             if (!c.isRunning) return -1L
-            c.measureDelay(url)
+            NativeDelay.normalize(c.measureDelay(url))
         } catch (t: Throwable) {
             -1L
         }
@@ -210,7 +210,7 @@ object XrayCore {
     /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل). متن خطاها بدون اطلاعات محرمانه ذخیره می‌شود. */
     fun measureOutboundDelay(config: String, url: String): Long {
         return try {
-            Libv2ray.measureOutboundDelay(config, url)
+            NativeDelay.normalize(Libv2ray.measureOutboundDelay(config, url))
         } catch (t: Throwable) {
             val reason = t.message.orEmpty()
             val safe = when {

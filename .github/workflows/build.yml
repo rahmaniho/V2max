@@ -58,9 +58,9 @@ jobs:
 
 
       # Never restore a release key from Actions caches, which PR workflows can read.
-      # Branch/PR APKs use an ephemeral debug signing key and are CI artifacts only.
-      - name: Prepare release signing key (main push only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Without explicit owner approval, all APKs use an ephemeral CI-only key.
+      - name: Prepare release signing key (approved main push only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
         env:
           KEYSTORE_BASE64: ${{ secrets.V2MAX_RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.V2MAX_RELEASE_STORE_PASSWORD }}
@@ -157,9 +157,9 @@ jobs:
       - name: Build release APK
         id: build_apk
         env:
-          V2MAX_RELEASE_STORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_STORE_PASSWORD || '' }}
-          V2MAX_RELEASE_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_KEY_ALIAS || '' }}
-          V2MAX_RELEASE_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_KEY_PASSWORD || '' }}
+          V2MAX_RELEASE_STORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_STORE_PASSWORD || '' }}
+          V2MAX_RELEASE_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_KEY_ALIAS || '' }}
+          V2MAX_RELEASE_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_KEY_PASSWORD || '' }}
         run: |
           set -o pipefail
           gradle --no-daemon assembleRelease 2>&1 | tee build-out.log
@@ -170,8 +170,8 @@ jobs:
         env:
           BUILD_OUTCOME: ${{ steps.build_apk.outcome }}
         run: |
-          if [ -f build-out.log ]; then
-            grep -E "^(e|w): |error:|FAILURE:|What went wrong|Caused by|Missing class|R8:|Execution failed" build-out.log | head -20 | while IFS= read -r line; do
+          if [ "$BUILD_OUTCOME" != success ] && [ -f build-out.log ]; then
+            grep -E "^e: |error:|FAILURE:|What went wrong|Caused by|Missing class|R8:|Execution failed" build-out.log | head -20 | while IFS= read -r line; do
               echo "::error title=build::$line"
             done
             tail -25 build-out.log | while IFS= read -r line; do
@@ -188,11 +188,11 @@ jobs:
           fi
 
       - name: Verify release signer matches installed v2.3.1
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
         run: bash scripts/verify-release-signing.sh
 
       - name: Check release guard rejects the CI-only key
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main' || vars.V2MAX_RELEASE_APPROVED != 'true'
         run: |
           set +e
           output=$(bash scripts/verify-release-signing.sh 2>&1)
@@ -222,6 +222,15 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-vpn-smoke.sh
 
+      - name: Android 35 update permission and signer smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/run-android-update-smoke.sh
+
       - name: Upload APKs
         uses: actions/upload-artifact@v4
         with:
@@ -231,7 +240,7 @@ jobs:
 
   publish:
     # Keep write access out of Gradle, tests, third-party dependencies and PR runs.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: build
     runs-on: ubuntu-latest
     permissions:
