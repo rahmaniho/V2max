@@ -91,6 +91,13 @@ class AndroidInstallFlowTest {
             it.id == Notifier.INSTALL_NOTIFICATION_ID && it.tag == Notifier.installNotificationTag(id)
         }
 
+    private fun awaitNotification(id: Int, expected: Boolean) {
+        // NotificationManager applies notify/cancel asynchronously on some APIs.
+        val deadline = SystemClock.elapsedRealtime() + 5_000
+        while (SystemClock.elapsedRealtime() < deadline && hasNotification(id) != expected) SystemClock.sleep(50)
+        assertEquals("Unexpected installer notification for session $id", expected, hasNotification(id))
+    }
+
     @Test fun missingConfirmationReportsFailureWithoutChangingVpnState() {
         val id = 727001
         fixtureIds.add(id)
@@ -100,7 +107,7 @@ class AndroidInstallFlowTest {
         assertEquals("صفحهٔ تأیید نصب دریافت نشد؛ دوباره تلاش کنید", Repo.installMessage.value)
         assertEquals(original, Repo.tunnel.value)
         assertNull(InstallConfirmation.pending.value)
-        assertFalse(hasNotification(id))
+        awaitNotification(id, false)
     }
 
     @Test fun pendingConfirmationSurvivesLaunchFailureAndOldSessionResults() {
@@ -118,10 +125,10 @@ class AndroidInstallFlowTest {
         assertEquals(original, Repo.tunnel.value)
         val denied = InstrumentationRegistry.getArguments().getString("expectNotificationDenied") == "true"
         if (denied) {
-            assertFalse("A notification was posted without permission", hasNotification(id))
+            awaitNotification(id, false)
             assertTrue(Repo.installMessage.value.contains("برنامه را باز"))
         } else {
-            assertTrue("No recoverable installer notification", hasNotification(id))
+            awaitNotification(id, true)
         }
 
         val rejectingContext = object : ContextWrapper(context) {
@@ -133,7 +140,7 @@ class AndroidInstallFlowTest {
         assertSame("An older session cleared the current confirmation", request, InstallConfirmation.pending.value)
         receiver.onReceive(context, result(PackageInstaller.STATUS_FAILURE_ABORTED, id))
         assertNull(InstallConfirmation.pending.value)
-        assertFalse(hasNotification(id))
+        awaitNotification(id, false)
         assertEquals("نصب لغو شد", Repo.installMessage.value)
         assertEquals(original, Repo.tunnel.value)
     }
@@ -198,7 +205,7 @@ class AndroidInstallFlowTest {
         val request = requireNotNull(InstallConfirmation.pending.value) { "PackageInstaller did not request confirmation: ${Repo.installMessage.value}" }
         fixtureIds.add(request.sessionId)
         assertTrue("Missing PackageInstaller session id", request.sessionId >= 0)
-        assertTrue("Installer notification was not posted", hasNotification(request.sessionId))
+        awaitNotification(request.sessionId, true)
         awaitNode("in-app installer dialog") { it.text?.toString()?.contains("تأیید نصب به‌روزرسانی") == true }
         click(awaitNode("continue installation") { it.text?.toString() == "ادامه نصب" })
 
@@ -215,7 +222,7 @@ class AndroidInstallFlowTest {
         while (SystemClock.elapsedRealtime() < cancelDeadline && InstallConfirmation.pending.value != null) SystemClock.sleep(100)
         assertNull("Canceled session did not deliver a terminal result", InstallConfirmation.pending.value)
         assertEquals("نصب لغو شد", Repo.installMessage.value)
-        assertFalse("Canceled session left a confirmation notification", hasNotification(request.sessionId))
+        awaitNotification(request.sessionId, false)
         assertTrue("The installed APK was deleted", installedApk.isFile)
     }
 }
