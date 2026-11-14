@@ -81,7 +81,8 @@ object SmartConnect {
         limit: Int = 0,
         preferredId: String? = null,
         excludedIds: Set<String> = emptySet(),
-        exhaustive: Boolean = false
+        exhaustive: Boolean = false,
+        manualFailure: String? = null
     ): VerifiedSelection? {
         val job = currentCoroutineContext()[Job]
         if (job != null) scanJobs.add(job)
@@ -215,11 +216,15 @@ object SmartConnect {
                         bestName = chosen?.displayName().orEmpty(),
                         phase = "پایان",
                         message = when {
-                            chosen == null && outcome.best != null -> "فهرست هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                            chosen == null && outcome.best != null ->
+                                "فهرست هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                            chosen == null && manualFailure != null ->
+                                "سرور انتخابی تأیید نشد. $manualFailure بررسی جایگزین: ${outcome.message}"
                             chosen == null -> outcome.message
                             else -> buildString {
-                                if (preferredId != null && chosen.id != preferredId) append("سرور انتخابی پاسخ نداد؛ جایگزین: ")
-                                else append("سرور تأییدشده: ")
+                                if (manualFailure != null || (preferredId != null && chosen.id != preferredId)) {
+                                    append("سرور انتخابی تأیید نشد؛ جایگزین تأییدشده: ")
+                                } else append("سرور تأییدشده: ")
                                 append("${chosen.displayName()} (${chosen.realPing}ms)")
                                 append(" · ${outcome.testedCount} تست واقعی · اسکن ${outcome.elapsedMs}ms")
                                 append(" · ${outcome.message}")
@@ -272,16 +277,27 @@ object SmartConnect {
 
     /** An explicit selection is honored whenever that same server passes the real test. */
     suspend fun connectVerified(context: Context, serverId: String): Boolean {
-        if (Repo.serverById(serverId) == null) return false
+        if (Repo.serverById(serverId) == null) {
+            Repo.scan.value = ScanState(finished = true, message = "سرور انتخاب‌شده دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+            return false
+        }
         // A manual choice should not wait for hundreds of unrelated public configs.
         if (scanAndConnect(context, autoConnect = true, limit = 1, preferredId = serverId) != null) return true
         currentCoroutineContext().ensureActive()
+        // Keep the actual preflight reason (e.g. incompatible TLS settings or a
+        // changed network), rather than replacing it with an unsupported claim
+        // that the server is dead.
+        val manualFailure = Repo.scan.value.message.ifBlank { "تست پیش از اتصال کامل نشد." }
         if (Repo.servers.value.none { it.id != serverId }) {
-            Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد و جایگزینی وجود ندارد")
+            Repo.scan.value = Repo.scan.value.copy(
+                message = "سرور انتخابی تأیید نشد و جایگزینی وجود ندارد. $manualFailure"
+            )
             return false
         }
-        Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد؛ جستجوی جایگزین…")
-        return scanAndConnect(context, autoConnect = true, excludedIds = setOf(serverId)) != null
+        Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی تأیید نشد؛ جستجوی جایگزین…")
+        return scanAndConnect(
+            context, autoConnect = true, excludedIds = setOf(serverId), manualFailure = manualFailure
+        ) != null
     }
 
     /**

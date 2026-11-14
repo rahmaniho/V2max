@@ -158,6 +158,23 @@ class AndroidUiConnectionTest {
         assertTunTraffic()
     }
 
+    @Test fun failedManualChoiceIsReportedBeforeUsingVerifiedFallback() {
+        // An invalid VLESS encryption mode makes the selected profile fail its
+        // real Xray preflight; the other local profile remains usable.
+        Repo.updateServer(alpha.copy(method = "invalid-fixture-encryption"))
+        grantNotificationsIfNeeded()
+        launchActivity()
+        clickText("سرورها")
+        clickText("UI Alpha")
+        awaitVpnDialog()
+        clickViewId("button1")
+        awaitConnected(beta.id)
+        assertTrue("A failed manual selection was silently replaced: ${Repo.scan.value.message}",
+            Repo.scan.value.message.contains("سرور انتخابی تأیید نشد؛ جایگزین تأییدشده"))
+        assertTrue("The replacement had no successful protocol test", (Repo.serverById(beta.id)?.realPing ?: -1) > 0)
+        assertTunTraffic()
+    }
+
     @Test fun emptyListExplainsWhyConnectionCannotStart() {
         Repo.removeServers(Repo.servers.value.map { it.id })
         grantNotificationsIfNeeded()
