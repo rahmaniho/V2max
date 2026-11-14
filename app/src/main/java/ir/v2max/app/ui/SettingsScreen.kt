@@ -60,6 +60,7 @@ fun SettingsScreen(
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showAutomationWarning by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -466,7 +467,9 @@ fun SettingsScreen(
                 title = "قفل برنامه",
                 subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
                 checked = settings.appLock
-            ) { value -> onChange { it.copy(appLock = value) } }
+            ) { value ->
+                onChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
+            }
         }
 
         item {
@@ -513,11 +516,16 @@ fun SettingsScreen(
         }
 
         item {
-            SettingValue(
-                title = "اتوماسیون با Intent",
-                subtitle = "اتصال/قطع/واردکردن کانفیگ از Tasker یا سایر برنامه‌ها",
-                value = "راهنما"
-            ) { onOpenDiag() }
+            SettingSwitch(
+                title = "اجازهٔ اتوماسیون خارجی",
+                subtitle = if (settings.appLock) "با فعال‌بودن قفل برنامه، فرمان خارجی پذیرفته نمی‌شود"
+                    else "به برنامه‌های دیگر اجازهٔ اتصال، قطع و افزودن کانفیگ می‌دهد؛ فقط در صورت نیاز فعال کنید",
+                checked = settings.allowExternalAutomation && !settings.appLock,
+                enabled = !settings.appLock
+            ) { value ->
+                if (value) showAutomationWarning = true
+                else onChange { it.copy(allowExternalAutomation = false) }
+            }
         }
 
         item { GroupTitle("درباره") }
@@ -528,7 +536,7 @@ fun SettingsScreen(
                     InfoRow("نسخه برنامه", appVersion)
                     InfoRow("هسته", coreVersion)
                     InfoRow("پروتکل‌ها", "VLESS · VMess · Trojan · SS · Hysteria2")
-                    InfoRow("مجوز", "MIT / متن‌باز")
+                    InfoRow("مجوز پروژه", "نیازمند تعیین توسط مالک")
                 }
             }
         }
@@ -555,6 +563,29 @@ fun SettingsScreen(
         }
 
         item { Spacer(Modifier.height(12.dp)) }
+    }
+
+    if (showAutomationWarning) {
+        AlertDialog(
+            onDismissRequest = { showAutomationWarning = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("فعال‌کردن اتوماسیون خارجی؟", color = V2.TextPrimary) },
+            text = {
+                Text(
+                    "پس از فعال‌سازی، هر برنامهٔ نصب‌شده می‌تواند بدون تأیید شما VPN را قطع کند یا کانفیگ اضافه کند. این اجازه در پشتیبان منتقل نمی‌شود. فقط در صورت نیاز آن را فعال کنید.",
+                    color = V2.TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onChange { if (it.appLock) it else it.copy(allowExternalAutomation = true) }
+                    showAutomationWarning = false
+                }) { Text("فعال‌سازی", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutomationWarning = false }) { Text("انصراف", color = V2.TextMuted) }
+            }
+        )
     }
 
     if (showMtuDialog) {
@@ -678,6 +709,7 @@ private fun SettingSwitch(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onChange: (Boolean) -> Unit
 ) {
     GlassCard(Modifier.fillMaxWidth()) {
@@ -696,6 +728,7 @@ private fun SettingSwitch(
             Switch(
                 checked = checked,
                 onCheckedChange = onChange,
+                enabled = enabled,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = V2.Background,
                     checkedTrackColor = V2.Mint,

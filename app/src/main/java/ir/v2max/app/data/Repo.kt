@@ -28,9 +28,13 @@ object Repo {
     private const val KEY_UPDATE_INFO = "pending_update_v1"
     private const val KEY_UPDATE_INFO_VERSION = "pending_update_for_version_v1"
     private const val KEY_UPDATE_NOTIFIED = "last_notified_update_v1"
+    // This file is excluded from Android cloud and device-transfer backups.
+    private const val CONTROL_PREF_NAME = "v2max_control_consent"
+    private const val KEY_EXTERNAL_AUTOMATION = "allow_external_automation"
 
     private val gson = Gson()
     private var prefs: SharedPreferences? = null
+    private var controlPrefs: SharedPreferences? = null
 
     private val _servers = MutableStateFlow<List<ServerConfig>>(emptyList())
     val servers: StateFlow<List<ServerConfig>> = _servers.asStateFlow()
@@ -80,8 +84,11 @@ object Repo {
     @Synchronized
     fun init(context: Context) {
         if (loaded) return
-        val p = context.applicationContext.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val app = context.applicationContext
+        val p = app.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val control = app.getSharedPreferences(CONTROL_PREF_NAME, Context.MODE_PRIVATE)
         prefs = p
+        controlPrefs = control
         // خواندن با مهاجرت ساختار داده (پر کردن کلیدهای جدید با مقدار پیش‌فرض)
         _servers.value = p.getString(KEY_SERVERS, null)?.let {
             Migrations.healList(it, ServerConfig())
@@ -90,11 +97,17 @@ object Repo {
             p.getString(KEY_SUBS, null),
             object : TypeToken<List<Subscription>>() {}.type
         )
-        _settings.value = runCatching {
+        val restoredSettings = runCatching {
             p.getString(KEY_SETTINGS, null)?.let {
                 Migrations.heal(it, AppSettings()) ?: gson.fromJson(it, AppSettings::class.java)
             }
         }.getOrNull() ?: AppSettings()
+        val consent = runCatching { control.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
+        _settings.value = restoredSettings.copy(allowExternalAutomation = consent && !restoredSettings.appLock)
+        // Never allow disabling the lock later to resurrect a prior consent.
+        if (consent && restoredSettings.appLock) {
+            control.edit().putBoolean(KEY_EXTERNAL_AUTOMATION, false).apply()
+        }
         _selectedId.value = p.getString(KEY_SELECTED, "") ?: ""
         // A pending update was compared against a particular installed version.
         // Do not show it after the package itself has been upgraded.
@@ -684,8 +697,14 @@ object Repo {
 
     @Synchronized
     fun saveSettings(s: AppSettings) {
-        if (_settings.value.autoUpdateCheck != s.autoUpdateCheck) automaticUpdateEpoch++
-        _settings.value = s
+        val normalized = if (s.appLock && s.allowExternalAutomation) s.copy(allowExternalAutomation = false) else s
+        if (_settings.value.autoUpdateCheck != normalized.autoUpdateCheck) automaticUpdateEpoch++
+        if (_settings.value.allowExternalAutomation != normalized.allowExternalAutomation) {
+            // The consent is device-local and deliberately separate from the
+            // settings JSON that can be exported or restored by Android.
+            controlPrefs?.edit()?.putBoolean(KEY_EXTERNAL_AUTOMATION, normalized.allowExternalAutomation)?.apply()
+        }
+        _settings.value = normalized
         persistSettings()
     }
 
@@ -742,8 +761,13 @@ object Repo {
         if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
         val selected = payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
             ?: payload.servers.firstOrNull()?.id.orEmpty()
+        // Backups cannot grant this permission. Preserve a previously granted
+        // local consent only when the restored settings do not enable app lock.
+        val restoredSettings = payload.settings.copy(
+            allowExternalAutomation = _settings.value.allowExternalAutomation && !payload.settings.appLock
+        )
         val encoded = runCatching {
-            Triple(gson.toJson(payload.servers), gson.toJson(payload.subs), gson.toJson(payload.settings))
+            Triple(gson.toJson(payload.servers), gson.toJson(payload.subs), gson.toJson(restoredSettings))
         }.getOrNull() ?: return false
         // One transaction replaces all sections, even during suspended list writes.
         if (!runCatching { persist(encoded.first, encoded.second, encoded.third, selected) }.getOrDefault(false)) {
@@ -751,8 +775,11 @@ object Repo {
         }
         _servers.value = payload.servers
         _subs.value = payload.subs
-        if (_settings.value.autoUpdateCheck != payload.settings.autoUpdateCheck) automaticUpdateEpoch++
-        _settings.value = payload.settings
+        if (_settings.value.autoUpdateCheck != restoredSettings.autoUpdateCheck) automaticUpdateEpoch++
+        if (_settings.value.allowExternalAutomation != restoredSettings.allowExternalAutomation) {
+            controlPrefs?.edit()?.putBoolean(KEY_EXTERNAL_AUTOMATION, restoredSettings.allowExternalAutomation)?.apply()
+        }
+        _settings.value = restoredSettings
         _selectedId.value = selected
         return true
     }

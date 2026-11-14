@@ -320,6 +320,9 @@ data class AppSettings(
     /** قفل برنامه با اثر انگشت/رمز دستگاه */
     var appLock: Boolean = false,
 
+    /** Device-local consent, never serialized into portable settings or backups. */
+    @Transient var allowExternalAutomation: Boolean = false,
+
     /** پنهان‌کردن جزئیات اتصال در اعلان (نام سرور و سرعت) */
     var hideNotificationContent: Boolean = false,
 

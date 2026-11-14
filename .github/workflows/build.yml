@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify automation consent backup exclusions
+        run: python3 scripts/verify-backup-rules.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:

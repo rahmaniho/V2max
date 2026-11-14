@@ -140,7 +140,9 @@ else
 import glob, os, pathlib, xml.etree.ElementTree as ET
 
 def annotate(title, text):
-    text = text[:8000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+    # GitHub truncates annotation messages at 4096 characters. Keep logs'
+    # newest events and reserve room for any encoding/metadata overhead.
+    text = text[:3500].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
     print(f"::error title={title}::{text}")
 
 for path in glob.glob('app/build/outputs/androidTest-results/**/*.xml', recursive=True):
@@ -151,7 +153,7 @@ for path in glob.glob('app/build/outputs/androidTest-results/**/*.xml', recursiv
 work = pathlib.Path(os.environ['WORK_DIR'])
 for name in ('http.log', 'xray.log', 'logcat.txt'):
     contents = (work / name).read_text(errors='replace').strip()
-    annotate(f'Android VPN fixture {name}', contents[-7000:] or '(empty)')
+    annotate(f'Android VPN fixture {name}', contents[-3500:] or '(empty)')
 network = (work / 'connectivity.txt').read_text(errors='replace')
 network = '\n'.join(line for line in network.splitlines()
                     if any(word in line.lower() for word in ('vpn', 'tun', 'uid')))[:7000]

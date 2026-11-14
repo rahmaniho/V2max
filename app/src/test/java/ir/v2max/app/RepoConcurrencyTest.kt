@@ -98,6 +98,26 @@ class RepoConcurrencyTest {
         assertEquals("", Repo.servers.value.single().hoppingPorts)
     }
 
+    @Test fun `backup cannot grant device local automation consent`() {
+        val forged = """{"version":3,"servers":[{"id":"incoming","address":"example.org"}],
+            "settings":{"appLock":false,"allowExternalAutomation":true}}"""
+        var writtenSettings = ""
+        assertTrue(Repo.restoreBackup(forged) { _, _, settings, _ -> writtenSettings = settings; true })
+        assertFalse(Repo.settings.value.allowExternalAutomation)
+        assertFalse(writtenSettings.contains("allowExternalAutomation"))
+        assertFalse(Repo.exportBackup().contains("allowExternalAutomation"))
+
+        // An existing local opt-in survives a restore; enabling the app lock
+        // must revoke it so a subsequent unlock cannot silently re-enable it.
+        Repo.updateSettings { it.copy(allowExternalAutomation = true) }
+        assertTrue(restore(forged))
+        assertTrue(Repo.settings.value.allowExternalAutomation)
+        assertTrue(restore(forged.replace("\"appLock\":false", "\"appLock\":true")))
+        assertFalse(Repo.settings.value.allowExternalAutomation)
+        Repo.updateSettings { it.copy(appLock = false) }
+        assertFalse(Repo.settings.value.allowExternalAutomation)
+    }
+
     @Test fun `legacy records with missing ids receive distinct generated ids`() {
         assertTrue(restore("""{"version":2,"servers":[
             {"address":"one.example.org"},{"address":"two.example.org"}

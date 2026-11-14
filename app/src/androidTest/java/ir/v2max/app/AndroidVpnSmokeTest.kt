@@ -28,6 +28,8 @@ import ir.v2max.app.net.SpeedTester
 import ir.v2max.app.net.UpdateInstaller
 import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.V2maxVpnService
+import ir.v2max.app.service.V2maxWidget
+import ir.v2max.app.service.WidgetActionReceiver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -103,15 +105,22 @@ class AndroidVpnSmokeTest {
         val backup = """{"version":3,
             "servers":[{"id":"backup-server","address":"example.org","uuid":"fixture"}],
             "subs":[{"id":"backup-source","url":"https://example.org/sub"}],
-            "settings":{"multiPing":true,"autoUpdateCheck":false},
+            "settings":{"multiPing":true,"autoUpdateCheck":false,"allowExternalAutomation":true},
             "selectedId":"backup-server"}"""
+        Repo.updateSettings { it.copy(appLock = false, allowExternalAutomation = false) }
         Repo.suspendPersist(true)
         try {
             assertTrue("Backup restore failed", Repo.restoreBackup(backup))
             val storage = context.getSharedPreferences("v2max_store", Context.MODE_PRIVATE)
             assertTrue(storage.getString("servers_v1", "").orEmpty().contains("backup-server"))
             assertTrue(storage.getString("subs_v1", "").orEmpty().contains("backup-source"))
-            assertTrue(storage.getString("settings_v1", "").orEmpty().contains("\"multiPing\":true"))
+            val storedSettings = storage.getString("settings_v1", "").orEmpty()
+            assertTrue(storedSettings.contains("\"multiPing\":true"))
+            assertTrue("Backup enabled external automation", !Repo.settings.value.allowExternalAutomation)
+            assertTrue("Device consent was serialized in portable settings", !storedSettings.contains("allowExternalAutomation"))
+            assertTrue("Backup enabled the local consent preference", !context.getSharedPreferences(
+                "v2max_control_consent", Context.MODE_PRIVATE
+            ).getBoolean("allow_external_automation", false))
             assertEquals("backup-server", storage.getString("selected_v1", ""))
             assertEquals("backup-server", Repo.selectedId.value)
         } finally {
@@ -119,9 +128,9 @@ class AndroidVpnSmokeTest {
             if (!Repo.restoreBackup(previous)) {
                 // An empty initial repository has no importable profiles.
                 Repo.resetEverything()
-                Repo.saveSettings(oldSettings)
                 Repo.setSelected(oldSelection)
             }
+            Repo.saveSettings(oldSettings)
         }
     }
 
@@ -252,6 +261,7 @@ class AndroidVpnSmokeTest {
         Repo.updateSettings {
             it.copy(
                 autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false,
+                appLock = false, allowExternalAutomation = false,
                 useFreeSources = false, deepProbe = false, fragment = false, balancer = false,
                 geoAssets = false, multiPing = false, speedTest = false, smartFailover = false,
                 killSwitch = false, perAppMode = ir.v2max.app.data.PerAppMode.OFF,
@@ -287,6 +297,41 @@ class AndroidVpnSmokeTest {
             assertTunTrafficEventually(instrumentation, "initial")
             assertEquals("The VPN app's underlying network changed during tunnel setup",
                 networkBeforeVpn, CarrierProbe.networkHandle(context))
+
+            // Explicit broadcasts from the shell UID simulate an unrelated app.
+            // Neither the old exported widget action nor private receiver may
+            // stop a working tunnel. The real widget PendingIntent must work.
+            val widgetInfo = context.packageManager.getReceiverInfo(
+                android.content.ComponentName(context, WidgetActionReceiver::class.java), 0
+            )
+            assertTrue("Widget action receiver is exported", !widgetInfo.exported)
+            val generation = V2maxVpnService.currentActionGeneration()
+            val auto = "${context.packageName}/ir.v2max.app.service.AutoReceiver"
+            shell(instrumentation, "am broadcast -n $auto -a ${MainActivity.ACTION_DISCONNECT}")
+            shell(instrumentation, "am broadcast -n $auto -a ${MainActivity.ACTION_TOGGLE}")
+            shell(instrumentation, "am broadcast -n ${context.packageName}/ir.v2max.app.service.V2maxWidget -a ${V2maxWidget.ACTION_TOGGLE}")
+            shell(instrumentation, "am broadcast -n ${context.packageName}/ir.v2max.app.service.WidgetActionReceiver -a ${V2maxWidget.ACTION_TOGGLE}")
+            val activity = "${context.packageName}/ir.v2max.app.MainActivity"
+            shell(instrumentation, "am start -W -n $activity -a ${MainActivity.ACTION_DISCONNECT}")
+            shell(instrumentation, "am start -W -n $activity -a ${MainActivity.ACTION_TOGGLE}")
+            shell(instrumentation, "am start -W -n $activity -a ${MainActivity.ACTION_CONNECT}")
+            SystemClock.sleep(500)
+            assertEquals("External broadcast changed the VPN action generation", generation, V2maxVpnService.currentActionGeneration())
+            assertEquals("External broadcast disconnected the VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTunTraffic(instrumentation)
+
+            val widgetClick = V2maxWidget.toggleIntent(context)
+            widgetClick.send()
+            val widgetStopDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < widgetStopDeadline && Repo.tunnel.value.status != TunnelStatus.DISCONNECTED) SystemClock.sleep(50)
+            assertEquals("Legitimate widget could not stop the tunnel", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
+            assertDirectFixtureReachable(instrumentation)
+            widgetClick.send()
+            val widgetStartDeadline = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < widgetStartDeadline &&
+                Repo.tunnel.value.status != TunnelStatus.CONNECTED && Repo.tunnel.value.status != TunnelStatus.ERROR) SystemClock.sleep(100)
+            assertEquals("Legitimate widget could not reconnect: ${Repo.tunnel.value.message}", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTunTrafficEventually(instrumentation, "widget-restart")
 
             // Very fast local responses may take less than one whole millisecond.
             // Repeated preflights must accept them without interrupting the live VPN.
@@ -459,8 +504,10 @@ class AndroidVpnSmokeTest {
             assertTrue("Manual reconnect did not start: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
             assertTunTrafficEventually(instrumentation, "manual-restart")
 
-            // A retained interface also occurs after a terminal error. If the
-            // service is later destroyed, the UI must stop claiming it is held.
+            // A retained interface also occurs after a terminal error. Android
+            // may keep a stopped VpnService bound while the VPN still exists;
+            // verify whichever lifecycle outcome occurred instead of assuming
+            // stopService synchronously invokes onDestroy.
             Repo.updateSettings { it.copy(killSwitch = true, smartFailover = false) }
             XrayCore.stop()
             val terminalDeadline = SystemClock.elapsedRealtime() + 30_000
@@ -470,11 +517,29 @@ class AndroidVpnSmokeTest {
             assertTrue("Terminal failure did not retain the interface", Repo.tunnel.value.killSwitchRetained)
             assertDirectFixtureBlocked(instrumentation)
             assertTrue("Service was not running for teardown", context.stopService(Intent(context, V2maxVpnService::class.java)))
-            val destroyedDeadline = SystemClock.elapsedRealtime() + 10_000
+            val destroyedDeadline = SystemClock.elapsedRealtime() + 1_000
             while (SystemClock.elapsedRealtime() < destroyedDeadline && Repo.tunnel.value.killSwitchRetained) SystemClock.sleep(50)
-            assertTrue("Destroyed service still claims a retained interface", !Repo.tunnel.value.killSwitchRetained)
-            assertTrue("Destroyed service did not warn about direct internet", Repo.tunnel.value.message.contains("ممکن است مستقیم"))
-            assertDirectFixtureReachable(instrumentation)
+            val afterStop = Repo.tunnel.value
+            if (afterStop.killSwitchRetained) {
+                // stopService only stops the started part; Android may still bind
+                // the live VpnService. Confirm it really blocks, then revoke the
+                // app-op and ask Android to unprepare this VPN (onRevoke).
+                assertDirectFixtureBlocked(instrumentation)
+                shell(instrumentation, "appops set ${context.packageName} ACTIVATE_VPN ignore")
+                try {
+                    assertNotNull("VPN permission was not revoked", VpnService.prepare(context))
+                    val revokeDeadline = SystemClock.elapsedRealtime() + 10_000
+                    while (SystemClock.elapsedRealtime() < revokeDeadline && Repo.tunnel.value.killSwitchRetained) SystemClock.sleep(50)
+                    assertTrue("Revoked VPN still claims a retained interface", !Repo.tunnel.value.killSwitchRetained)
+                    assertDirectFixtureReachable(instrumentation)
+                } finally {
+                    shell(instrumentation, "appops set ${context.packageName} ACTIVATE_VPN allow")
+                }
+                assertNull("VPN permission was not restored", VpnService.prepare(context))
+            } else {
+                assertTrue("Destroyed service did not warn about direct internet", afterStop.message.contains("ممکن است مستقیم"))
+                assertDirectFixtureReachable(instrumentation)
+            }
             Repo.updateSettings { it.copy(killSwitch = false) }
             assertTrue("Preflight after service teardown failed: ${Repo.scan.value.message}",
                 runBlocking { SmartConnect.connectVerified(context, edited.id) })
@@ -585,6 +650,11 @@ class AndroidVpnSmokeTest {
         }
         throw AssertionError("Replacement never reached the held HTTP fixture")
     }
+
+    private fun shell(instrumentation: Instrumentation, command: String): String =
+        instrumentation.uiAutomation.executeShellCommand(command).use {
+            FileInputStream(it.fileDescriptor).bufferedReader().readText().trim()
+        }
 
     private fun directFixtureProbe(instrumentation: Instrumentation): String {
         val descriptor = instrumentation.uiAutomation.executeShellCommand("sh /data/local/tmp/v2max-direct-probe.sh")

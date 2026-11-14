@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Consent for unauthenticated commands must be granted on each device. -->
+    <exclude domain="sharedpref" path="v2max_control_consent.xml" />
+</full-backup-content>

@@ -4,12 +4,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import ir.v2max.app.MainActivity
+import ir.v2max.app.core.ExternalControlPolicy
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.LinkParser
 
 /**
  * API اتوماسیون برای Tasker / Automate / اسکریپت‌های adb.
+ * این دسترسی فقط با رضایت صریح کاربر فعال می‌شود و هنگام فعال بودن قفل برنامه خاموش است.
  *
  * نمونه‌ها:
  *   am broadcast -a ir.v2max.app.action.CONNECT -n ir.v2max.app/.service.AutoReceiver
@@ -24,7 +26,7 @@ class AutoReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext
-        runCatching { Repo.init(app) }
+        if (runCatching { Repo.init(app) }.isFailure || !ExternalControlPolicy.allowed(Repo.settings.value)) return
 
         when (intent.action) {
             MainActivity.ACTION_CONNECT -> {
