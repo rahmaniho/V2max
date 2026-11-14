@@ -21,17 +21,25 @@ fail() {
   local reason="$1"
   adb shell uiautomator dump /sdcard/v2max-self-update.xml > /dev/null 2>&1 || true
   adb exec-out cat /sdcard/v2max-self-update.xml > "$work/window.xml" 2>/dev/null || true
-  adb logcat -d -v brief 'PackageInstaller:W' 'AndroidRuntime:E' '*:S' > "$work/logcat.txt" || true
+  adb logcat -d -v brief 'PackageInstaller:I' 'PackageInstallerSession:I' 'PackageManager:I' \
+    'PackageManagerService:I' 'ActivityTaskManager:W' 'AndroidRuntime:E' '*:S' > "$work/logcat.txt" || true
+  adb shell dumpsys package "$pkg" > "$work/package.txt" 2>/dev/null || true
   python3 - "$reason" "$work" <<'PY'
 import pathlib, sys, xml.etree.ElementTree as ET
 reason, work = sys.argv[1], pathlib.Path(sys.argv[2])
-try:
-    root = ET.parse(work / 'window.xml').getroot()
-    visible = ' | '.join(n.get('text', '') for n in root.iter('node') if n.get('text'))[-1200:]
-except Exception:
-    visible = '(window unavailable)'
-logcat = (work / 'logcat.txt').read_text(errors='replace')[-1400:]
-text = f'{reason}\nVisible: {visible}\nLogcat:\n{logcat}'
+def visible(name):
+    try:
+        root = ET.parse(work / name).getroot()
+        return ' | '.join(n.get('text', '') for n in root.iter('node') if n.get('text'))[-650:]
+    except Exception:
+        return '(window unavailable)'
+package = (work / 'package.txt').read_text(errors='replace')
+package = ' | '.join(line.strip() for line in package.splitlines()
+                     if any(key in line for key in ('versionCode=', 'lastUpdateTime=', 'installerPackageName=')))[:500]
+logcat = (work / 'logcat.txt').read_text(errors='replace')[-1300:]
+text = (f'{reason}\nBefore installer tap: {visible("install-before-tap.xml")}\n'
+        f'After tap: {visible("after-install.xml")}\nVisible: {visible("window.xml")}\n'
+        f'Package: {package}\nLogcat:\n{logcat}')
 text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
 print(f'::error title=Self-update smoke::{text}')
 PY
@@ -98,13 +106,14 @@ for node in nodes:
         match = (('packageinstaller' in package or 'permissioncontroller' in package)
                  and 'v2max' in texts and text.lower() in ('update', 'install', 'به‌روزرسانی', 'نصب'))
     bounds = re.fullmatch(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', node.get('bounds', ''))
-    if match and bounds:
+    if match and node.get('enabled', 'true') == 'true' and bounds:
         x1, y1, x2, y2 = map(int, bounds.groups())
         print((x1 + x2) // 2, (y1 + y2) // 2)
         break
 PY
 )"
     if [[ -n "$xy" ]]; then
+      cp "$work/window.xml" "$work/$kind-before-tap.xml"
       adb shell input tap $xy
       return 0
     fi
@@ -114,6 +123,8 @@ PY
 }
 tap_when_visible notification || fail 'The installer notification was not available after process death.'
 tap_when_visible install || fail 'The expected Android update confirmation was not visible.'
+adb shell uiautomator dump /sdcard/v2max-self-update.xml > /dev/null 2>&1 || true
+adb exec-out cat /sdcard/v2max-self-update.xml > "$work/after-install.xml" 2>/dev/null || true
 
 changed=false
 for _ in {1..60}; do

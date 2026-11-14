@@ -67,8 +67,9 @@ val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
-// CI supplies the release key only to the main-branch push build. Local
-// developers may continue using their ignored keystore.properties file.
+// Local developers may use an ignored keystore.properties file or environment
+// variables. CI builds with a disposable debug key; approved releases are
+// re-signed after tests, in a separate job that does not execute Gradle.
 fun signingValue(environment: String, property: String): String? =
     System.getenv(environment)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(property)
 val signingStoreFile = signingValue("V2MAX_RELEASE_KEYSTORE", "storeFile")

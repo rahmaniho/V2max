@@ -690,19 +690,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (Repo.isStorageReadOnly()) showMessage("انتخاب سرور تا بستن برنامه موقت است؛ داده‌ها فقط‌خواندنی‌اند")
     }
 
-    fun saveEditedServer(server: ServerConfig) {
-        if (!requireWritableData()) return
+    fun saveEditedServer(server: ServerConfig, expectedFingerprint: String, expectedEpoch: Long): Boolean {
+        if (!requireWritableData()) return false
         cancelStartup()
-        Repo.updateServer(server)
-        showMessage("کانفیگ ذخیره شد")
+        if (!Repo.saveEditedServer(server, expectedFingerprint, expectedEpoch)) {
+            if (requireWritableData()) showMessage("سرور یا داده‌ها هنگام ویرایش تغییر کردند؛ ویرایشگر را دوباره باز کنید")
+            return false
+        }
+        val state = Repo.tunnel.value
+        showMessage(when {
+            state.serverId == server.id && state.status == ir.v2max.app.data.TunnelStatus.CONNECTED ->
+                "کانفیگ ذخیره شد؛ اتصال فعلی حفظ شد. برای اعمال تغییرات دوباره وصل شوید"
+            state.status == ir.v2max.app.data.TunnelStatus.CONNECTING ->
+                "کانفیگ ذخیره شد؛ وضعیت فرایند اتصال را بررسی کنید"
+            else -> "کانفیگ ذخیره شد"
+        })
+        return true
     }
 
-    fun cloneServer(copy: ServerConfig) {
-        if (!requireWritableData()) return
+    fun cloneServer(copy: ServerConfig, sourceId: String, expectedFingerprint: String, expectedEpoch: Long): Boolean {
+        if (!requireWritableData()) return false
         cancelStartup()
-        Repo.updateServer(copy)
-        Repo.setSelected(copy.id)
-        showMessage("نسخه‌ی کپی ساخته شد")
+        if (!Repo.cloneEditedServer(copy, sourceId, expectedFingerprint, expectedEpoch)) {
+            if (requireWritableData()) showMessage("سرور یا داده‌ها هنگام ویرایش تغییر کردند؛ ویرایشگر را دوباره باز کنید")
+            return false
+        }
+        showMessage(if (Repo.tunnel.value.status == ir.v2max.app.data.TunnelStatus.CONNECTED)
+            "کپی مستقل ساخته شد؛ اتصال فعلی تغییر نکرد" else "کپی مستقل ساخته شد")
+        return true
     }
 
     fun deleteServers(ids: List<String>) {
@@ -895,6 +910,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun exportBackup(): String = Repo.exportBackup()
 
+    fun restoreSuccessMessage(): String = when (Repo.tunnel.value.status) {
+        ir.v2max.app.data.TunnelStatus.CONNECTED ->
+            "پشتیبان بازیابی شد؛ اتصال فعلی حفظ شد. برای اعمال تنظیمات، دوباره وصل شوید"
+        ir.v2max.app.data.TunnelStatus.CONNECTING ->
+            "پشتیبان بازیابی شد؛ وضعیت فرایند اتصال را بررسی کنید"
+        else -> "پشتیبان با موفقیت بازیابی شد"
+    }
+
     private suspend fun restoreAndReschedule(text: String, epoch: Long): Boolean = withContext(NonCancellable) {
         // Once a durable commit starts, lifecycle cancellation must not leave
         // WorkManager out of sync with the settings that actually reached disk.
@@ -912,7 +935,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(errorHandler) {
             val restored = restoreAndReschedule(text, epoch)
             if (restored) {
-                showMessage("پشتیبان با موفقیت بازیابی شد")
+                showMessage(restoreSuccessMessage())
             } else {
                 showMessage("بازیابی انجام نشد؛ فایل و فضای ذخیره‌سازی را بررسی کنید")
             }

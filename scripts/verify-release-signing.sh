@@ -22,7 +22,8 @@ signers() {
 reference="$(signers "$work/reference.apk")"
 [[ -n "$reference" ]] || { echo '::error::Could not read the reference APK signer'; exit 1; }
 shopt -s nullglob
-apks=(app/build/outputs/apk/release/*.apk)
+apk_dir="${1:-app/build/outputs/apk/release}"
+apks=("$apk_dir"/*.apk)
 (( ${#apks[@]} > 0 )) || { echo '::error::No release APKs were produced'; exit 1; }
 for apk in "${apks[@]}"; do
   actual="$(signers "$apk")"

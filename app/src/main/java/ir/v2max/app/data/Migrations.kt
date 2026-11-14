@@ -208,8 +208,19 @@ object Migrations {
         val parsed = JsonParser.parseString(json)
         require(parsed.isJsonObject)
         val obj = parsed.asJsonObject
+        // Missing legacy fields can be filled, but an explicitly corrupt section
+        // or lock flag must not silently turn into an empty list or an unlocked app.
+        listOf("servers", "subs", "settings").forEach { key ->
+            require(!obj.has(key) || !obj.get(key).isJsonNull)
+        }
+        obj.get("settings")?.takeIf { it.isJsonObject }?.asJsonObject?.let { settings ->
+            if (settings.has("appLock")) {
+                val lock = settings.get("appLock")
+                require(lock.isJsonPrimitive && lock.asJsonPrimitive.isBoolean)
+            }
+        }
         val versionElement = obj.get("version")
-        val version = if (versionElement == null || versionElement.isJsonNull) 1 else {
+        val version = if (versionElement == null) 1 else {
             require(versionElement.isJsonPrimitive && versionElement.asJsonPrimitive.isNumber)
             val number = versionElement.asBigDecimal.toBigIntegerExact()
             require(number >= java.math.BigInteger.ONE && number <= java.math.BigInteger.valueOf(SCHEMA_VERSION.toLong()))
@@ -227,6 +238,9 @@ object Migrations {
             require(item.isJsonObject)
             // Defaults include a generated ID, so each element needs its own template.
             val server = item.asJsonObject
+            listOf("proto", "network", "security").forEach { key ->
+                require(!server.has(key) || !server.get(key).isJsonNull)
+            }
             val defaults = template(ServerConfig())
             fill(server, defaults)
             requireShape(server, defaults)

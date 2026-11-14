@@ -35,8 +35,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify automation consent backup exclusions
-        run: python3 scripts/verify-backup-rules.py
+      - name: Verify automation consent backup exclusions and release guards
+        run: |
+          python3 scripts/verify-backup-rules.py
+          python3 scripts/test-apk-payload.py
+          python3 scripts/test-release-metadata.py
+          python3 scripts/test-release-draft.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -64,29 +68,6 @@ jobs:
           fi
           printf '%s  %s\n' "$LIBV2RAY_SHA256" app/libs/libv2ray.aar | sha256sum --check
           ls -la app/libs
-
-
-      # Never restore a release key from Actions caches, which PR workflows can read.
-      # Without explicit owner approval, all APKs use an ephemeral CI-only key.
-      - name: Prepare release signing key (approved main push only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
-        env:
-          KEYSTORE_BASE64: ${{ secrets.V2MAX_RELEASE_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.V2MAX_RELEASE_STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.V2MAX_RELEASE_KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.V2MAX_RELEASE_KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error title=release signing::Required release-signing secret $name is not configured"
-              exit 1
-            fi
-          done
-          umask 077
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/v2max-release.jks"
-          test -s "$RUNNER_TEMP/v2max-release.jks"
-          echo "V2MAX_RELEASE_KEYSTORE=$RUNNER_TEMP/v2max-release.jks" >> "$GITHUB_ENV"
 
       - name: Download matching Xray executable for compatibility tests
         run: |
@@ -194,12 +175,10 @@ jobs:
                       print(f"::error title={case.get('classname')}.{case.get('name')}::{msg}")
           PY
 
-      - name: Build release APK
+      - name: Build CI-only release-variant APKs
         id: build_apk
-        env:
-          V2MAX_RELEASE_STORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_STORE_PASSWORD || '' }}
-          V2MAX_RELEASE_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_KEY_ALIAS || '' }}
-          V2MAX_RELEASE_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true' && secrets.V2MAX_RELEASE_KEY_PASSWORD || '' }}
+        # The production key is never available to Gradle, tests or emulators.
+        # The default debug signer is ephemeral and cannot update real installs.
         run: |
           set -o pipefail
           gradle --no-daemon assembleRelease 2>&1 | tee build-out.log
@@ -227,15 +206,21 @@ jobs:
             exit 1
           fi
 
-      - name: Verify release signer matches installed v2.3.1
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
-        run: bash scripts/verify-release-signing.sh
-
-      - name: Check release guard rejects the CI-only key
-        if: github.event_name != 'push' || github.ref != 'refs/heads/main' || vars.V2MAX_RELEASE_APPROVED != 'true'
+      - name: Exercise re-signing and reject the CI-only signer
+        env:
+          V2MAX_RELEASE_KEYSTORE: ${{ runner.temp }}/v2max-resign-test.jks
+          V2MAX_RELEASE_STORE_PASSWORD: v2max-ci-only
+          V2MAX_RELEASE_KEY_ALIAS: v2max-ci
+          V2MAX_RELEASE_KEY_PASSWORD: v2max-ci-only
         run: |
+          set -euo pipefail
+          keytool -genkeypair -keystore "$V2MAX_RELEASE_KEYSTORE" -storepass "$V2MAX_RELEASE_STORE_PASSWORD" \
+            -keypass "$V2MAX_RELEASE_KEY_PASSWORD" -alias "$V2MAX_RELEASE_KEY_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 30 -dname 'CN=V2max CI only' -storetype JKS
+          bash scripts/resign-release-apks.sh app/build/outputs/apk/release "$RUNNER_TEMP/resigned-ci"
+          python3 scripts/verify-release-metadata.py "$RUNNER_TEMP/resigned-ci"
           set +e
-          output=$(bash scripts/verify-release-signing.sh 2>&1)
+          output=$(bash scripts/verify-release-signing.sh "$RUNNER_TEMP/resigned-ci" 2>&1)
           status=$?
           set -e
           if [ "$status" -eq 0 ] || ! grep -Fq 'Signer mismatch' <<< "$output"; then
@@ -271,17 +256,17 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-update-smoke.sh
 
-      - name: Upload APKs
+      - name: Upload CI-only APKs (not a production update)
         uses: actions/upload-artifact@v4
         with:
-          name: v2max-apk
+          name: v2max-ci-only-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
   security-smoke:
-    # A fast, explicitly limited diagnostic run; never publishes or replaces CI.
-    if: github.event_name == 'workflow_dispatch' && inputs.security_only
-    name: Security-only emulator API ${{ matrix.api }} (no release APK)
+    # On main this also gates release signing; dispatch runs remain diagnostic only.
+    if: (github.event_name == 'workflow_dispatch' && inputs.security_only) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    name: Security emulator API ${{ matrix.api }} (no release APK)
     strategy:
       fail-fast: false
       matrix:
@@ -334,10 +319,68 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-security-smoke.sh
 
-  publish:
-    # Keep write access out of Gradle, tests, third-party dependencies and PR runs.
+  sign-release:
+    # Signing uses only the already-tested payload, after both emulator suites.
+    # This job has no repository write access and never runs Gradle with the key.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
-    needs: build
+    needs: [build, security-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up JDK 17 for Android signing tools
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Download tested CI-only APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: v2max-ci-only-apk
+          path: tested-apks
+      - name: Verify tested APK identity
+        run: python3 scripts/verify-release-metadata.py tested-apks
+      - name: Sign the tested payload with the approved release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.V2MAX_RELEASE_KEYSTORE_BASE64 }}
+          V2MAX_RELEASE_STORE_PASSWORD: ${{ secrets.V2MAX_RELEASE_STORE_PASSWORD }}
+          V2MAX_RELEASE_KEY_ALIAS: ${{ secrets.V2MAX_RELEASE_KEY_ALIAS }}
+          V2MAX_RELEASE_KEY_PASSWORD: ${{ secrets.V2MAX_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 V2MAX_RELEASE_STORE_PASSWORD V2MAX_RELEASE_KEY_ALIAS V2MAX_RELEASE_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=release signing::Required signing secret $name is not configured"
+              exit 1
+            fi
+          done
+          umask 077
+          export V2MAX_RELEASE_KEYSTORE="$RUNNER_TEMP/v2max-release.jks"
+          trap 'rm -f "$V2MAX_RELEASE_KEYSTORE"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$V2MAX_RELEASE_KEYSTORE"
+          test -s "$V2MAX_RELEASE_KEYSTORE"
+          # Re-signs, verifies ZIP alignment and compares every non-signature entry.
+          bash scripts/resign-release-apks.sh tested-apks signed-apks
+      - name: Verify production signer and package identity
+        run: |
+          bash scripts/verify-release-signing.sh signed-apks
+          python3 scripts/verify-release-metadata.py signed-apks
+      - name: Upload verified signed APKs for publication
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2max-production-signed-apk
+          path: signed-apks/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    # Write access is isolated from Gradle, emulators and the private signing key.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
+    needs: sign-release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -347,57 +390,62 @@ jobs:
     steps:
       - name: Checkout tested commit
         uses: actions/checkout@v4
-      - name: Download tested APKs
+        with:
+          persist-credentials: false
+      - name: Download verified production-signed APKs
         uses: actions/download-artifact@v4
         with:
-          name: v2max-apk
-          path: app/build/outputs/apk/release
-      - name: Publish APKs to GitHub Release
+          name: v2max-production-signed-apk
+          path: signed-apks
+      - name: Verify signer and package identity again
+        id: metadata
+        run: |
+          bash scripts/verify-release-signing.sh signed-apks
+          python3 scripts/verify-release-metadata.py signed-apks
+      - name: Publish complete numbered release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.metadata.outputs.version }}
         run: |
-          set -e
-          MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
-          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
-            echo "A newer main commit exists; not publishing this older run."
-            exit 0
+          set -euo pipefail
+          main_sha() { gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha'; }
+          if [ "$(main_sha)" != "$GITHUB_SHA" ]; then
+            echo '::error::main advanced after this run; refusing to publish an older build'
+            exit 1
           fi
-          TAG="apk-latest"
-          VERSION=$(grep -m1 "versionName" app/build.gradle.kts | tr -d ' "' | cut -d= -f2)
-          {
-            echo "APK امضاشده‌ی V2max نسخه‌ی ${VERSION:-1.0.0}"
-            echo ""
-            echo "- \`app-universal-release.apk\` — برای همه‌ی گوشی‌ها (پیشنهادی)"
-            echo "- \`app-arm64-v8a-release.apk\` — سبک‌تر، برای اکثر گوشی‌های امروزی"
-            echo "- \`app-armeabi-v7a-release.apk\` — برای گوشی‌های قدیمی‌تر ۳۲ بیتی"
-            echo "- \`app-x86_64-release.apk\` — برای شبیه‌سازها"
-            echo ""
-            echo "پس از نصب، در اولین اجرا اجازه‌ی VPN را بدهید؛ برنامه خودش منابع رایگان را"
-            echo "دریافت، تست و بهترین سرور را انتخاب می‌کند."
-          } > release-notes.md
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "V2max — آخرین نسخه‌ی آماده‌ی نصب" \
-              --notes-file release-notes.md --latest
-          else
-            gh release create "$TAG" --target "$GITHUB_SHA" \
-              --title "V2max — آخرین نسخه‌ی آماده‌ی نصب" \
-              --notes-file release-notes.md --latest
-          fi
-          gh release upload "$TAG" app/build/outputs/apk/release/*.apk --clobber
-          echo "released to $TAG"
 
-          # نسخه‌ی شماره‌دار (برای بررسی به‌روزرسانی داخل برنامه)؛ فقط یک‌بار ساخته می‌شود
-          # فقط از شاخه‌ی main ساخته می‌شود تا تگ نسخه روی همان کامیت منتشرشده باشد
-          if [ -n "$VERSION" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            VTAG="v$VERSION"
-            if ! gh release view "$VTAG" >/dev/null 2>&1; then
-              head -3 release-notes.md > version-notes.md
-              gh release create "$VTAG" --target "$GITHUB_SHA" \
-                --title "V2max $VERSION" \
-                --notes-file version-notes.md
-              gh release upload "$VTAG" app/build/outputs/apk/release/*.apk
-              echo "created versioned release $VTAG"
-            else
-              echo "versioned release $VTAG already exists"
-            fi
+          # Verify the newest published APK's identity, signer and versionCode.
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')
+          [[ "$latest" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo '::error::Unexpected latest release tag'; exit 1; }
+          mkdir -p "$RUNNER_TEMP/previous-release"
+          gh release download "$latest" --pattern 'app-arm64-v8a-release.apk' --dir "$RUNNER_TEMP/previous-release"
+          bash scripts/verify-release-signing.sh "$RUNNER_TEMP/previous-release"
+          python3 scripts/verify-release-metadata.py signed-apks "$RUNNER_TEMP/previous-release/app-arm64-v8a-release.apk"
+
+          TAG="v$VERSION"
+          cat > "$RUNNER_TEMP/release-notes.md" <<EOF
+          نسخهٔ $VERSION برنامهٔ V2max برای اندروید
+
+          - افزودن کانفیگ و اشتراک با لینک یا QR، و امکان انتخاب دستی سرور
+          - بررسی سرورها پیش از اتصال و تلاش برای بازیابی اتصال قطع‌شده
+          - پشتیبان‌گیری و اطلاع‌رسانی نسخهٔ جدید با تأیید نصب توسط کاربر
+          - فایل universal برای بیشتر دستگاه‌ها؛ فایل‌های دیگر مخصوص معماری دستگاه هستند
+
+          پایداری و دسترسی به منابع رایگان به شبکه و ارائه‌دهنده بستگی دارد.
+          برای به‌روزرسانی روی نصب قبلی، امضای نسخه‌ها باید یکسان باشد.
+          EOF
+          # Creating a new lightweight tag is atomic and fails if the version/tag
+          # already exists. Never overwrite an existing release or its assets.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')
+          [ "$tag_sha" = "$GITHUB_SHA" ] || { echo '::error::Unexpected release tag target'; exit 1; }
+          gh release create "$TAG" signed-apks/*.apk --verify-tag --draft \
+            --title "V2max $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/draft.json"
+          python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"
+          if [ "$(main_sha)" != "$GITHUB_SHA" ]; then
+            echo '::error::main advanced during upload; draft left unpublished for owner review'
+            exit 1
           fi
+          gh release edit "$TAG" --draft=false --latest
+          echo "Published verified release $TAG."

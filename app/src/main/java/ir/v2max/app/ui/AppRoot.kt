@@ -351,7 +351,7 @@ fun AppRoot(vm: AppViewModel) {
                             if (vm.importEncryptedBackup(encrypted, enteredPassword)) {
                                 showRestoreDialog = false
                                 pendingRestoreText = ""
-                                vm.showMessage("پشتیبان بازیابی شد")
+                                vm.showMessage(vm.restoreSuccessMessage())
                             } else {
                                 restoreError = "رمز، فایل یا فضای ذخیره‌سازی را بررسی کنید"
                             }
@@ -404,11 +404,13 @@ fun AppRoot(vm: AppViewModel) {
                     } else {
                         ConfigEditorScreen(
                             server = server,
+                            dataEpoch = Repo.currentDataEpoch(),
                             onBack = { editingId = "" },
-                            onSave = { vm.saveEditedServer(it); editingId = "" },
-                            onClone = { copy ->
-                                vm.cloneServer(copy)
-                                editingId = ""
+                            onSave = { edited, fingerprint, epoch ->
+                                if (vm.saveEditedServer(edited, fingerprint, epoch)) editingId = ""
+                            },
+                            onClone = { copy, fingerprint, epoch ->
+                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) editingId = ""
                             }
                         )
                     }

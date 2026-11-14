@@ -63,6 +63,95 @@ class RepoConcurrencyTest {
         assertEquals(0, Repo.ensureBuiltInSources(includeAll = true))
     }
 
+    @Test fun `editor preserves newer health on rename and clears it for a different connection`() {
+        val original = server("edit", "personal").copy(
+            tcpPing = 20, realPing = 30, googlePing = 30, instagramPing = 40, youtubePing = 50,
+            speedKbps = 100, successCount = 4, failCount = 2, testedAt = 123,
+            testedUrl = "https://example.org/probe", testedFragment = true
+        )
+        Repo.updateServer(original)
+        val oldEditorSnapshot = original.copy()
+        val epoch = Repo.currentDataEpoch()
+        Repo.setSpeed(original.id, 900)
+        Repo.setFavorite(original.id, true)
+        assertTrue(Repo.saveEditedServer(oldEditorSnapshot.copy(name = "renamed"), original.fingerprint(), epoch))
+        val renamed = requireNotNull(Repo.serverById(original.id))
+        assertEquals("renamed", renamed.name)
+        assertEquals(900, renamed.speedKbps)
+        assertTrue(renamed.favorite)
+        assertEquals(30, renamed.realPing)
+        assertEquals(123L, renamed.testedAt)
+
+        assertTrue(Repo.saveEditedServer(renamed.copy(uuid = "different"), renamed.fingerprint(), epoch))
+        val changed = requireNotNull(Repo.serverById(original.id))
+        assertEquals(-1, changed.tcpPing)
+        assertEquals(-1, changed.realPing)
+        assertEquals(-1, changed.googlePing)
+        assertEquals(-1, changed.instagramPing)
+        assertEquals(-1, changed.youtubePing)
+        assertEquals(0, changed.speedKbps)
+        assertEquals(0, changed.successCount)
+        assertEquals(0, changed.failCount)
+        assertEquals(0L, changed.testedAt)
+        assertEquals("", changed.testedUrl)
+        assertFalse(changed.testedFragment)
+        assertTrue(changed.favorite)
+        assertEquals("personal", changed.subId)
+        Repo.removeServer(changed.id)
+        assertFalse(Repo.saveEditedServer(changed, changed.fingerprint(), epoch))
+        assertNull(Repo.serverById(changed.id))
+    }
+
+    @Test fun `stale edits and clones cannot overwrite changed or restored data`() {
+        val original = server("edit", "source").copy(realPing = 55, testedAt = 100, testedUrl = "https://example.org")
+        Repo.updateServer(original)
+        val oldEpoch = Repo.currentDataEpoch()
+        val newProfile = original.copy(uuid = "new credential")
+        Repo.updateServer(newProfile)
+        val clone = original.copy(id = "clone")
+        assertFalse(Repo.saveEditedServer(original.copy(name = "stale"), original.fingerprint(), oldEpoch))
+        assertFalse(Repo.cloneEditedServer(clone, original.id, original.fingerprint(), oldEpoch))
+        assertEquals("new credential", Repo.serverById(original.id)?.uuid)
+        assertNull(Repo.serverById(clone.id))
+
+        val beforeRestore = Repo.currentDataEpoch()
+        assertTrue(restore(Repo.exportBackup()))
+        assertFalse(Repo.saveEditedServer(newProfile.copy(name = "stale after restore"), newProfile.fingerprint(), beforeRestore))
+        assertFalse(Repo.cloneEditedServer(clone, newProfile.id, newProfile.fingerprint(), beforeRestore))
+        assertFalse(Repo.cloneEditedServer(clone.copy(id = newProfile.id), newProfile.id, newProfile.fingerprint(), Repo.currentDataEpoch()))
+        assertEquals("edit", Repo.serverById(newProfile.id)?.name)
+    }
+
+    @Test fun `clone is independent of its subscription and has no inherited health`() {
+        val source = Subscription(id = "source", url = "https://example.org/sub")
+        Repo.addSubscription(source)
+        val original = server("edit", source.id).copy(
+            favorite = true, tcpPing = 3, realPing = 4, googlePing = 5, instagramPing = 6,
+            youtubePing = 7, speedKbps = 100, successCount = 2, failCount = 1,
+            testedAt = 100, testedUrl = "https://example.org", testedFragment = true
+        )
+        Repo.updateServer(original)
+        val epoch = Repo.currentDataEpoch()
+        assertTrue(Repo.cloneEditedServer(original.copy(id = "clone"), original.id, original.fingerprint(), epoch))
+        val clone = requireNotNull(Repo.serverById("clone"))
+        assertEquals("", clone.subId)
+        assertFalse(clone.favorite)
+        assertEquals(-1, clone.tcpPing)
+        assertEquals(-1, clone.realPing)
+        assertEquals(-1, clone.googlePing)
+        assertEquals(-1, clone.instagramPing)
+        assertEquals(-1, clone.youtubePing)
+        assertEquals(0, clone.speedKbps)
+        assertEquals(0, clone.successCount)
+        assertEquals(0, clone.failCount)
+        assertEquals(0L, clone.testedAt)
+        assertEquals("", clone.testedUrl)
+        assertFalse(clone.testedFragment)
+        assertEquals(clone.id, Repo.selectedId.value)
+        Repo.removeSubscription(source.id)
+        assertNotNull(Repo.serverById(clone.id))
+    }
+
     @Test fun `only one overlapping response can replace a source revision`() {
         val source = Subscription(id = "source", url = "https://example.org/sub", updatedAt = 1)
         Repo.addSubscription(source)
@@ -109,6 +198,27 @@ class RepoConcurrencyTest {
             Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))))
         assertTrue(Repo.commitSubscriptionRefresh(source, incoming, 0, 0, 0, 0))
         assertEquals("new", Repo.servers.value.single().id)
+    }
+
+    @Test fun `unavailable preferences fail closed and allow initialization to be retried`() {
+        Repo.updateServer(server("old", "personal"))
+        val epoch = Repo.currentDataEpoch()
+        Repo.initializeSafely { throw SecurityException("storage unavailable") }
+        assertTrue(Repo.isStorageReadOnly())
+        assertNotEquals(epoch, Repo.currentDataEpoch())
+        assertTrue(Repo.settings.value.appLock)
+        assertFalse(Repo.settings.value.allowExternalAutomation)
+        assertFalse(Repo.settings.value.autoConnectOnOpen)
+        assertFalse(Repo.settings.value.autoConnectOnBoot)
+        assertFalse(Repo.settings.value.autoRefreshOnOpen)
+        assertFalse(Repo.settings.value.autoUpdateSubs)
+        assertFalse(Repo.settings.value.autoUpdateCheck)
+        assertNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))
+        assertEquals(0, Repo.addServers(listOf(server("new", "personal"))))
+        assertTrue(Repo.recoveryWarning.value.isNotBlank())
+        var retried = false
+        Repo.initializeSafely { retried = true }
+        assertTrue(retried)
     }
 
     @Test fun `read only repository rejects edits and failed reset preserves data`() {
@@ -283,8 +393,17 @@ class RepoConcurrencyTest {
         listOf(
             "not json", "[]", "{\"version\":999,\"servers\":[{}]}",
             "{\"version\":2,\"servers\":[null]}",
+            "{\"version\":2,\"servers\":null,\"subs\":[{}]}",
+            "{\"version\":2,\"servers\":[{}],\"subs\":null}",
+            "{\"version\":2,\"servers\":[{}],\"settings\":null}",
+            "{\"version\":null,\"servers\":[{}]}",
             "{\"version\":2,\"servers\":\"not an array\"}",
             "{\"version\":2,\"servers\":[{\"proto\":\"unknown\"}]}",
+            "{\"version\":2,\"servers\":[{\"proto\":null}]}",
+            "{\"version\":2,\"servers\":[{\"network\":null}]}",
+            "{\"version\":2,\"servers\":[{\"security\":null}]}",
+            "{\"version\":2,\"servers\":[{}],\"settings\":{\"appLock\":null}}",
+            "{\"version\":2,\"servers\":[{}],\"settings\":{\"appLock\":\"false\"}}",
             "{\"version\":2,\"servers\":[{}],\"settings\":{\"perAppPackages\":[null]}}",
             "{\"version\":2.5,\"servers\":[{}]}",
             "{\"version\":\"2\",\"servers\":[{}]}",

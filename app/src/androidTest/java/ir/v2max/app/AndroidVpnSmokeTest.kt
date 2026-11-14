@@ -302,6 +302,7 @@ class AndroidVpnSmokeTest {
             assertEquals("The VPN app's underlying network changed during tunnel setup",
                 networkBeforeVpn, CarrierProbe.networkHandle(context))
             assertQrImportsPreserveLiveTunnel(instrumentation, server)
+            assertEditingPreservesLiveTunnel(instrumentation, server)
 
             // Explicit broadcasts from the shell UID simulate an unrelated app.
             // Neither the old exported widget action nor private receiver may
@@ -653,6 +654,40 @@ class AndroidVpnSmokeTest {
             instrumentation.runOnMainSync { store.clear() }
             Repo.subs.value.filter { it.url == url }.forEach { Repo.removeSubscription(it.id) }
             Repo.removeServers(Repo.servers.value.filter { it.address == qrHost }.map { it.id })
+        }
+    }
+
+    /** Editing or cloning a profile must not supersede a working VPN. */
+    private fun assertEditingPreservesLiveTunnel(instrumentation: Instrumentation, active: ServerConfig) {
+        val context = instrumentation.targetContext
+        val selected = Repo.selectedId.value
+        val original = requireNotNull(Repo.serverById(active.id)).copy()
+        val generation = V2maxVpnService.currentActionGeneration()
+        val cloneId = "live-edit-clone"
+        val store = ViewModelStore()
+        try {
+            instrumentation.runOnMainSync {
+                val app = context.applicationContext as Application
+                val vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
+                val edited = original.copy(uuid = "33333333-4444-5555-6666-777777777777")
+                val epoch = Repo.currentDataEpoch()
+                assertTrue(vm.saveEditedServer(edited, original.fingerprint(), epoch))
+                assertTrue(vm.cloneServer(edited.copy(id = cloneId, name = "edited clone"),
+                    original.id, edited.fingerprint(), epoch))
+            }
+            assertEquals("Editor did not save the modified profile", "33333333-4444-5555-6666-777777777777",
+                Repo.serverById(active.id)?.uuid)
+            assertEquals("Changed profile retained an old successful test", -1, Repo.serverById(active.id)?.realPing)
+            assertEquals("Clone was not selected", cloneId, Repo.selectedId.value)
+            assertEquals("Editing changed the active VPN generation", generation, V2maxVpnService.currentActionGeneration())
+            assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTrue("Editing replaced the live profile", V2maxVpnService.activeProfileMatches(active))
+            assertTunTraffic(instrumentation)
+        } finally {
+            instrumentation.runOnMainSync { store.clear() }
+            Repo.removeServer(cloneId)
+            Repo.updateServer(original)
+            Repo.setSelected(selected)
         }
     }
 

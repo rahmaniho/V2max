@@ -101,8 +101,36 @@ object Repo {
     private var loaded = false
 
     @Synchronized
-    fun init(context: Context) {
+    fun init(context: Context) = initializeSafely { loadStoredData(context) }
+
+    /** A storage access failure must not crash the Activity or enable automation. */
+    @Synchronized
+    internal fun initializeSafely(load: () -> Unit) {
         if (loaded) return
+        try {
+            load()
+        } catch (_: Exception) {
+            prefs = null
+            controlPrefs = null
+            canWriteServers = false
+            canWriteSubs = false
+            canWriteSettings = false
+            dataEpoch++
+            automaticUpdateEpoch++
+            automaticRefreshEpoch++
+            _servers.value = emptyList()
+            _subs.value = emptyList()
+            _selectedId.value = ""
+            _profiles.value = emptyMap()
+            _settings.value = Migrations.safeSettingsAfterFailure(null)
+            update.value = UpdateInfo()
+            loaded = false // A later Activity or service may retry once storage is accessible.
+            recoveryWarning.value = "دسترسی به داده‌های برنامه ممکن نشد؛ ویرایش و کارهای خودکار متوقف شدند. " +
+                "برای تلاش دوباره برنامه را باز کنید و فضای ذخیره‌سازی دستگاه را بررسی کنید."
+        }
+    }
+
+    private fun loadStoredData(context: Context) {
         val app = context.applicationContext
         val p = app.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         val control = app.getSharedPreferences(CONTROL_PREF_NAME, Context.MODE_PRIVATE)
@@ -124,16 +152,13 @@ object Repo {
             recoveryWarning.value = "بخشی از داده‌های ذخیره‌شده ناسازگار است و ممکن است نمایش داده نشود. " +
                 "اصل داده بدون تغییر مانده؛ ویرایش، اتصال خودکار و دریافت خودکار اشتراک متوقف شده‌اند. " +
                 "برای ادامه، پشتیبان معتبر را بازیابی کنید یا پس از بررسی، داده‌ها و تنظیمات را بازنشانی کنید."
+        } else {
+            recoveryWarning.value = ""
         }
         val restoredSettings = StoredDataRecovery.guardSettings(savedSettings.value, damaged)
-        val consent = runCatching { control.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
         _settings.value = restoredSettings.copy(
-            allowExternalAutomation = consent && !damaged && !restoredSettings.appLock
+            allowExternalAutomation = effectiveControlConsent(control, damaged, restoredSettings.appLock)
         )
-        // Neither a lock nor damaged data may resurrect a prior consent.
-        if (consent && (damaged || restoredSettings.appLock)) {
-            runCatching { persistControlConsent(control, false) }
-        }
         _selectedId.value = runCatching { p.getString(KEY_SELECTED, "") }.getOrNull().orEmpty()
         // A pending update was compared against a particular installed version.
         // Do not show it after the package itself has been upgraded.
@@ -141,8 +166,8 @@ object Repo {
             runCatching { p.getString(KEY_UPDATE_INFO, null) }.getOrNull()
                 ?.let { Migrations.heal(it, UpdateInfo()) } ?: UpdateInfo()
         } else UpdateInfo()
-        loaded = true
         loadProfiles()
+        loaded = true
     }
 
     /** کشور سرور را از نامش تشخیص می‌دهد (آفلاین) */
@@ -329,6 +354,55 @@ object Repo {
         if (idx >= 0) list[idx] = server else list.add(server)
         _servers.value = list
         persistServers()
+    }
+
+    /** Do not overwrite a profile changed by a refresh, another edit, or a restore. */
+    @Synchronized
+    fun saveEditedServer(edited: ServerConfig, expectedFingerprint: String, expectedEpoch: Long): Boolean {
+        if (isStorageReadOnly() || expectedEpoch != dataEpoch) return false
+        val list = _servers.value.toMutableList()
+        val index = list.indexOfFirst { it.id == edited.id }
+        if (index < 0) return false
+        val current = list[index]
+        if (current.fingerprint() != expectedFingerprint) return false
+        val sameConnection = current.fingerprint() == edited.fingerprint()
+        list[index] = edited.copy(
+            subId = current.subId, favorite = current.favorite, addedAt = current.addedAt,
+            countryCode = current.countryCode, countryName = current.countryName,
+            tcpPing = if (sameConnection) current.tcpPing else -1,
+            realPing = if (sameConnection) current.realPing else -1,
+            googlePing = if (sameConnection) current.googlePing else -1,
+            instagramPing = if (sameConnection) current.instagramPing else -1,
+            youtubePing = if (sameConnection) current.youtubePing else -1,
+            speedKbps = if (sameConnection) current.speedKbps else 0,
+            successCount = if (sameConnection) current.successCount else 0,
+            failCount = if (sameConnection) current.failCount else 0,
+            testedAt = if (sameConnection) current.testedAt else 0L,
+            testedUrl = if (sameConnection) current.testedUrl else "",
+            testedFragment = sameConnection && current.testedFragment,
+            testedFragmentProfile = if (sameConnection) current.testedFragmentProfile else FragmentProfile.BALANCED
+        )
+        _servers.value = list
+        persistServers()
+        return true
+    }
+
+    /** A clone is an independent personal profile, never a subscription-owned test result. */
+    @Synchronized
+    fun cloneEditedServer(copy: ServerConfig, sourceId: String, expectedFingerprint: String, expectedEpoch: Long): Boolean {
+        if (isStorageReadOnly() || expectedEpoch != dataEpoch || copy.id.isBlank()) return false
+        val current = _servers.value.firstOrNull { it.id == sourceId } ?: return false
+        if (current.fingerprint() != expectedFingerprint || _servers.value.any { it.id == copy.id }) return false
+        val clone = copy.copy(
+            subId = "", favorite = false, addedAt = System.currentTimeMillis(),
+            tcpPing = -1, realPing = -1, googlePing = -1, instagramPing = -1, youtubePing = -1,
+            speedKbps = 0, successCount = 0, failCount = 0, testedAt = 0L, testedUrl = "",
+            testedFragment = false, testedFragmentProfile = FragmentProfile.BALANCED
+        )
+        _servers.value = _servers.value + clone
+        persistServers()
+        setSelected(clone.id)
+        return true
     }
 
     @Synchronized
@@ -920,6 +994,16 @@ object Repo {
         durableTransaction(storage, listOf(KEY_EXTERNAL_AUTOMATION)) {
             it.putBoolean(KEY_EXTERNAL_AUTOMATION, enabled)
         }
+
+    /** A failed revocation must not let an old consent reappear after a restart. */
+    internal fun effectiveControlConsent(storage: SharedPreferences, damaged: Boolean, appLock: Boolean): Boolean {
+        val consent = runCatching { storage.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
+        if (consent && (damaged || appLock)) {
+            check(persistControlConsent(storage, false)) { "Could not revoke external automation consent" }
+            return false
+        }
+        return consent
+    }
 
     internal fun persistLockSettings(storage: SharedPreferences, settings: String): Boolean =
         durableTransaction(storage, listOf(KEY_SETTINGS)) { it.putString(KEY_SETTINGS, settings) }

@@ -103,6 +103,26 @@ class StoredDataRecoveryTest {
         assertFalse(guarded.useFreeSources)
     }
 
+    @Test fun `failed initialization consent revocation fails closed and retries`() {
+        for ((damaged, locked) in listOf(true to false, false to true)) {
+            val fake = Preferences()
+            fake.data["allow_external_automation"] = true
+            fake.failNextCommit = true
+            try {
+                Repo.effectiveControlConsent(fake.prefs, damaged, locked)
+                fail("An unsuccessful consent revocation must abort initialization")
+            } catch (_: IllegalStateException) {
+                // initializeSafely catches this and suspends writes and automation.
+            }
+            assertEquals(true, fake.data["allow_external_automation"])
+            assertFalse(Repo.effectiveControlConsent(fake.prefs, damaged, locked))
+            assertEquals(false, fake.data["allow_external_automation"])
+        }
+        val allowed = Preferences()
+        allowed.data["allow_external_automation"] = true
+        assertTrue(Repo.effectiveControlConsent(allowed.prefs, damaged = false, appLock = false))
+    }
+
     @Test fun `consent revocation is retried durably after a failed commit`() {
         val fake = Preferences()
         fake.data["allow_external_automation"] = true
