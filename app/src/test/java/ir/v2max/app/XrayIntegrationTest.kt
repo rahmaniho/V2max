@@ -54,6 +54,7 @@ class XrayIntegrationTest {
         val links = listOf(
             "vless://$uuid@127.0.0.1:443?type=tcp&security=none",
             "vless://$uuid@example.org:443?type=ws&security=tls&host=cdn.example.org&path=%2Fws%3Fed%3D2048&sni=cdn.example.org",
+            "vless://$uuid@example.org:443?type=websocket&security=tls&host=cdn.example.org&path=%2Fws",
             "vless://$uuid@example.org:443?type=grpc&security=tls&serviceName=example&authority=cdn.example.org&mode=multi",
             "vless://$uuid@example.org:443?type=tcp&security=reality&sni=example.org&fp=chrome&pbk=$key&sid=abcd&flow=xtls-rprx-vision",
             "vless://$uuid@example.org:443?type=xhttp&security=tls&host=cdn.example.org&path=%2Fx&mode=packet-up&extra=%7B%22xPaddingBytes%22%3A%22100-200%22%7D",
@@ -80,6 +81,7 @@ class XrayIntegrationTest {
         requireBinary()
         exerciseTunnel("vless://$uuid@127.0.0.1:{port}?type=tcp&security=none", Proto.VLESS, "tcp")
         exerciseTunnel("vless://$uuid@127.0.0.1:{port}?type=ws&security=none&host=cdn.example.org&path=%2Fws", Proto.VLESS, "ws")
+        exerciseTunnel("vless://$uuid@127.0.0.1:{port}?type=websocket&security=none&host=cdn.example.org&path=%2Fws", Proto.VLESS, "ws")
         exerciseTunnel("vmess://$uuid@127.0.0.1:{port}?type=tcp&security=none", Proto.VMESS, "tcp")
         exerciseTunnel("trojan://secret@127.0.0.1:{port}?type=tcp&security=none", Proto.TROJAN, "tcp")
         exerciseTunnel("ss://YWVzLTEyOC1nY206cGFzcw@127.0.0.1:{port}", Proto.SS, "tcp")

@@ -11,6 +11,15 @@ import java.net.URLDecoder
  * تبدیل لینک‌های اشتراک (vmess/vless/trojan/ss/socks/http/hysteria2) به [ServerConfig].
  */
 object LinkParser {
+    // Removed from the Xray version bundled with this app. Never present them
+    // as usable profiles or silently turn them into a different transport.
+    private val removedTransports = setOf("quic", "h2", "h3", "http")
+
+    private fun canonicalNetwork(value: String): String = when (val network = value.trim().lowercase()) {
+        "" -> "tcp"
+        "websocket" -> "ws"
+        else -> network
+    }
 
     /** پارس یک متن چندخطی (محتویات اشتراک) */
     fun parseAll(text: String, maxConfigs: Int = 0): List<ServerConfig> {
@@ -41,7 +50,7 @@ object LinkParser {
         val scheme = line.substringBefore("://", "").lowercase()
         if (scheme.isEmpty()) return null
         return try {
-            when (scheme) {
+            val parsed = when (scheme) {
                 "vmess" -> if (line.substringAfter("://").substringBefore("?").contains('@')) {
                     parseStandard(line, Proto.VMESS)
                 } else parseVmess(line)
@@ -53,6 +62,7 @@ object LinkParser {
                 "hysteria2", "hy2" -> parseStandard(line, Proto.HYSTERIA2)
                 else -> null
             }
+            parsed?.takeUnless { it.network.trim().lowercase() in removedTransports }
         } catch (t: Throwable) {
             null
         }
@@ -92,7 +102,7 @@ object LinkParser {
         cfg.port = port
         cfg.uuid = id
         cfg.method = str("scy", "security").ifBlank { "auto" }
-        cfg.network = str("net", "network").ifBlank { "tcp" }
+        cfg.network = canonicalNetwork(str("net", "network"))
         cfg.headerType = str("type", "headerType").ifBlank { "none" }
         cfg.host = str("host")
         cfg.path = str("path")
@@ -201,7 +211,7 @@ object LinkParser {
             else -> Unit
         }
 
-        cfg.network = q["type"].orEmpty().ifBlank { "tcp" }.lowercase()
+        cfg.network = canonicalNetwork(q["type"].orEmpty())
         cfg.headerType = q["headerType"].orEmpty().ifBlank { "none" }
         cfg.host = q["host"].orEmpty()
         cfg.path = q["path"].orEmpty()
@@ -288,7 +298,7 @@ object LinkParser {
         cfg.port = port
         cfg.method = method.lowercase()
         cfg.password = password
-        cfg.network = q["type"].orEmpty().ifBlank { "tcp" }
+        cfg.network = canonicalNetwork(q["type"].orEmpty())
         cfg.host = q["host"].orEmpty()
         cfg.path = q["path"].orEmpty()
         cfg.security = if (q["security"] == "tls") "tls" else ""

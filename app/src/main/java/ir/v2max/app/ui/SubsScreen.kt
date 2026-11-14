@@ -44,7 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.SyncState
 import ir.v2max.app.data.ServerConfig
@@ -64,6 +64,7 @@ fun SubsScreen(
     onDelete: (String) -> Unit,
     onSmartScan: (String) -> Unit,
     onImportText: (String) -> Unit,
+    onAddFreeSource: (String) -> Unit = {},
     onAddFreeSources: () -> Unit = {},
     onScanQr: () -> Unit = {},
     onQrContent: (String) -> Unit = {}
@@ -288,7 +289,7 @@ fun SubsScreen(
         SourcePickerDialog(
             onDismiss = { showSources = false },
             onPick = { source ->
-                onAdd(source.name, source.url)
+                onAddFreeSource(source.url)
                 showSources = false
             },
             onAddAll = {
@@ -492,7 +493,7 @@ private fun fieldColors(): androidx.compose.material3.TextFieldColors =
 @Composable
 private fun SourcePickerDialog(
     onDismiss: () -> Unit,
-    onPick: (ir.v2max.app.data.PublicSource) -> Unit,
+    onPick: (ir.v2max.core.model.PublicSource) -> Unit,
     onAddAll: () -> Unit,
     alreadyAdded: Set<String>
 ) {
@@ -503,7 +504,7 @@ private fun SourcePickerDialog(
         text = {
             Column {
                 Text(
-                    "منابع عمومی و رایگان کانفیگ که روزانه به‌روزرسانی می‌شوند. هر منبع را جداگانه یا همه را یک‌جا اضافه کنید.",
+                    "منابع عمومی ممکن است نامطمئن یا از دسترس خارج شوند. ارائه‌دهندهٔ منبع و آینه‌های جایگزین می‌توانند نشانی IP شما را ببینند؛ برای اطلاعات حساس به آن‌ها اعتماد نکنید.",
                     style = MaterialTheme.typography.bodySmall,
                     color = V2.TextMuted
                 )

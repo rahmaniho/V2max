@@ -2,9 +2,9 @@ package ir.v2max.app.net
 
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.FragmentProfile
-import ir.v2max.app.data.PingTargets
 import ir.v2max.app.data.Proto
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.core.domain.ProbePlanner as CoreProbePlanner
 import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.coroutineContext
 
@@ -16,26 +16,36 @@ data class ProbeResult(
     val profile: FragmentProfile
 )
 
+/**
+ * Plans and runs the probes for a server.
+ *
+ * The rules — which transports are UDP, which URLs to try, when fragmentation
+ * is worth a retry, which results may be believed — live in
+ * `ir.v2max.core.domain.ProbePlanner` and are tested there. What stays here is
+ * the parts that need app types or coroutines: translating `ServerConfig` and
+ * `AppSettings` into the primitives those rules take, and driving `measure`.
+ */
 object ProbePlanner {
-    const val FALLBACK_URL = "https://www.cloudflare.com/cdn-cgi/trace"
+    const val FALLBACK_URL = CoreProbePlanner.FALLBACK_URL
 
     /** A failed TCP handshake cannot rule out protocols transported over UDP. */
-    fun usesUdp(server: ServerConfig): Boolean =
-        server.proto == Proto.HYSTERIA2 || server.network.lowercase() in setOf("hysteria", "kcp", "mkcp", "quic")
+    fun usesUdp(server: ServerConfig): Boolean = CoreProbePlanner.usesUdp(
+        protoIsHysteria2 = server.proto == Proto.HYSTERIA2,
+        network = server.network,
+    )
 
-    fun testUrls(settings: AppSettings): List<String> {
-        val preferred = settings.delayTestUrl.trim().ifBlank { PingTargets.GOOGLE.url }
-        val validPreferred = preferred.takeIf { it.startsWith("https://") || it.startsWith("http://") }
-            ?: PingTargets.GOOGLE.url
-        return listOf(validPreferred, FALLBACK_URL).distinct()
-    }
+    fun testUrls(settings: AppSettings): List<String> = CoreProbePlanner.testUrls(settings.delayTestUrl)
 
     /** Plain and, only when enabled and applicable, fragmented protocol variants. */
     fun variants(server: ServerConfig, settings: AppSettings): List<AppSettings> {
         val plain = settings.copy(fragment = false, balancer = false)
-        val canFragment = settings.fragment && server.finalMask.isBlank() && !usesUdp(server) &&
-            (server.security == "tls" || server.security == "reality" ||
-                (server.proto == Proto.TROJAN && server.security.isBlank()))
+        val canFragment = CoreProbePlanner.canFragment(
+            fragmentEnabled = settings.fragment,
+            finalMaskBlank = server.finalMask.isBlank(),
+            isUdp = usesUdp(server),
+            security = server.security,
+            protoIsTrojan = server.proto == Proto.TROJAN,
+        )
         return if (canFragment) listOf(plain, plain.copy(fragment = true)) else listOf(plain)
     }
 
@@ -73,36 +83,27 @@ object ProbePlanner {
     /** Ignore persisted download measurements when ranking a NEW scan by latency. */
     fun latencyScore(server: ServerConfig): Int = server.copy(speedKbps = 0).score()
 
-    /**
-     * Only newly successful protocol tests are candidates. When this scan also
-     * measured download speed, prefer servers within 80% of its fastest sample,
-     * breaking that group by latency and stability. Old/unmeasured speeds never
-     * outrank a current measurement. These samples are not a guarantee of future speed.
-     */
-    fun rank(verified: Collection<ServerConfig>, speeds: Map<String, Int> = emptyMap()): List<ServerConfig> {
-        val successful = verified.filter { it.realPing > 0 && it.testedUrl.isNotBlank() }
-        val measured = successful.mapNotNull { speeds[it.id]?.takeIf { speed -> speed > 0 } }
-        val fastest = measured.maxOrNull() ?: 0
-        return successful.sortedWith(
-            compareBy<ServerConfig> { cfg ->
-                val speed = speeds[cfg.id] ?: 0
-                when {
-                    fastest <= 0 -> 0
-                    speed > 0 && speed.toLong() * 10 >= fastest.toLong() * 8 -> 0
-                    speed > 0 -> 1
-                    else -> 2
-                }
-            }.thenBy { latencyScore(it) }
-                .thenByDescending { speeds[it.id] ?: 0 }
+    /** Use only current speed samples, never the persisted speed in ServerConfig. */
+    fun rank(verified: Collection<ServerConfig>, speeds: Map<String, Int> = emptyMap()): List<ServerConfig> =
+        CoreProbePlanner.rank(
+            candidates = verified,
+            realPingOf = { it.realPing },
+            testedUrlOf = { it.testedUrl },
+            scoreOf = ::latencyScore,
+            speedOf = { speeds[it.id] ?: 0 },
         )
-    }
 
     fun choose(
         verified: Collection<ServerConfig>,
         preferredId: String? = null,
         speeds: Map<String, Int> = emptyMap()
-    ): ServerConfig? {
-        val ranked = rank(verified, speeds)
-        return ranked.firstOrNull { it.id == preferredId } ?: ranked.firstOrNull()
-    }
+    ): ServerConfig? = CoreProbePlanner.choose(
+        candidates = verified,
+        preferredId = preferredId,
+        idOf = { it.id },
+        realPingOf = { it.realPing },
+        testedUrlOf = { it.testedUrl },
+        scoreOf = ::latencyScore,
+        speedOf = { speeds[it.id] ?: 0 },
+    )
 }

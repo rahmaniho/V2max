@@ -3,11 +3,11 @@ package ir.v2max.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
-import com.google.gson.reflect.TypeToken
 import ir.v2max.app.BuildConfig
 import ir.v2max.core.domain.ServerListPolicy
 import ir.v2max.core.domain.SubscriptionMerger
 import ir.v2max.core.geo.CountryFlags
+import ir.v2max.core.model.PublicSources
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,6 +35,12 @@ object Repo {
     private val gson = Gson()
     private var prefs: SharedPreferences? = null
     private var controlPrefs: SharedPreferences? = null
+    private var canWriteServers = true
+    private var canWriteSubs = true
+    private var canWriteSettings = true
+
+    /** Warning is populated only when legacy local data could not be fully read. */
+    val recoveryWarning = MutableStateFlow("")
 
     private val _servers = MutableStateFlow<List<ServerConfig>>(emptyList())
     val servers: StateFlow<List<ServerConfig>> = _servers.asStateFlow()
@@ -89,30 +95,39 @@ object Repo {
         val control = app.getSharedPreferences(CONTROL_PREF_NAME, Context.MODE_PRIVATE)
         prefs = p
         controlPrefs = control
-        // خواندن با مهاجرت ساختار داده (پر کردن کلیدهای جدید با مقدار پیش‌فرض)
-        _servers.value = p.getString(KEY_SERVERS, null)?.let {
-            Migrations.healList(it, ServerConfig())
-        } ?: readList<ServerConfig>(null, object : TypeToken<List<ServerConfig>>() {}.type)
-        _subs.value = readList<Subscription>(
-            p.getString(KEY_SUBS, null),
-            object : TypeToken<List<Subscription>>() {}.type
-        )
-        val restoredSettings = runCatching {
-            p.getString(KEY_SETTINGS, null)?.let {
-                Migrations.heal(it, AppSettings()) ?: gson.fromJson(it, AppSettings::class.java)
+        // Recover records independently; preserve an original damaged document
+        // before any automatic refresh can write a partial list over it.
+        val servers = StoredDataRecovery.list(p, KEY_SERVERS, ServerConfig())
+        val subs = StoredDataRecovery.list(p, KEY_SUBS, Subscription())
+        val savedSettings = StoredDataRecovery.settings(p, KEY_SETTINGS)
+        _servers.value = servers.value
+        _subs.value = subs.value
+        canWriteServers = servers.writesAllowed
+        canWriteSubs = subs.writesAllowed
+        canWriteSettings = savedSettings.writesAllowed
+        val damaged = servers.damaged || subs.damaged || savedSettings.damaged
+        if (damaged) {
+            recoveryWarning.value = if (!canWriteServers || !canWriteSubs || !canWriteSettings) {
+                "بخشی از داده‌های ذخیره‌شده ناسازگار است. برای جلوگیری از حذف آن، ذخیرهٔ بخش آسیب‌دیده و کارهای خودکار متوقف شد؛ فضای دستگاه و پشتیبان خود را بررسی کنید."
+            } else {
+                "بخشی از داده‌های ذخیره‌شده ناسازگار بود و ممکن است نمایش داده نشود. اصل داده در دستگاه نگه داشته و کارهای خودکار متوقف شد؛ در صورت نیاز پشتیبان معتبر را بازیابی کنید."
             }
-        }.getOrNull() ?: AppSettings()
-        val consent = runCatching { control.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
-        _settings.value = restoredSettings.copy(allowExternalAutomation = consent && !restoredSettings.appLock)
-        // Never allow disabling the lock later to resurrect a prior consent.
-        if (consent && restoredSettings.appLock) {
-            control.edit().putBoolean(KEY_EXTERNAL_AUTOMATION, false).apply()
         }
-        _selectedId.value = p.getString(KEY_SELECTED, "") ?: ""
+        val restoredSettings = StoredDataRecovery.guardSettings(savedSettings.value, damaged)
+        val consent = runCatching { control.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
+        _settings.value = restoredSettings.copy(
+            allowExternalAutomation = consent && !damaged && !restoredSettings.appLock
+        )
+        // Neither a lock nor damaged data may resurrect a prior consent.
+        if (consent && (damaged || restoredSettings.appLock)) {
+            runCatching { control.edit().putBoolean(KEY_EXTERNAL_AUTOMATION, false).apply() }
+        }
+        _selectedId.value = runCatching { p.getString(KEY_SELECTED, "") }.getOrNull().orEmpty()
         // A pending update was compared against a particular installed version.
         // Do not show it after the package itself has been upgraded.
-        update.value = if (p.getString(KEY_UPDATE_INFO_VERSION, "") == BuildConfig.VERSION_NAME) {
-            p.getString(KEY_UPDATE_INFO, null)?.let { Migrations.heal(it, UpdateInfo()) } ?: UpdateInfo()
+        update.value = if (runCatching { p.getString(KEY_UPDATE_INFO_VERSION, "") }.getOrNull() == BuildConfig.VERSION_NAME) {
+            runCatching { p.getString(KEY_UPDATE_INFO, null) }.getOrNull()
+                ?.let { Migrations.heal(it, UpdateInfo()) } ?: UpdateInfo()
         } else UpdateInfo()
         loaded = true
         loadProfiles()
@@ -126,10 +141,6 @@ object Repo {
         cfg.countryName = resolved.name
         return cfg
     }
-
-    private fun <T> readList(json: String?, type: java.lang.reflect.Type): List<T> = runCatching {
-        if (json.isNullOrBlank()) emptyList() else gson.fromJson<List<T>>(json, type) ?: emptyList()
-    }.getOrDefault(emptyList())
 
     @Volatile
     private var persistSuspensions = 0
@@ -148,17 +159,18 @@ object Repo {
     }
 
     private fun persistServers() {
-        if (persistSuspensions > 0) return
+        if (persistSuspensions > 0 || !canWriteServers) return
         prefs?.edit()?.putString(KEY_SERVERS, gson.toJson(_servers.value))?.apply()
     }
 
     private fun persistSubs() {
-        if (persistSuspensions > 0) return
+        if (persistSuspensions > 0 || !canWriteSubs) return
         prefs?.edit()?.putString(KEY_SUBS, gson.toJson(_subs.value))?.apply()
     }
 
     private fun persistSettings() {
         // Settings changed during a long subscription sync must not be lost.
+        if (!canWriteSettings) return
         prefs?.edit()?.putString(KEY_SETTINGS, gson.toJson(_settings.value))?.apply()
     }
 
@@ -471,17 +483,30 @@ object Repo {
         removeServersOfSubscription(id)
     }
 
-    /** منابع رایگان داخلی را به لیست اشتراک‌ها اضافه می‌کند */
+    /** Startup uses a small default set; the source picker can request all. */
     @Synchronized
-    fun ensureBuiltInSources(): Int {
-        val known = _subs.value.map { it.url.trim().trimEnd('/') }.toHashSet()
-        val toAdd = PublicSources.DEFAULT.filter { it.url.trim().trimEnd('/') !in known }.map {
+    fun ensureBuiltInSources(includeAll: Boolean = false): Int {
+        val known = _subs.value.map { PublicSources.normalize(it.url) }.toHashSet()
+        val catalogue = if (includeAll) PublicSources.ALL else PublicSources.DEFAULT
+        val toAdd = catalogue.filter { PublicSources.normalize(it.url) !in known }.map {
             Subscription(name = it.name, url = it.url, builtIn = true)
         }
         if (toAdd.isEmpty()) return 0
         _subs.value = _subs.value + toAdd
         persistSubs()
         return toAdd.size
+    }
+
+    /** Only an explicit catalogue selection may create a built-in source. */
+    @Synchronized
+    fun addBuiltInSource(url: String): Subscription? {
+        val source = PublicSources.forUrl(url) ?: return null
+        val normalized = PublicSources.normalize(source.url)
+        if (_subs.value.any { PublicSources.normalize(it.url) == normalized }) return null
+        val sub = Subscription(name = source.name, url = source.url, builtIn = true)
+        _subs.value = _subs.value + sub
+        persistSubs()
+        return sub.copy()
     }
 
     /** حذف کانفیگ‌ها و اشتراک‌های منابع رایگان داخلی */
@@ -607,11 +632,7 @@ object Repo {
 
     private fun loadProfiles() {
         _profiles.value = runCatching {
-            val json = prefs?.getString(KEY_PROFILES, null)
-            if (json.isNullOrBlank()) emptyMap() else {
-                val type = object : TypeToken<Map<String, NetworkProfile>>() {}.type
-                gson.fromJson<Map<String, NetworkProfile>>(json, type) ?: emptyMap()
-            }
+            prefs?.getString(KEY_PROFILES, null)?.let(Migrations::healProfiles) ?: emptyMap()
         }.getOrDefault(emptyMap())
     }
 
@@ -646,9 +667,11 @@ object Repo {
     // ------------------------------------------------------- update check meta
 
     @Synchronized
-    fun lastUpdateCheck(): Long = if (prefs?.getString(KEY_UPDATE_CHECK_VERSION, "") == BuildConfig.VERSION_NAME) {
-        prefs?.getLong(KEY_LAST_UPDATE_CHECK, 0L) ?: 0L
-    } else 0L
+    fun lastUpdateCheck(): Long = runCatching {
+        if (prefs?.getString(KEY_UPDATE_CHECK_VERSION, "") == BuildConfig.VERSION_NAME) {
+            prefs?.getLong(KEY_LAST_UPDATE_CHECK, 0L) ?: 0L
+        } else 0L
+    }.getOrDefault(0L)
 
     @Synchronized
     fun markUpdateChecked() {
@@ -664,7 +687,7 @@ object Repo {
     }
 
     @Synchronized
-    fun lastNotifiedUpdate(): String = prefs?.getString(KEY_UPDATE_NOTIFIED, "").orEmpty()
+    fun lastNotifiedUpdate(): String = runCatching { prefs?.getString(KEY_UPDATE_NOTIFIED, "").orEmpty() }.getOrDefault("")
 
     @Synchronized
     fun markUpdateNotified(version: String) {
@@ -732,26 +755,40 @@ object Repo {
     fun restoreBackup(json: String): Boolean {
         val storage = prefs ?: return false
         return restoreBackup(json) { servers, subscriptions, settings, selected ->
-            // SharedPreferences updates its memory cache even when commit fails.
-            // Keep the old values so a failed write does not expose a half-restore
-            // to later readers in this process; disk failure is still reported.
-            val keys = listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)
-            val before = runCatching { keys.map { storage.getString(it, null) } }.getOrNull()
-                ?: return@restoreBackup false
-            val written = runCatching {
-                storage.edit().putString(KEY_SERVERS, servers)
-                    .putString(KEY_SUBS, subscriptions)
-                    .putString(KEY_SETTINGS, settings)
-                    .putString(KEY_SELECTED, selected)
-                    .commit()
-            }.getOrDefault(false)
-            if (!written) runCatching {
-                val editor = storage.edit()
-                keys.zip(before).forEach { (key, value) -> editor.putString(key, value) }
-                editor.apply()
-            }
-            written
+            persistBackup(storage, servers, subscriptions, settings, selected)
         }
+    }
+
+    internal fun persistBackup(
+        storage: SharedPreferences, servers: String, subscriptions: String, settings: String, selected: String
+    ): Boolean {
+        // Preserve actual types too: a corrupted non-string preference should
+        // not prevent the user from restoring a valid backup.
+        val keys = listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)
+        val before = runCatching { storage.all.toMap() }.getOrNull() ?: return false
+        val written = runCatching {
+            storage.edit().putString(KEY_SERVERS, servers)
+                .putString(KEY_SUBS, subscriptions)
+                .putString(KEY_SETTINGS, settings)
+                .putString(KEY_SELECTED, selected)
+                .commit()
+        }.getOrDefault(false)
+        if (!written) runCatching {
+            val editor = storage.edit()
+            keys.forEach { key ->
+                when (val value = before[key]) {
+                    null -> editor.remove(key)
+                    is String -> editor.putString(key, value)
+                    is Boolean -> editor.putBoolean(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Float -> editor.putFloat(key, value)
+                    is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+                }
+            }
+            editor.apply()
+        }
+        return written
     }
 
     /** Storage is injectable so failure and all-or-nothing publication can be tested without Android. */
@@ -773,6 +810,11 @@ object Repo {
         if (!runCatching { persist(encoded.first, encoded.second, encoded.third, selected) }.getOrDefault(false)) {
             return false
         }
+        // An explicit successful restore replaces the damaged sections.
+        canWriteServers = true
+        canWriteSubs = true
+        canWriteSettings = true
+        recoveryWarning.value = ""
         _servers.value = payload.servers
         _subs.value = payload.subs
         if (_settings.value.autoUpdateCheck != restoredSettings.autoUpdateCheck) automaticUpdateEpoch++
@@ -788,6 +830,10 @@ object Repo {
         _servers.value = emptyList()
         _subs.value = emptyList()
         _selectedId.value = ""
+        // This is a deliberate deletion, including any archived credentials.
+        canWriteServers = true
+        canWriteSubs = true
+        prefs?.let { StoredDataRecovery.removeArchive(it, KEY_SERVERS, KEY_SUBS) }
         persistServers()
         persistSubs()
         prefs?.edit()?.putString(KEY_SELECTED, "")?.apply()

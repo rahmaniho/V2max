@@ -8,7 +8,7 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.SubscriptionPolicy
 import kotlinx.coroutines.CancellationException
@@ -49,7 +49,9 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             coroutineScope {
                 subs.map { sub ->
                     async(Dispatchers.IO) {
-                        if (sub.builtIn && !PublicSources.ALL.any { it.url.trim() == sub.url.trim() }) return@async
+                        // The catalogue accepts trailing slashes; SubscriptionPolicy
+                        // canonicalizes known built-ins before allowing mirrors.
+                        if (sub.builtIn && PublicSources.forUrl(sub.url) == null) return@async
                         val result = semaphore.withPermit { SubscriptionPolicy.fetch(sub) }
                         val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
                         if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(

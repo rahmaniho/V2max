@@ -10,7 +10,7 @@ execute, instead of being verified only on a device.
 
 ```
 core/
-  model/     ir.v2max.core.model      domain types, settings, measurements
+  model/     ir.v2max.core.model      domain types, settings, measurements, sources
   protocol/  ir.v2max.core.protocol   share-link parsing, JSON reader
   config/    ir.v2max.core.config     Xray config generation, JSON writer
   domain/    ir.v2max.core.domain     selection, list policy, merge rules, advice
@@ -72,7 +72,7 @@ returns `ParseResult.Ok` or `ParseResult.Skipped(reason)` with reasons
 produced a server that *looks* fine and never connects are now surfaced:
 
 - a Shadowsocks plugin other than simple-obfs HTTP;
-- the legacy `h2` / `http` / `quic` transports, which the current Xray core has
+- the legacy `h2` / `h3` / `http` / `quic` transports, which the current Xray core has
   removed. Coercing these onto TCP would have been a silent downgrade.
 
 **No hidden I/O in pure logic.** Config generation used to ask a

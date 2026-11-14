@@ -61,6 +61,7 @@ fun AppRoot(vm: AppViewModel) {
     val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
+    val recoveryWarning by Repo.recoveryWarning.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
@@ -78,6 +79,17 @@ fun AppRoot(vm: AppViewModel) {
     var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    if (recoveryWarning.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { Repo.recoveryWarning.value = "" },
+            title = { Text("بررسی داده‌های ذخیره‌شده") },
+            text = { Text(recoveryWarning) },
+            confirmButton = {
+                TextButton(onClick = { Repo.recoveryWarning.value = "" }) { Text("متوجه شدم") }
+            }
+        )
+    }
 
     fun beginOrContinueInstall() {
         if (pendingInstall != null) deferredInstall = null else vm.downloadAndInstallUpdate()
@@ -464,6 +476,7 @@ fun AppRoot(vm: AppViewModel) {
                         onDelete = { vm.removeSubscription(it) },
                         onSmartScan = { vm.requestSmartConnect(it) },
                         onImportText = { vm.importText(it) },
+                        onAddFreeSource = { vm.addFreeSource(it) },
                         onAddFreeSources = { vm.addFreeSources() },
                         onScanQr = { showQr = true },
                         onQrContent = { qrDialogContent = it }

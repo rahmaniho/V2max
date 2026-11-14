@@ -76,7 +76,7 @@ object LinkParser {
      * so the user sees "unsupported transport" instead of a server that connects
      * in the list and fails in practice.
      */
-    private val REMOVED_TRANSPORTS = setOf("h2", "http", "quic")
+    private val REMOVED_TRANSPORTS = setOf("h2", "h3", "http", "quic")
 
     /** Parses a multi-line subscription body. */
     fun parseAll(text: String): List<ParseResult> {
@@ -155,7 +155,15 @@ object LinkParser {
             return ParseResult.Skipped(line, ParseResult.Reason.INCOMPLETE)
         }
         val port = str("port").toIntOrNull() ?: Proto.VMESS.defaultPort
-        val network = str("net", "network").ifBlank { "tcp" }.lowercase()
+        val network = str("net", "network").trim().lowercase().ifBlank { "tcp" }
+
+        // The same rule parseStandard applies. Without it a base64 VMess link
+        // carrying net=quic fell through transportFrom's TCP fallback and came
+        // out as a TCP server: listed, pingable, and unable to carry traffic.
+        if (network in REMOVED_TRANSPORTS) {
+            return ParseResult.Skipped(line, ParseResult.Reason.UNSUPPORTED)
+        }
+
         val securityRaw = str("tls")
 
         val transport = transportFrom(
@@ -239,9 +247,11 @@ object LinkParser {
             Proto.SS -> Credential.Cipher("", "")
         }
 
-        val network = q["type"].orEmpty().ifBlank { "tcp" }.lowercase()
+        // Hysteria2 uses its own transport regardless of an incidental type query.
+        val network = if (proto == Proto.HYSTERIA2) "hysteria"
+            else q["type"].orEmpty().trim().lowercase().ifBlank { "tcp" }
 
-        // Legacy HTTP/2 and QUIC were removed from the Xray core this app ships.
+        // Legacy HTTP and QUIC were removed from the Xray core this app ships.
         // There is no Transport variant for them, so mapping them onto TCP would
         // produce a server that looks fine and never connects — the same silent
         // failure the Shadowsocks plugin check guards against. Report instead.
@@ -354,8 +364,14 @@ object LinkParser {
         }
 
         val q = parseQuery(query)
+        val network = q["type"].orEmpty().trim().lowercase().ifBlank { "tcp" }
+        val plugin = q["plugin"].orEmpty()
+        // A recognized simple-obfs plugin overrides type with TCP below.
+        if (plugin.isBlank() && network in REMOVED_TRANSPORTS) {
+            return ParseResult.Skipped(line, ParseResult.Reason.UNSUPPORTED)
+        }
         var transport: Transport = transportFrom(
-            network = q["type"].orEmpty().ifBlank { "tcp" }.lowercase(),
+            network = network,
             headerType = "none",
             host = q["host"].orEmpty(),
             path = q["path"].orEmpty(),
@@ -365,7 +381,6 @@ object LinkParser {
 
         // v2rayNG maps simple-obfs HTTP onto Xray's TCP HTTP header. Any other
         // plugin is reported rather than dropped silently.
-        val plugin = q["plugin"].orEmpty()
         if (plugin.isNotBlank()) {
             val options = plugin.split(';').drop(1).associate {
                 it.substringBefore('=') to it.substringAfter('=', "")
@@ -412,7 +427,7 @@ object LinkParser {
         kcpMtu: Int,
         kcpTti: Int,
     ): Transport = when (network) {
-        "ws" -> Transport.WebSocket(host, path.ifBlank { "/" })
+        "ws", "websocket" -> Transport.WebSocket(host, path.ifBlank { "/" })
         "grpc" -> Transport.Grpc(serviceName, authority, mode)
         "httpupgrade" -> Transport.HttpUpgrade(host, path)
         "xhttp", "splithttp" -> Transport.XHttp(host, path, mode, extra)

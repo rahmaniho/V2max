@@ -1,4 +1,4 @@
-package ir.v2max.app.data
+package ir.v2max.core.model
 
 /**
  * منابع عمومی و رایگان کانفیگ که به‌صورت پیش‌فرض در برنامه ثبت می‌شوند.
@@ -12,11 +12,21 @@ data class PublicSource(
 
 object PublicSources {
 
+    /**
+     * The canonical form of a source URL.
+     *
+     * Every lookup must go through this. Comparing raw URLs instead — as one
+     * call site used to — silently fails for a stored subscription whose URL
+     * picked up a trailing slash, which then makes a built-in source look
+     * unknown and stops it syncing.
+     */
+    fun normalize(url: String): String = url.trim().trimEnd('/')
+
     private val byUrl: Map<String, PublicSource> by lazy {
-        ALL.associateBy { it.url.trim().trimEnd('/') }
+        ALL.associateBy { normalize(it.url) }
     }
 
-    fun forUrl(url: String): PublicSource? = byUrl[url.trim().trimEnd('/')]
+    fun forUrl(url: String): PublicSource? = byUrl[normalize(url)]
 
     /**
      * منابعی که به‌طور پیش‌فرض فعال می‌شوند.

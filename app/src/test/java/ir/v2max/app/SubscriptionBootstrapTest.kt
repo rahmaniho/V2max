@@ -1,6 +1,6 @@
 package ir.v2max.app
 
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.LinkParser
@@ -99,6 +99,26 @@ class SubscriptionBootstrapTest {
         assertEquals(known, mirrors.first())
         assertTrue(mirrors[1].startsWith("https://cdn.jsdelivr.net/"))
         assertTrue(mirrors[2].startsWith("https://ghproxy.net/"))
+    }
+
+    @Test fun `only a known built in can be canonicalized before fetching`() {
+        val known = PublicSources.DEFAULT.first().url
+        val original = Subscription(id = "built-in", builtIn = true, url = " $known/// ")
+        val request = SubscriptionPolicy.requestSubscription(original)
+        assertEquals(" $known/// ", original.url) // refresh identity is not mutated
+        assertEquals("built-in", request.id)
+        assertEquals(known, request.url)
+        assertTrue(SubscriptionPolicy.allowPublicMirrors(request))
+        assertEquals(known, SubscriptionFetcher.mirrorsFor(request.url, true).first())
+
+        val personal = Subscription(builtIn = false, url = "$known/")
+        val unknown = Subscription(builtIn = true, url = "$known?token=secret/")
+        for (sub in listOf(personal, unknown)) {
+            val unchanged = SubscriptionPolicy.requestSubscription(sub)
+            assertEquals(sub.url, unchanged.url)
+            assertFalse(SubscriptionPolicy.allowPublicMirrors(unchanged))
+            assertEquals(listOf(sub.url), SubscriptionFetcher.mirrorsFor(unchanged.url, true))
+        }
     }
 
     @Test fun `large public feeds stop parsing at the cap but personal feeds do not`() {

@@ -1,7 +1,7 @@
 package ir.v2max.app.net
 
 import android.util.Base64
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.core.model.SubscriptionUsage
 import kotlinx.coroutines.CancellationException

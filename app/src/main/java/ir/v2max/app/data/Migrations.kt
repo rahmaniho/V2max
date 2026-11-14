@@ -1,7 +1,6 @@
 package ir.v2max.app.data
 
 import com.google.gson.Gson
-import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import ir.v2max.core.geo.CountryFlags
@@ -35,26 +34,121 @@ object Migrations {
         }
     }
 
-    /** یک شیء JSON را با مدل فعلی هم‌تراز می‌کند */
+    /** A partially damaged list should not hide its other valid entries. */
+    data class ListRecovery<T>(val values: List<T>, val rejected: Int)
+
+    /** یک شیء JSON را با مدل فعلی هم‌تراز و پیش از استفاده اعتبارسنجی می‌کند. */
     fun <T : Any> heal(json: String, defaults: T): T? = runCatching {
         val parsed = JsonParser.parseString(json)
-        if (!parsed.isJsonObject) return@runCatching null
-        val obj = parsed.asJsonObject
-        fill(obj, template(defaults))
-        gson.fromJson(obj, defaults::class.java)
+        require(parsed.isJsonObject)
+        decodeStoredObject(parsed.asJsonObject, defaults)
     }.getOrNull()
 
-    /** یک آرایه‌ی JSON را با مدل فعلی هم‌تراز می‌کند */
-    fun <T : Any> healList(json: String, defaults: T): List<T>? = runCatching {
+    /**
+     * Missing IDs must be generated per record, not copied from one template.
+     * Invalid elements are skipped individually; the caller can archive the
+     * original document before it ever persists the recovered list.
+     */
+    fun <T : Any> recoverList(json: String, defaults: T): ListRecovery<T>? = runCatching {
         val parsed = JsonParser.parseString(json)
-        if (!parsed.isJsonArray) return@runCatching null
-        val array: JsonArray = parsed.asJsonArray
-        val tpl = template(defaults)
-        array.forEach { item ->
-            if (item.isJsonObject) fill(item.asJsonObject, tpl)
+        require(parsed.isJsonArray)
+        val seen = HashSet<String>()
+        val values = ArrayList<T>()
+        val expected = template(defaults)
+        var rejected = 0
+        parsed.asJsonArray.forEach { item ->
+            val value = runCatching {
+                require(item.isJsonObject)
+                val obj = item.asJsonObject
+                if (defaults is ServerConfig || defaults is Subscription) {
+                    val id = obj.get("id")
+                    val text = if (id != null && id.isJsonPrimitive && id.asJsonPrimitive.isString) id.asString else ""
+                    if (id == null || id.isJsonNull || (id.isJsonPrimitive && id.asJsonPrimitive.isString && text.isBlank()) || text in seen) {
+                        obj.addProperty("id", java.util.UUID.randomUUID().toString())
+                    }
+                }
+                decodeStoredObject(obj, defaults, expected)
+            }.getOrNull()
+            if (value == null) {
+                rejected++
+            } else {
+                val id = when (value) {
+                    is ServerConfig -> value.id
+                    is Subscription -> value.id
+                    else -> null
+                }
+                if (id != null) seen.add(id)
+                values.add(value)
+            }
         }
-        val type = com.google.gson.reflect.TypeToken.getParameterized(List::class.java, defaults::class.java).type
-        gson.fromJson<List<T>>(array, type)
+        ListRecovery(values, rejected)
+    }.getOrNull()
+
+    fun <T : Any> healList(json: String, defaults: T): List<T>? = recoverList(json, defaults)?.values
+
+    private fun <T : Any> decodeStoredObject(obj: JsonObject, defaults: T, expected: JsonObject = template(defaults)): T {
+        if (defaults is AppSettings && obj.has("appLock")) {
+            // An explicitly corrupt lock flag must not be healed to false.
+            val lock = obj.get("appLock")
+            require(lock.isJsonPrimitive && lock.asJsonPrimitive.isBoolean)
+        }
+        if (defaults is ServerConfig) {
+            // Do not turn an explicitly corrupted protocol/transport/security
+            // into a different connection. Truly missing legacy fields still
+            // receive their documented defaults.
+            listOf("proto", "network", "security").forEach { key ->
+                require(!obj.has(key) || !obj.get(key).isJsonNull)
+            }
+        }
+        fill(obj, expected)
+        requireShape(obj, expected)
+        validateKnownFields(obj, defaults)
+        // Gson's tree reader can truncate overflowing integers; its streaming
+        // reader rejects them, so decode through JSON text instead.
+        return requireNotNull(gson.fromJson(obj.toString(), defaults::class.java))
+    }
+
+    private fun validateKnownFields(obj: JsonObject, defaults: Any) {
+        fun enumField(key: String, names: List<String>) = require(obj.get(key).asString in names)
+        when (defaults) {
+            is ServerConfig -> {
+                enumField("proto", Proto.entries.map { it.name })
+                enumField("testedFragmentProfile", FragmentProfile.entries.map { it.name })
+            }
+            is AppSettings -> {
+                enumField("routingMode", RoutingMode.entries.map { it.name })
+                enumField("fragmentProfile", FragmentProfile.entries.map { it.name })
+                enumField("perAppMode", PerAppMode.entries.map { it.name })
+                listOf("customRoutingRules", "perAppPackages").forEach { key ->
+                    require(obj.getAsJsonArray(key).all { it.isJsonPrimitive && it.asJsonPrimitive.isString })
+                }
+            }
+            is NetworkProfile -> enumField("fragmentProfile", FragmentProfile.entries.map { it.name })
+        }
+    }
+
+    /** Damaged settings never silently turn off a lock or start a connection. */
+    fun safeSettingsAfterFailure(raw: String?): AppSettings {
+        val lock = runCatching {
+            val obj = JsonParser.parseString(raw).asJsonObject
+            val value = obj.get("appLock")
+            if (value != null && value.isJsonPrimitive && value.asJsonPrimitive.isBoolean) value.asBoolean else true
+        }.getOrDefault(true)
+        return AppSettings(
+            appLock = lock, autoConnectOnOpen = false, autoConnectOnBoot = false,
+            autoRefreshOnOpen = false, autoUpdateSubs = false, useFreeSources = false,
+            autoUpdateCheck = false, geoAssets = false, allowExternalAutomation = false
+        )
+    }
+
+    /** Remembered network scores are optional; never load a malformed/null entry. */
+    fun healProfiles(json: String): Map<String, NetworkProfile>? = runCatching {
+        val parsed = JsonParser.parseString(json)
+        require(parsed.isJsonObject)
+        parsed.asJsonObject.entrySet().mapNotNull { (key, value) ->
+            if (key.isBlank() || !value.isJsonObject) return@mapNotNull null
+            heal(value.toString(), NetworkProfile())?.copy(key = key)?.let { key to it }
+        }.toMap()
     }.getOrNull()
 
     /** Reject Gson's permissive primitive coercions before creating live models. */

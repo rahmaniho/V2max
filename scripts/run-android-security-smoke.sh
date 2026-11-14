@@ -20,11 +20,11 @@ pkg=ir.v2max.app.debug
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 api="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 if (( api >= 33 )); then adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS; fi
-classes=ir.v2max.app.AndroidSecureBackupTest
-expected=4
+classes=ir.v2max.app.AndroidSecureBackupTest,ir.v2max.app.AndroidStoredDataRecoveryTest
+expected=9
 if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
   classes+=,ir.v2max.app.AndroidExternalControlTest
-  expected=8
+  expected=13
 fi
 run_instrumentation() {
   local name="$1" test_classes="$2" count="$3"; shift 3

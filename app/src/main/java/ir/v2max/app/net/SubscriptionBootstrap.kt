@@ -1,6 +1,6 @@
 package ir.v2max.app.net
 
-import ir.v2max.app.data.PublicSources
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import kotlinx.coroutines.CancellationException
@@ -27,9 +27,23 @@ object SubscriptionPolicy {
         return sub.builtIn && PublicSources.forUrl(url)?.url == url
     }
 
-    suspend fun fetch(sub: Subscription): SubscriptionFetcher.Result = SubscriptionFetcher.fetch(
-        sub.url, maxConfigs = limit(sub), allowPublicMirrors = allowPublicMirrors(sub)
-    )
+    /**
+     * A stored built-in may have gained a trailing slash in an older version.
+     * Only replace it with a catalogue URL; never normalize a personal or
+     * unknown URL containing credentials. The original subscription identity
+     * remains unchanged for the refresh-commit concurrency check.
+     */
+    internal fun requestSubscription(sub: Subscription): Subscription {
+        val known = if (sub.builtIn) PublicSources.forUrl(sub.url) else null
+        return if (known == null) sub else sub.copy(url = known.url)
+    }
+
+    suspend fun fetch(sub: Subscription): SubscriptionFetcher.Result {
+        val request = requestSubscription(sub)
+        return SubscriptionFetcher.fetch(
+            request.url, maxConfigs = limit(request), allowPublicMirrors = allowPublicMirrors(request)
+        )
+    }
 }
 
 /** Start with the first usable source rather than waiting for every slow public feed. */

@@ -524,9 +524,31 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------- منابع رایگان
 
+    /** A catalogue item is public by explicit choice; pasted URLs remain personal. */
+    fun addFreeSource(url: String) {
+        val generation = cancelStartupForUserAction()
+        val sub = Repo.addBuiltInSource(url)
+        if (sub == null) {
+            showMessage("منبع انتخاب‌شده معتبر نیست یا از قبل اضافه شده است")
+            return
+        }
+        showMessage("منبع اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        viewModelScope.launch(errorHandler) {
+            val result = withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
+            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result) }
+            if (count == 0) {
+                if (!result.ok) Repo.recordSubscriptionRefreshError(sub, result.error)
+                showMessage(if (!result.ok) result.error else "کانفیگ قابل استفاده‌ای دریافت نشد یا منبع تغییر کرده است")
+            } else {
+                showMessage("${Format.number(count)} کانفیگ دریافت شد")
+                ifCurrentAction(generation) { requestSmartConnect(sub.id) }
+            }
+        }
+    }
+
     fun addFreeSources() {
         val generation = cancelStartupForUserAction()
-        val added = Repo.ensureBuiltInSources()
+        val added = Repo.ensureBuiltInSources(includeAll = true)
         if (added == 0) {
             showMessage("منابع رایگان از قبل اضافه شده‌اند")
             return

@@ -6,6 +6,7 @@ import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
+import ir.v2max.core.model.PublicSources
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -35,6 +36,32 @@ class RepoConcurrencyTest {
         ServerConfig(id = id, name = id, address = address, uuid = id, subId = source)
 
     private fun restore(json: String): Boolean = Repo.restoreBackup(json) { _, _, _, _ -> true }
+
+    @Test fun `only an explicit catalogue selection adds a built in source`() {
+        val source = PublicSources.ALL.last()
+        assertNull(Repo.addBuiltInSource(source.url + "?token=private"))
+        assertTrue(Repo.subs.value.isEmpty())
+        val added = Repo.addBuiltInSource(" ${source.url}/ ")
+        assertNotNull(added)
+        assertTrue(added!!.builtIn)
+        assertEquals(source.url, added.url)
+        assertNull(Repo.addBuiltInSource(source.url))
+        assertEquals(1, Repo.subs.value.size)
+
+        // An already-added personal subscription must never be silently converted.
+        val personal = PublicSources.ALL.first()
+        Repo.addSubscription(Subscription(id = "personal", url = personal.url, builtIn = false))
+        assertNull(Repo.addBuiltInSource(personal.url))
+        assertFalse(Repo.subById("personal")!!.builtIn)
+    }
+
+    @Test fun `add all includes the complete catalogue but startup uses defaults`() {
+        assertEquals(PublicSources.DEFAULT.size, Repo.ensureBuiltInSources())
+        assertEquals(PublicSources.ALL.size - PublicSources.DEFAULT.size, Repo.ensureBuiltInSources(includeAll = true))
+        assertEquals(PublicSources.ALL.size, Repo.subs.value.size)
+        assertTrue(Repo.subs.value.all { it.builtIn })
+        assertEquals(0, Repo.ensureBuiltInSources(includeAll = true))
+    }
 
     @Test fun `only one overlapping response can replace a source revision`() {
         val source = Subscription(id = "source", url = "https://example.org/sub", updatedAt = 1)
