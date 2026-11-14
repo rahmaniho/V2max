@@ -5,6 +5,8 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
 import ir.v2max.app.data.Repo
+import ir.v2max.app.data.TunnelStatus
+import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.V2maxVpnService
 
 /**
@@ -12,9 +14,21 @@ import ir.v2max.app.service.V2maxVpnService
  */
 object TunnelController {
 
+    /** Keep visible controls bound to the latest action while a live VPN is preserved. */
+    private fun refreshNotification(context: Context) {
+        val state = Repo.tunnel.value
+        if (V2maxVpnService.running && state.status == TunnelStatus.CONNECTED) {
+            val settings = Repo.settings.value
+            Notifier.update(context.applicationContext, state,
+                settings.showSpeedInNotification && !settings.hideNotificationContent,
+                settings.hideNotificationContent)
+        }
+    }
+
     fun start(context: Context, serverId: String? = null, smart: Boolean = false) {
         SmartConnect.cancelScan()
         val generation = V2maxVpnService.invalidatePendingActions()
+        refreshNotification(context)
         val id = serverId ?: Repo.selectedId.value.ifBlank {
             Repo.servers.value.firstOrNull()?.id.orEmpty()
         }
@@ -60,6 +74,7 @@ object TunnelController {
         // an old scan could issue a fresh-looking receipt in the gap.
         SmartConnect.cancelScan()
         val generation = V2maxVpnService.invalidatePendingActions()
+        refreshNotification(context)
         val intent = Intent(context.applicationContext, V2maxVpnService::class.java).apply {
             action = V2maxVpnService.ACTION_CANCEL_PREFLIGHT
             putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, generation)
@@ -70,6 +85,7 @@ object TunnelController {
     fun stop(context: Context) {
         SmartConnect.cancelScan()
         val generation = V2maxVpnService.invalidatePendingActions()
+        refreshNotification(context)
         val intent = Intent(context.applicationContext, V2maxVpnService::class.java).apply {
             action = V2maxVpnService.ACTION_STOP
             putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, generation)

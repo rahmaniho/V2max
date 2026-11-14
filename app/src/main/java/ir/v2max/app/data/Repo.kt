@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import ir.v2max.app.BuildConfig
 import ir.v2max.core.domain.ServerListPolicy
 import ir.v2max.core.domain.SubscriptionMerger
 import ir.v2max.core.geo.CountryFlags
@@ -23,6 +24,10 @@ object Repo {
     private const val KEY_SETTINGS = "settings_v1"
     private const val KEY_SELECTED = "selected_v1"
     private const val KEY_LAST_UPDATE_CHECK = "last_update_check_v1"
+    private const val KEY_UPDATE_CHECK_VERSION = "update_checked_for_version_v1"
+    private const val KEY_UPDATE_INFO = "pending_update_v1"
+    private const val KEY_UPDATE_INFO_VERSION = "pending_update_for_version_v1"
+    private const val KEY_UPDATE_NOTIFIED = "last_notified_update_v1"
 
     private val gson = Gson()
     private var prefs: SharedPreferences? = null
@@ -89,6 +94,11 @@ object Repo {
             }
         }.getOrNull() ?: AppSettings()
         _selectedId.value = p.getString(KEY_SELECTED, "") ?: ""
+        // A pending update was compared against a particular installed version.
+        // Do not show it after the package itself has been upgraded.
+        update.value = if (p.getString(KEY_UPDATE_INFO_VERSION, "") == BuildConfig.VERSION_NAME) {
+            p.getString(KEY_UPDATE_INFO, null)?.let { Migrations.heal(it, UpdateInfo()) } ?: UpdateInfo()
+        } else UpdateInfo()
         loaded = true
         loadProfiles()
     }
@@ -146,6 +156,7 @@ object Repo {
         return _servers.value.firstOrNull { it.id == id } ?: _servers.value.firstOrNull()
     }
 
+    @Synchronized
     fun setSelected(id: String) {
         _selectedId.value = id
         prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
@@ -619,11 +630,30 @@ object Repo {
 
     // ------------------------------------------------------- update check meta
 
-    fun lastUpdateCheck(): Long =
+    @Synchronized
+    fun lastUpdateCheck(): Long = if (prefs?.getString(KEY_UPDATE_CHECK_VERSION, "") == BuildConfig.VERSION_NAME) {
         prefs?.getLong(KEY_LAST_UPDATE_CHECK, 0L) ?: 0L
+    } else 0L
 
+    @Synchronized
     fun markUpdateChecked() {
-        prefs?.edit()?.putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())?.apply()
+        prefs?.edit()?.putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis())
+            ?.putString(KEY_UPDATE_CHECK_VERSION, BuildConfig.VERSION_NAME)?.apply()
+    }
+
+    @Synchronized
+    fun saveUpdateInfo(info: UpdateInfo) {
+        update.value = info
+        prefs?.edit()?.putString(KEY_UPDATE_INFO, gson.toJson(info))
+            ?.putString(KEY_UPDATE_INFO_VERSION, BuildConfig.VERSION_NAME)?.apply()
+    }
+
+    @Synchronized
+    fun lastNotifiedUpdate(): String = prefs?.getString(KEY_UPDATE_NOTIFIED, "").orEmpty()
+
+    @Synchronized
+    fun markUpdateNotified(version: String) {
+        prefs?.edit()?.putString(KEY_UPDATE_NOTIFIED, version)?.apply()
     }
 
     // ---------------------------------------------------------------- settings
@@ -643,6 +673,7 @@ object Repo {
 
     // --------------------------------------------------------- backup/restore
 
+    @Synchronized
     fun exportBackup(): String = gson.toJson(
         BackupPayload(
             servers = _servers.value,
@@ -657,14 +688,25 @@ object Repo {
         // Decode and migrate completely before replacing any live repository state.
         val payload = Migrations.decodeBackup(json) ?: return false
         if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
+        val selected = payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
+            ?: payload.servers.firstOrNull()?.id.orEmpty()
+        // Serialize first, then use one preferences transaction even if a
+        // subscription sync has temporarily suspended ordinary list writes.
+        val encoded = runCatching {
+            Triple(gson.toJson(payload.servers), gson.toJson(payload.subs), gson.toJson(payload.settings))
+        }.getOrNull() ?: return false
+        val stored = runCatching {
+            prefs?.edit()?.putString(KEY_SERVERS, encoded.first)
+                ?.putString(KEY_SUBS, encoded.second)
+                ?.putString(KEY_SETTINGS, encoded.third)
+                ?.putString(KEY_SELECTED, selected)
+                ?.apply()
+        }.isSuccess
+        if (!stored) return false
         _servers.value = payload.servers
         _subs.value = payload.subs
         _settings.value = payload.settings
-        persistServers()
-        persistSubs()
-        persistSettings()
-        setSelected(payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
-            ?: payload.servers.firstOrNull()?.id.orEmpty())
+        _selectedId.value = selected
         return true
     }
 

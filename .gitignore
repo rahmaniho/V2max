@@ -12,4 +12,8 @@ app/build/
 *.apk
 *.aab
 keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
 build.log

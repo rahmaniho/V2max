@@ -8,8 +8,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import ir.v2max.app.service.InstallResultReceiver
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -63,6 +66,7 @@ object UpdateInstaller {
                         val buffer = ByteArray(64 * 1024)
                         var downloaded = 0L
                         while (true) {
+                            coroutineContext.ensureActive()
                             val read = input.read(buffer)
                             if (read <= 0) break
                             output.write(buffer, 0, read)
@@ -84,7 +88,11 @@ object UpdateInstaller {
             }
 
             Result.Ready(target)
-        } catch (t: Throwable) {
+        } catch (e: CancellationException) {
+            File(context.cacheDir, "updates/v2max-update.apk").delete()
+            throw e
+        } catch (t: Exception) {
+            File(context.cacheDir, "updates/v2max-update.apk").delete()
             Log.w(TAG, "download failed", t)
             Result.Failure(t.message ?: "خطای شبکه")
         }
@@ -141,6 +149,7 @@ object UpdateInstaller {
                 pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_SIGNATURES)
             } ?: return false
 
+            if (archiveInfo.packageName != context.packageName) return false
             val downloaded = archiveInfo.signatures?.map { it.toCharsString() }?.toSet().orEmpty()
             downloaded.isNotEmpty() && installed == downloaded
         }.getOrDefault(false)

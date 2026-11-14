@@ -7,12 +7,20 @@ on:
       - "arena/**"
   pull_request:
   workflow_dispatch:
+    inputs:
+      capture_ui:
+        description: "Capture a disposable emulator home-screen preview"
+        required: false
+        type: boolean
+        default: false
 
 env:
   LIBV2RAY_VERSION: v26.10.21
+  LIBV2RAY_SHA256: e56ec3b06485fe7b37af26948673951edf719c50d6bbc618b8539045952adde4
+  XRAY_LINUX_SHA256: 0eec3ed4163c273d8c8bf821f7d219e257921cf584aa3fb970715e458e631978
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -45,32 +53,38 @@ jobs:
             curl -fL --retry 3 -o app/libs/libv2ray.aar \
               "https://github.com/2dust/AndroidLibXrayLite/releases/download/${{ env.LIBV2RAY_VERSION }}/libv2ray.aar"
           fi
+          printf '%s  %s\n' "$LIBV2RAY_SHA256" app/libs/libv2ray.aar | sha256sum --check
           ls -la app/libs
 
 
-      - name: Restore signing keystore
-        uses: actions/cache@v4
-        with:
-          path: |
-            keystore.jks
-            keystore.properties
-          key: v2max-keystore-v1
-
-      - name: Create signing keystore if needed
+      # Never restore a release key from Actions caches, which PR workflows can read.
+      # Branch/PR APKs use an ephemeral debug signing key and are CI artifacts only.
+      - name: Prepare release signing key (main push only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.V2MAX_RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.V2MAX_RELEASE_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.V2MAX_RELEASE_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.V2MAX_RELEASE_KEY_PASSWORD }}
         run: |
-          if [ ! -f keystore.jks ]; then
-            keytool -genkeypair -v -keystore keystore.jks -alias v2max \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass v2max123 -keypass v2max123 \
-              -dname "CN=V2max, OU=Mobile, O=V2max, L=Tehran, C=IR"
-            printf 'storeFile=keystore.jks\nstorePassword=v2max123\nkeyAlias=v2max\nkeyPassword=v2max123\n' > keystore.properties
-          fi
+          set -euo pipefail
+          for name in KEYSTORE_BASE64 STORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error title=release signing::Required release-signing secret $name is not configured"
+              exit 1
+            fi
+          done
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/v2max-release.jks"
+          test -s "$RUNNER_TEMP/v2max-release.jks"
+          echo "V2MAX_RELEASE_KEYSTORE=$RUNNER_TEMP/v2max-release.jks" >> "$GITHUB_ENV"
 
       - name: Download matching Xray executable for compatibility tests
         run: |
           mkdir -p "$RUNNER_TEMP/xray"
           curl -fL --retry 3 -o "$RUNNER_TEMP/xray.zip" \
             "https://github.com/XTLS/Xray-core/releases/download/${LIBV2RAY_VERSION}/Xray-linux-64.zip"
+          printf '%s  %s\n' "$XRAY_LINUX_SHA256" "$RUNNER_TEMP/xray.zip" | sha256sum --check
           unzip -q "$RUNNER_TEMP/xray.zip" -d "$RUNNER_TEMP/xray"
           chmod +x "$RUNNER_TEMP/xray/xray"
           echo "TEST_XRAY_BIN=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
@@ -141,6 +155,11 @@ jobs:
           PY
 
       - name: Build release APK
+        id: build_apk
+        env:
+          V2MAX_RELEASE_STORE_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_STORE_PASSWORD || '' }}
+          V2MAX_RELEASE_KEY_ALIAS: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_KEY_ALIAS || '' }}
+          V2MAX_RELEASE_KEY_PASSWORD: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && secrets.V2MAX_RELEASE_KEY_PASSWORD || '' }}
         run: |
           set -o pipefail
           gradle --no-daemon assembleRelease 2>&1 | tee build-out.log
@@ -148,6 +167,8 @@ jobs:
 
       - name: Report compile errors as annotations
         if: always()
+        env:
+          BUILD_OUTCOME: ${{ steps.build_apk.outcome }}
         run: |
           if [ -f build-out.log ]; then
             grep -E "^(e|w): |error:|FAILURE:|What went wrong|Caused by|Missing class|R8:|Execution failed" build-out.log | head -20 | while IFS= read -r line; do
@@ -157,10 +178,32 @@ jobs:
               echo "::error title=tail::$line"
             done
           fi
-          if [ ! -d app/build/outputs/apk/release ] || [ -z "$(ls -A app/build/outputs/apk/release 2>/dev/null)" ]; then
+          if [ "$BUILD_OUTCOME" != success ]; then
+            echo "::error title=build::release APK task did not succeed"
+            exit 1
+          fi
+          if [ ! -d app/build/outputs/apk/release ] || [ -z "$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' -print -quit)" ]; then
             echo "::error title=build::no APK produced"
             exit 1
           fi
+
+      - name: Verify release signer matches installed v2.3.1
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: bash scripts/verify-release-signing.sh
+
+      - name: Check release guard rejects the CI-only key
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+        run: |
+          set +e
+          output=$(bash scripts/verify-release-signing.sh 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! grep -Fq 'Signer mismatch' <<< "$output"; then
+            printf '%s\n' "$output"
+            echo '::error::Signing guard did not detect the incompatible CI key'
+            exit 1
+          fi
+          echo 'Release guard correctly rejected the ephemeral CI signer.'
 
       - name: Enable emulator hardware acceleration
         run: |
@@ -170,6 +213,8 @@ jobs:
 
       - name: Android VPN/TUN smoke test
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          V2MAX_CAPTURE_UI: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_ui && 'true' || 'false' }}
         with:
           api-level: 30
           arch: x86_64
@@ -184,14 +229,34 @@ jobs:
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
-      # انتشار APK در بخش Releases تا لینک دانلود مستقیم و همیشگی داشته باشد
+  publish:
+    # Keep write access out of Gradle, tests, third-party dependencies and PR runs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: v2max-main-release
+      cancel-in-progress: false
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+      - name: Download tested APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: v2max-apk
+          path: app/build/outputs/apk/release
       - name: Publish APKs to GitHub Release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -e
+          MAIN_SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [ "$MAIN_SHA" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit exists; not publishing this older run."
+            exit 0
+          fi
           TAG="apk-latest"
           VERSION=$(grep -m1 "versionName" app/build.gradle.kts | tr -d ' "' | cut -d= -f2)
           {
@@ -205,9 +270,14 @@ jobs:
             echo "پس از نصب، در اولین اجرا اجازه‌ی VPN را بدهید؛ برنامه خودش منابع رایگان را"
             echo "دریافت، تست و بهترین سرور را انتخاب می‌کند."
           } > release-notes.md
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" \
-            --title "V2max — آخرین نسخه‌ی آماده‌ی نصب" \
-            --notes-file release-notes.md --latest
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "V2max — آخرین نسخه‌ی آماده‌ی نصب" \
+              --notes-file release-notes.md --latest
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" \
+              --title "V2max — آخرین نسخه‌ی آماده‌ی نصب" \
+              --notes-file release-notes.md --latest
+          fi
           gh release upload "$TAG" app/build/outputs/apk/release/*.apk --clobber
           echo "released to $TAG"
 
@@ -217,7 +287,7 @@ jobs:
             VTAG="v$VERSION"
             if ! gh release view "$VTAG" >/dev/null 2>&1; then
               head -3 release-notes.md > version-notes.md
-              gh release create "$VTAG" \
+              gh release create "$VTAG" --target "$GITHUB_SHA" \
                 --title "V2max $VERSION" \
                 --notes-file version-notes.md
               gh release upload "$VTAG" app/build/outputs/apk/release/*.apk

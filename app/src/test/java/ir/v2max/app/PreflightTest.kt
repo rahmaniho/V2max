@@ -2,6 +2,7 @@ package ir.v2max.app
 
 import ir.v2max.app.core.AppliedTunnelPolicy
 import ir.v2max.app.core.PreflightTickets
+import ir.v2max.app.core.TunnelResourceOwnership
 import ir.v2max.app.core.VerifiedSelection
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.FragmentProfile
@@ -50,6 +51,18 @@ class PreflightTest {
         assertNotEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(mtu = 1400)))
         assertNotEquals(identity, AppliedTunnelPolicy.from(tested, base))
         assertNotEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(mux = true)))
+    }
+
+    @Test fun `late cleanup cannot release resources claimed by a newer service generation`() {
+        val owner = TunnelResourceOwnership()
+        owner.claim(10)
+        owner.claim(11)
+        assertFalse(owner.release(10))
+        assertTrue(owner.release(11))
+        assertFalse(owner.release(11))
+        owner.claim(12)
+        owner.clear()
+        assertFalse(owner.release(12))
     }
 
     @Test fun `profile fields containing separators cannot share a receipt`() {

@@ -1,6 +1,8 @@
 package ir.v2max.app
 
 import android.app.Instrumentation
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.os.SystemClock
@@ -18,9 +20,11 @@ import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
+import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbeResult
 import ir.v2max.app.net.SpeedTester
+import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.V2maxVpnService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -46,6 +50,29 @@ class AndroidVpnSmokeTest {
         uuid = "11111111-2222-3333-4444-555555555555", method = "none", network = "tcp",
         security = "none", subId = "fixture", favorite = favorite
     )
+
+    @Test fun updateNoticeIsPostedAndPendingVersionIsPersisted() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        Repo.init(context)
+        val oldSettings = Repo.settings.value.copy()
+        val previous = Repo.update.value
+        // Avoid racing the periodic network check against this deterministic fixture.
+        Repo.updateSettings { it.copy(autoUpdateCheck = false) }
+        try {
+            val update = UpdateInfo(version = "99.0.0", pageUrl = "https://github.com/rahmaniho/V2max/releases")
+            Repo.saveUpdateInfo(update)
+            val saved = context.getSharedPreferences("v2max_store", Context.MODE_PRIVATE)
+                .getString("pending_update_v1", "").orEmpty()
+            assertTrue("Pending update was not persisted", saved.contains("99.0.0"))
+            assertTrue("Update notification was not posted", Notifier.updateAvailable(context, update.version))
+            val manager = requireNotNull(context.getSystemService(NotificationManager::class.java))
+            assertTrue("No system notification for update", manager.activeNotifications.any { it.id == 1003 })
+        } finally {
+            Notifier.cancelUpdate(context)
+            Repo.saveUpdateInfo(previous)
+            Repo.saveSettings(oldSettings)
+        }
+    }
 
     @Test fun repositoryRejectsResultsForAnEditedProfile() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -260,7 +287,11 @@ class AndroidVpnSmokeTest {
             assertTunTraffic(instrumentation)
 
             val staleStopGeneration = V2maxVpnService.currentActionGeneration()
+            val oldNotificationStop = Notifier.build(context, Repo.tunnel.value, false).actions.last().actionIntent
             TunnelController.cancelPreflight(context)
+            // A pending action from an earlier notification must remain stale,
+            // even after the current notification has been refreshed.
+            oldNotificationStop.send()
             // An older STOP delivered after a newer action must not drop the live tunnel.
             context.startService(Intent(context, V2maxVpnService::class.java).apply {
                 action = V2maxVpnService.ACTION_STOP

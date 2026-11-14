@@ -629,27 +629,34 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------- بررسی به‌روزرسانی
 
     fun checkUpdates(manual: Boolean = true) {
-        val app = getApplication<Application>()
         if (!manual) {
             val last = Repo.lastUpdateCheck()
             if (System.currentTimeMillis() - last < 6 * 60 * 60 * 1000L) return
         }
         viewModelScope.launch(errorHandler) {
             if (manual) showMessage("در حال بررسی نسخه‌ی جدید…")
-            Repo.markUpdateChecked()
-            val info = UpdateChecker.checkForUpdate(app)
-            if (info != null) {
-                Repo.update.value = info
-                if (!manual) showMessage("نسخه‌ی ${info.version} منتشر شده است")
-            } else {
-                Repo.update.value = ir.v2max.app.data.UpdateInfo()
-                if (manual) showMessage("برنامه به‌روز است (نسخه‌ی فعلی)")
+            val result = UpdateChecker.checkForUpdate()
+            if (!manual && !Repo.settings.value.autoUpdateCheck) return@launch
+            when (result) {
+                is UpdateChecker.Result.Available -> {
+                    Repo.markUpdateChecked()
+                    Repo.saveUpdateInfo(result.info)
+                    if (!manual) showMessage("نسخه‌ی ${result.info.version} منتشر شده است")
+                }
+                UpdateChecker.Result.Current -> {
+                    Repo.markUpdateChecked()
+                    Repo.saveUpdateInfo(ir.v2max.app.data.UpdateInfo())
+                    if (manual) showMessage("برنامه به‌روز است (نسخه‌ی فعلی)")
+                }
+                UpdateChecker.Result.Unavailable -> {
+                    if (manual) showMessage("بررسی نسخه انجام نشد؛ اتصال اینترنت را بررسی کنید")
+                }
             }
         }
     }
 
     fun dismissUpdate() {
-        Repo.update.value = ir.v2max.app.data.UpdateInfo()
+        Repo.saveUpdateInfo(ir.v2max.app.data.UpdateInfo())
     }
 
     /** دانلود و نصب مستقیم نسخه‌ی جدید (با بررسی امضا) */
@@ -721,7 +728,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // -------------------------------------------------------------- settings
 
     fun updateSettings(block: (AppSettings) -> AppSettings) {
+        val wasChecking = Repo.settings.value.autoUpdateCheck
         Repo.updateSettings(block)
+        val nowChecking = Repo.settings.value.autoUpdateCheck
+        if (wasChecking != nowChecking) syncUpdateSchedule()
+    }
+
+    private fun syncUpdateSchedule() {
+        runCatching {
+            val app = getApplication<Application>()
+            if (Repo.settings.value.autoUpdateCheck) ir.v2max.app.service.UpdateCheckWorker.schedule(app)
+            else ir.v2max.app.service.UpdateCheckWorker.cancel(app)
+        }
     }
 
     fun exportBackup(): String = Repo.exportBackup()
@@ -729,6 +747,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importBackup(text: String) {
         cancelStartupForUserAction()
         if (Repo.restoreBackup(text)) {
+            syncUpdateSchedule()
             showMessage("پشتیبان با موفقیت بازیابی شد")
         } else {
             showMessage("فایل پشتیبان معتبر نیست")
@@ -743,7 +762,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!ir.v2max.app.util.SecureBackup.isEncrypted(text)) return false
         val plain = ir.v2max.app.util.SecureBackup.decrypt(text, password) ?: return false
         cancelStartupForUserAction()
-        return Repo.restoreBackup(plain)
+        return Repo.restoreBackup(plain).also { if (it) syncUpdateSchedule() }
     }
 
     fun resetData() {

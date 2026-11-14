@@ -112,7 +112,15 @@ class RepoConcurrencyTest {
             "{\"version\":2,\"servers\":[null]}",
             "{\"version\":2,\"servers\":\"not an array\"}",
             "{\"version\":2,\"servers\":[{\"proto\":\"unknown\"}]}",
-            "{\"version\":2,\"servers\":[{}],\"settings\":{\"perAppPackages\":[null]}}"
+            "{\"version\":2,\"servers\":[{}],\"settings\":{\"perAppPackages\":[null]}}",
+            "{\"version\":2.5,\"servers\":[{}]}",
+            "{\"version\":\"2\",\"servers\":[{}]}",
+            "{\"version\":2,\"servers\":[{\"address\":99}]}",
+            "{\"version\":2,\"servers\":[{\"port\":1.5}]}",
+            "{\"version\":2,\"servers\":[{\"port\":2147483648}]}",
+            "{\"version\":2,\"servers\":[{}],\"settings\":{\"multiPing\":\"false\"}}",
+            "{\"version\":2,\"servers\":[{\"id\":\"same\"},{\"id\":\"same\"}]}",
+            "{\"version\":2,\"subs\":[{\"id\":\"same\"},{\"id\":\"same\"}]}"
         ).forEach { input ->
             assertFalse("Unexpectedly restored: $input", Repo.restoreBackup(input))
             assertEquals("keep", Repo.selectedId.value)

@@ -57,6 +57,34 @@ object Migrations {
         gson.fromJson<List<T>>(array, type)
     }.getOrNull()
 
+    /** Reject Gson's permissive primitive coercions before creating live models. */
+    private fun requireShape(target: JsonObject, defaults: JsonObject) {
+        for ((key, expected) in defaults.entrySet()) {
+            val value = target.get(key) ?: error("missing field: $key")
+            when {
+                expected.isJsonObject -> {
+                    require(value.isJsonObject)
+                    requireShape(value.asJsonObject, expected.asJsonObject)
+                }
+                expected.isJsonArray -> require(value.isJsonArray)
+                expected.isJsonPrimitive -> {
+                    require(value.isJsonPrimitive)
+                    val actual = value.asJsonPrimitive
+                    val wanted = expected.asJsonPrimitive
+                    when {
+                        wanted.isString -> require(actual.isString)
+                        wanted.isBoolean -> require(actual.isBoolean)
+                        wanted.isNumber -> {
+                            require(actual.isNumber)
+                            // All numeric fields in these backup models are integral.
+                            actual.asBigDecimal.toBigIntegerExact()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /**
      * Validate the entire document before constructing Kotlin models. Gson can
      * otherwise populate non-null fields with null (including explicit JSON nulls).
@@ -67,10 +95,17 @@ object Migrations {
         require(parsed.isJsonObject)
         val obj = parsed.asJsonObject
         val versionElement = obj.get("version")
-        val version = if (versionElement == null || versionElement.isJsonNull) 1 else versionElement.asInt
+        val version = if (versionElement == null || versionElement.isJsonNull) 1 else {
+            require(versionElement.isJsonPrimitive && versionElement.asJsonPrimitive.isNumber)
+            val number = versionElement.asBigDecimal.toBigIntegerExact()
+            require(number >= java.math.BigInteger.ONE && number <= java.math.BigInteger.valueOf(SCHEMA_VERSION.toLong()))
+            number.toInt()
+        }
         require(version in 1..SCHEMA_VERSION)
-        fill(obj, template(BackupPayload()))
+        val backupTemplate = template(BackupPayload())
+        fill(obj, backupTemplate)
         obj.addProperty("version", version)
+        requireShape(obj, backupTemplate)
         val servers = obj.get("servers")
         val subs = obj.get("subs")
         require(servers.isJsonArray && subs.isJsonArray && obj.get("settings").isJsonObject)
@@ -78,13 +113,17 @@ object Migrations {
             require(item.isJsonObject)
             // Defaults include a generated ID, so each element needs its own template.
             val server = item.asJsonObject
-            fill(server, template(ServerConfig()))
+            val defaults = template(ServerConfig())
+            fill(server, defaults)
+            requireShape(server, defaults)
             require(Proto.entries.any { it.name == server.get("proto").asString })
             require(FragmentProfile.entries.any { it.name == server.get("testedFragmentProfile").asString })
         }
         subs.asJsonArray.forEach { item ->
             require(item.isJsonObject)
-            fill(item.asJsonObject, template(Subscription()))
+            val defaults = template(Subscription())
+            fill(item.asJsonObject, defaults)
+            requireShape(item.asJsonObject, defaults)
         }
         val settings = obj.getAsJsonObject("settings")
         require(RoutingMode.entries.any { it.name == settings.get("routingMode").asString })
@@ -94,7 +133,13 @@ object Migrations {
             val array = settings.get(key)
             require(array.isJsonArray && array.asJsonArray.all { it.isJsonPrimitive && it.asJsonPrimitive.isString })
         }
-        migrateBackup(gson.fromJson(obj, BackupPayload::class.java))
+        // Parse via the streaming reader: Gson's tree reader silently truncates
+        // overflowing Int/Long fields instead of rejecting them.
+        val payload = gson.fromJson(obj.toString(), BackupPayload::class.java)
+        require(payload.servers.all { it.id.isNotBlank() } && payload.subs.all { it.id.isNotBlank() })
+        require(payload.servers.map { it.id }.distinct().size == payload.servers.size)
+        require(payload.subs.map { it.id }.distinct().size == payload.subs.size)
+        migrateBackup(payload)
     }.getOrNull()
 
     /** نرمال‌سازی داده‌های واردشده از پشتیبان قدیمی */

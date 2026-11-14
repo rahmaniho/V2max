@@ -372,7 +372,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "بررسی خودکار نسخه‌ی جدید",
-                subtitle = "حداکثر هر ۶ ساعت، نسخه‌ی منتشرشده بررسی و اطلاع داده می‌شود",
+                subtitle = "بررسی هنگام اجرا و به‌صورت دوره‌ای در پس‌زمینه؛ اعلان نیازمند اجازهٔ سیستم است",
                 checked = settings.autoUpdateCheck
             ) { value -> onChange { it.copy(autoUpdateCheck = value) } }
         }

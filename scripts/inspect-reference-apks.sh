@@ -38,3 +38,6 @@ inspect MahsaNG \
 inspect v2rayNG \
   'https://github.com/2dust/v2rayNG/releases/download/2.4.0/v2rayNG_2.4.0_arm64-v8a.apk' \
   '0020b6725df7877734776598024a5db837977a6c3842dfe29bfd57485adb4688'
+inspect V2max-2.3.1 \
+  'https://github.com/rahmaniho/V2max/releases/download/v2.3.1/app-arm64-v8a-release.apk' \
+  'a67215b306f99ce3d15b270d1421778daccd7e16d2982e2fa4e5905898f497ca'

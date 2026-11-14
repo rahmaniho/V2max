@@ -119,3 +119,30 @@ PY
   echo '::endgroup::'
   exit 1
 fi
+
+# Optional manual visual inspection. The emulator and its fixture data are
+# disposable; no screenshot is captured during ordinary CI runs.
+if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
+  adb shell am force-stop ir.v2max.app.debug
+  adb shell am start -W -n ir.v2max.app.debug/ir.v2max.app.MainActivity
+  python3 -c 'import time; time.sleep(5)'
+  adb exec-out screencap -p > "$work/home.png"
+  preview="$work/home.png"
+  if command -v convert >/dev/null 2>&1; then
+    convert "$work/home.png" -resize 720x -quality 72 "$work/home.jpg"
+    preview="$work/home.jpg"
+  fi
+  # Small notices can be read through the GitHub check API if artifact storage
+  # is inaccessible from a developer's environment. No real user data is used.
+  python3 - "$preview" <<'PY'
+import base64, hashlib, pathlib, sys
+image = pathlib.Path(sys.argv[1]).read_bytes()
+encoded = base64.b64encode(image).decode('ascii')
+chunks = [encoded[i:i + 6000] for i in range(0, len(encoded), 6000)]
+if len(chunks) > 40:
+    raise SystemExit('Emulator preview is too large for check annotations')
+print(f'::notice title=V2MAX_UI_SHA256::{hashlib.sha256(image).hexdigest()}')
+for number, chunk in enumerate(chunks):
+    print(f'::notice title=V2MAX_UI_{number:03d}::{chunk}')
+PY
+fi
