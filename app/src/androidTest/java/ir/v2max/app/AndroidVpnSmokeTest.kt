@@ -24,6 +24,7 @@ import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbeResult
 import ir.v2max.app.net.SpeedTester
+import ir.v2max.app.net.UpdateInstaller
 import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.V2maxVpnService
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 import java.io.FileInputStream
 
 /**
@@ -50,6 +52,17 @@ class AndroidVpnSmokeTest {
         uuid = "11111111-2222-3333-4444-555555555555", method = "none", network = "tcp",
         security = "none", subId = "fixture", favorite = favorite
     )
+
+    @Test fun updaterAcceptsOnlyTheInstalledPackageIdentity() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val installedApk = File(context.applicationInfo.sourceDir)
+        val testApk = File(instrumentation.context.applicationInfo.sourceDir)
+        assertTrue("Installed APK did not match its own package and signer",
+            UpdateInstaller.sameSignature(context, installedApk))
+        assertTrue("A different test package was accepted as an update",
+            !UpdateInstaller.sameSignature(context, testApk))
+    }
 
     @Test fun updateNoticeIsPostedAndPendingVersionIsPersisted() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext

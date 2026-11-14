@@ -131,7 +131,7 @@ object UpdateInstaller {
     }
 
     /** مقایسه‌ی امضای APK دانلودشده با بسته‌ی نصب‌شده */
-    private fun sameSignature(context: Context, apk: File): Boolean {
+    internal fun sameSignature(context: Context, apk: File): Boolean {
         return runCatching {
             val pm = context.packageManager
             val installed = pm.getPackageInfo(
