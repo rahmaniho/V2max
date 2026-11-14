@@ -4,8 +4,10 @@ import android.app.Instrumentation
 import android.content.Intent
 import android.net.VpnService
 import android.os.SystemClock
+import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ir.v2max.app.core.PreflightTickets
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.core.XrayCore
@@ -257,7 +259,13 @@ class AndroidVpnSmokeTest {
             assertTrue("Stale handoff was not handled", Repo.tunnel.value.message.contains("اتصال فعلی حفظ شد"))
             assertTunTraffic(instrumentation)
 
+            val staleStopGeneration = V2maxVpnService.currentActionGeneration()
             TunnelController.cancelPreflight(context)
+            // An older STOP delivered after a newer action must not drop the live tunnel.
+            context.startService(Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_STOP
+                putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, staleStopGeneration)
+            })
             SystemClock.sleep(300)
             assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
             assertTunTraffic(instrumentation)
@@ -277,6 +285,54 @@ class AndroidVpnSmokeTest {
             }
             assertTrue("Edited profile was not applied: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
             assertTunTraffic(instrumentation)
+
+            // Start a slow automatic replacement, then supersede it. Even if its
+            // native probe returns later, it must not override the current tunnel.
+            val alternate = server.copy(id = "slow-replacement", name = "replacement")
+            Repo.updateServer(alternate)
+            Repo.updateSettings { it.copy(delayTestUrl = "http://198.51.100.1:18081/slow-probe") }
+            val beforeNext = V2maxVpnService.currentActionGeneration()
+            context.startService(Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_NEXT
+            })
+            val nextDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < nextDeadline &&
+                V2maxVpnService.currentActionGeneration() == beforeNext) SystemClock.sleep(20)
+            assertTrue("Replacement request was not received", V2maxVpnService.currentActionGeneration() != beforeNext)
+            SystemClock.sleep(300)
+            TunnelController.cancelPreflight(context)
+            SystemClock.sleep(4_500)
+            assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTrue("Canceled replacement superseded the live profile", V2maxVpnService.activeProfileMatches(edited))
+            assertTunTraffic(instrumentation)
+            Repo.removeServer(alternate.id)
+
+            // Stop while the post-start native probe is still blocked, then
+            // deliver an older, otherwise valid handoff. Neither can resurrect it.
+            val selection = requireNotNull(runBlocking {
+                SmartConnect.scanAndConnect(context, autoConnect = false, limit = 1, preferredId = edited.id)
+            }) { "Slow preflight failed: ${Repo.scan.value.message}" }
+            val staleGeneration = V2maxVpnService.currentActionGeneration()
+            val staleTicket = PreflightTickets.issue(selection)
+            TunnelController.startVerified(context, selection)
+            val connectingDeadline = SystemClock.elapsedRealtime() + 20_000
+            while (SystemClock.elapsedRealtime() < connectingDeadline &&
+                !(Repo.tunnel.value.status == TunnelStatus.CONNECTING && XrayCore.isRunning)) SystemClock.sleep(20)
+            assertTrue("Did not catch the post-start probe in flight: ${Repo.tunnel.value.message}",
+                Repo.tunnel.value.status == TunnelStatus.CONNECTING && XrayCore.isRunning)
+            TunnelController.stop(context)
+            ContextCompat.startForegroundService(context, Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_START
+                putExtra(V2maxVpnService.EXTRA_SERVER_ID, edited.id)
+                putExtra(V2maxVpnService.EXTRA_PREFLIGHT_TICKET, staleTicket)
+                putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, staleGeneration)
+            })
+            val stopDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < stopDeadline && Repo.tunnel.value.status != TunnelStatus.DISCONNECTED)
+                SystemClock.sleep(50)
+            SystemClock.sleep(4_500)
+            assertEquals("A canceled connection returned after stop", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
+            assertTrue("Native core kept running after stop", !V2maxVpnService.running && !XrayCore.isRunning)
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)

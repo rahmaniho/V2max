@@ -182,7 +182,10 @@ data class ServerConfig(
         transportHost.ifBlank { address }
     }
 
-    /** پارامترهای مؤثر در اتصال نباید هنگام حذف تکراری‌ها از بین بروند. */
+    /**
+     * پارامترهای مؤثر در اتصال؛ طول هر جزء مانع برخورد داده‌های حاوی جداکننده می‌شود.
+     * نام نمایشی، شناسه و نتیجه‌ی تست عمداً بخشی از هویت اتصال نیستند.
+     */
     fun dedupeKey(): String = listOf(
         proto.name, address, port.toString(), uuid, password, method, flow, network,
         headerType, host, path, serviceName, mode, authority, xhttpExtra, finalMask,
@@ -190,7 +193,7 @@ data class ServerConfig(
         publicKey, shortId, spiderX, allowInsecure.toString(), echConfigList,
         verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword,
         obfsMinPacketSize, obfsMaxPacketSize, hoppingPorts
-    ).joinToString("|")
+    ).joinToString(separator = "") { "${it.length}:$it" }
 
     /** شناسه پایداری که مستقل از id است (برای تطبیق با کانفیگ قبلی پس از به‌روزرسانی اشتراک) */
     fun fingerprint(): String = dedupeKey()

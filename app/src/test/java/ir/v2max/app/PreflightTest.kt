@@ -1,5 +1,6 @@
 package ir.v2max.app
 
+import ir.v2max.app.core.AppliedTunnelPolicy
 import ir.v2max.app.core.PreflightTickets
 import ir.v2max.app.core.VerifiedSelection
 import ir.v2max.app.data.AppSettings
@@ -34,6 +35,29 @@ class PreflightTest {
         assertFalse(receipt.validFor(tested, options, 17L, now + TimeUnit.MINUTES.toNanos(3)))
         assertFalse(VerifiedSelection.create(tested, listOf(tested), options, null, now)
             .validFor(tested, options, null, now))
+    }
+
+    @Test fun `active tunnel identity changes only when applied configuration changes`() {
+        val plain = tested.copy(testedFragment = false)
+        val base = AppSettings(mux = false, balancer = false)
+        val identity = AppliedTunnelPolicy.from(plain, base)
+        assertEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(
+            speedTest = true, multiPing = true, muxConcurrency = 99,
+            perAppPackages = listOf("ignored.when.off")
+        )))
+        assertEquals(identity, AppliedTunnelPolicy.from(plain.copy(testedFragmentProfile = FragmentProfile.MAHSA), base))
+        assertNotEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(ipv6 = true)))
+        assertNotEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(mtu = 1400)))
+        assertNotEquals(identity, AppliedTunnelPolicy.from(tested, base))
+        assertNotEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(mux = true)))
+    }
+
+    @Test fun `profile fields containing separators cannot share a receipt`() {
+        val first = tested.copy(host = "cdn|edge", path = "/ws")
+        val other = tested.copy(host = "cdn", path = "edge|/ws")
+        assertNotEquals(first.fingerprint(), other.fingerprint())
+        val receipt = VerifiedSelection.create(first, listOf(first), options, 17L)
+        assertFalse(receipt.validFor(other, options, 17L))
     }
 
     @Test fun `ticket is one shot and cancellation revokes it`() {

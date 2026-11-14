@@ -69,8 +69,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         startupJob?.cancel()
         startupJob = null
         clearPendingVpnRequest()
-        // A newer manual action supersedes queued and in-flight automatic scans.
+        // A newer manual action supersedes queued scans and service failover,
+        // but must not tear down an already working tunnel.
         SmartConnect.cancelScan()
+        if (Repo.tunnel.value.isActive) TunnelController.cancelPreflight(getApplication())
         return generation
     }
 
@@ -184,8 +186,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         cancelStartupForUserAction()
         if (wasScanning) {
             if (wasConnected) {
-                // The button cancels the new search, not the working VPN underneath it.
-                TunnelController.cancelPreflight(getApplication())
+                // Cancellation above stops the search, not the working VPN underneath it.
                 showMessage("بررسی لغو شد؛ اتصال فعلی برقرار است")
             } else {
                 if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
@@ -598,6 +599,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveEditedServer(server: ServerConfig) {
+        cancelStartupForUserAction()
         Repo.updateServer(server)
         showMessage("کانفیگ ذخیره شد")
     }
@@ -725,6 +727,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun exportBackup(): String = Repo.exportBackup()
 
     fun importBackup(text: String) {
+        cancelStartupForUserAction()
         if (Repo.restoreBackup(text)) {
             showMessage("پشتیبان با موفقیت بازیابی شد")
         } else {
@@ -739,6 +742,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun importEncryptedBackup(text: String, password: String): Boolean {
         if (!ir.v2max.app.util.SecureBackup.isEncrypted(text)) return false
         val plain = ir.v2max.app.util.SecureBackup.decrypt(text, password) ?: return false
+        cancelStartupForUserAction()
         return Repo.restoreBackup(plain)
     }
 

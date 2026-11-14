@@ -2,6 +2,9 @@ package ir.v2max.app.core
 
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.FragmentProfile
+import ir.v2max.app.data.PerAppMode
+import ir.v2max.app.data.Proto
+import ir.v2max.app.data.RoutingMode
 import ir.v2max.app.data.ServerConfig
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -35,6 +38,52 @@ internal data class PreflightPolicy(
             muxConcurrency = if (settings.mux) settings.muxConcurrency else 0,
             balancer = settings.balancer,
             balancerSize = if (settings.balancer) settings.balancerSize else 0
+        )
+    }
+}
+
+/** Settings that determine a running VPN, excluding UI, refresh and test-only preferences. */
+internal data class AppliedTunnelPolicy(
+    val routingMode: RoutingMode,
+    val mtu: Int,
+    val ipv6: Boolean,
+    val vpnDns: String,
+    val remoteDns: String,
+    val domesticDns: String,
+    val geoAssets: Boolean,
+    val customRoutingRules: List<String>,
+    val perAppMode: PerAppMode,
+    val perAppPackages: List<String>,
+    val fragment: Boolean,
+    val fragmentProfile: FragmentProfile?,
+    val mux: Boolean,
+    val muxConcurrency: Int,
+    val balancer: Boolean,
+    val balancerSize: Int,
+    val balancerProbeUrl: String
+) {
+    companion object {
+        fun from(server: ServerConfig, settings: AppSettings) = AppliedTunnelPolicy(
+            routingMode = settings.routingMode,
+            mtu = settings.mtu.coerceIn(1280, 9000),
+            ipv6 = settings.ipv6,
+            vpnDns = settings.vpnDns,
+            remoteDns = settings.remoteDns,
+            domesticDns = if (settings.routingMode == RoutingMode.SMART) settings.domesticDns else "",
+            geoAssets = settings.routingMode == RoutingMode.SMART && settings.geoAssets,
+            customRoutingRules = settings.customRoutingRules.toList(),
+            perAppMode = settings.perAppMode,
+            perAppPackages = if (settings.perAppMode == PerAppMode.OFF) emptyList()
+                else settings.perAppPackages.distinct().sorted(),
+            fragment = server.testedFragment,
+            fragmentProfile = server.testedFragmentProfile.takeIf { server.testedFragment },
+            mux = settings.mux && server.proto in listOf(Proto.VMESS, Proto.VLESS),
+            muxConcurrency = if (settings.mux && server.proto in listOf(Proto.VMESS, Proto.VLESS)) {
+                if (server.flow.isNotBlank()) -1 else settings.muxConcurrency.coerceIn(1, 128)
+            } else 0,
+            balancer = settings.balancer,
+            balancerSize = if (settings.balancer) settings.balancerSize.coerceIn(1, 6) else 0,
+            balancerProbeUrl = if (settings.balancer) settings.delayTestUrl.trim() else ""
         )
     }
 }

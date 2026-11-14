@@ -57,6 +57,46 @@ object Migrations {
         gson.fromJson<List<T>>(array, type)
     }.getOrNull()
 
+    /**
+     * Validate the entire document before constructing Kotlin models. Gson can
+     * otherwise populate non-null fields with null (including explicit JSON nulls).
+     * Heal array elements too, and reject future schemas we cannot interpret.
+     */
+    fun decodeBackup(json: String): BackupPayload? = runCatching {
+        val parsed = JsonParser.parseString(json)
+        require(parsed.isJsonObject)
+        val obj = parsed.asJsonObject
+        val versionElement = obj.get("version")
+        val version = if (versionElement == null || versionElement.isJsonNull) 1 else versionElement.asInt
+        require(version in 1..SCHEMA_VERSION)
+        fill(obj, template(BackupPayload()))
+        obj.addProperty("version", version)
+        val servers = obj.get("servers")
+        val subs = obj.get("subs")
+        require(servers.isJsonArray && subs.isJsonArray && obj.get("settings").isJsonObject)
+        servers.asJsonArray.forEach { item ->
+            require(item.isJsonObject)
+            // Defaults include a generated ID, so each element needs its own template.
+            val server = item.asJsonObject
+            fill(server, template(ServerConfig()))
+            require(Proto.entries.any { it.name == server.get("proto").asString })
+            require(FragmentProfile.entries.any { it.name == server.get("testedFragmentProfile").asString })
+        }
+        subs.asJsonArray.forEach { item ->
+            require(item.isJsonObject)
+            fill(item.asJsonObject, template(Subscription()))
+        }
+        val settings = obj.getAsJsonObject("settings")
+        require(RoutingMode.entries.any { it.name == settings.get("routingMode").asString })
+        require(FragmentProfile.entries.any { it.name == settings.get("fragmentProfile").asString })
+        require(PerAppMode.entries.any { it.name == settings.get("perAppMode").asString })
+        listOf("customRoutingRules", "perAppPackages").forEach { key ->
+            val array = settings.get(key)
+            require(array.isJsonArray && array.asJsonArray.all { it.isJsonPrimitive && it.asJsonPrimitive.isString })
+        }
+        migrateBackup(gson.fromJson(obj, BackupPayload::class.java))
+    }.getOrNull()
+
     /** نرمال‌سازی داده‌های واردشده از پشتیبان قدیمی */
     fun migrateBackup(payload: BackupPayload): BackupPayload {
         if (payload.version >= SCHEMA_VERSION) return payload

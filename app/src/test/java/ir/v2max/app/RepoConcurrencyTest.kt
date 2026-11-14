@@ -1,5 +1,6 @@
 package ir.v2max.app
 
+import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
@@ -15,14 +16,19 @@ import kotlin.concurrent.thread
 
 /** Pure state-policy checks; no Android preferences or network are needed. */
 class RepoConcurrencyTest {
+    private lateinit var previousSettings: AppSettings
+
     @Before fun setUp() {
+        previousSettings = Repo.settings.value.copy()
         Repo.resetEverything()
+        Repo.saveSettings(AppSettings())
         Repo.tunnel.value = TunnelUiState()
     }
 
     @After fun cleanUp() {
         Repo.tunnel.value = TunnelUiState()
         Repo.resetEverything()
+        Repo.saveSettings(previousSettings)
     }
 
     private fun server(id: String, source: String, address: String = "$id.example.org") =
@@ -65,6 +71,53 @@ class RepoConcurrencyTest {
         assertEquals(700, Repo.servers.value.size)
         Repo.trimBuiltInServers(maxTotal = 1)
         assertEquals(setOf(live.id, selected.id), Repo.servers.value.map { it.id }.toSet())
+    }
+
+    @Test fun `version two backup restores all sections with new field defaults`() {
+        val legacy = """{
+            "version":2,
+            "servers":[{"id":"legacy","name":"old","address":"example.org","port":443,
+                        "obfsPassword":"pw"}],
+            "subs":[{"id":"old-sub","url":"https://example.org/sub"}],
+            "settings":{"multiPing":true,"fragment":false},
+            "selectedId":"legacy"
+        }""".trimIndent()
+        assertTrue(Repo.restoreBackup(legacy))
+        assertEquals("legacy", Repo.selectedId.value)
+        assertEquals("old-sub", Repo.subs.value.single().id)
+        assertTrue(Repo.settings.value.multiPing)
+        assertFalse(Repo.settings.value.fragment)
+        val restored = Repo.servers.value.single()
+        assertEquals("pw", restored.obfsPassword)
+        assertEquals("", restored.hoppingPorts)
+        assertEquals("", restored.obfsMinPacketSize)
+        assertTrue(Repo.restoreBackup(Repo.exportBackup()))
+        assertEquals("legacy", Repo.selectedId.value)
+        assertEquals("", Repo.servers.value.single().hoppingPorts)
+    }
+
+    @Test fun `legacy records with missing ids receive distinct generated ids`() {
+        assertTrue(Repo.restoreBackup("""{"version":2,"servers":[
+            {"address":"one.example.org"},{"address":"two.example.org"}
+        ],"subs":[{"url":"https://one.example.org"},{"url":"https://two.example.org"}]}"""))
+        assertEquals(2, Repo.servers.value.map { it.id }.toSet().size)
+        assertEquals(2, Repo.subs.value.map { it.id }.toSet().size)
+    }
+
+    @Test fun `invalid and future backups leave repository untouched`() {
+        Repo.updateServer(server("keep", "personal"))
+        Repo.setSelected("keep")
+        listOf(
+            "not json", "[]", "{\"version\":999,\"servers\":[{}]}",
+            "{\"version\":2,\"servers\":[null]}",
+            "{\"version\":2,\"servers\":\"not an array\"}",
+            "{\"version\":2,\"servers\":[{\"proto\":\"unknown\"}]}",
+            "{\"version\":2,\"servers\":[{}],\"settings\":{\"perAppPackages\":[null]}}"
+        ).forEach { input ->
+            assertFalse("Unexpectedly restored: $input", Repo.restoreBackup(input))
+            assertEquals("keep", Repo.selectedId.value)
+            assertEquals("keep", Repo.servers.value.single().id)
+        }
     }
 
     @Test fun `dedupe preserves separate live selected and favorite identities`() {

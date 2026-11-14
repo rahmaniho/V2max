@@ -20,12 +20,17 @@ import time
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/probe', '/tun-check'):
+        if self.path in ('/probe', '/tun-check', '/slow-probe'):
+            if self.path == '/slow-probe':
+                time.sleep(2)  # leave a native post-start probe in flight during cancellation
             body = b'v2max-tun-ok'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the caller canceled while the slow response was pending
         elif self.path == '/speed':
             total = 1_200_000
             self.send_response(200)

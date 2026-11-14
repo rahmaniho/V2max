@@ -654,9 +654,8 @@ object Repo {
 
     @Synchronized
     fun restoreBackup(json: String): Boolean {
-        val raw = runCatching { gson.fromJson(json, BackupPayload::class.java) }.getOrNull()
-            ?: return false
-        val payload = Migrations.migrateBackup(raw)
+        // Decode and migrate completely before replacing any live repository state.
+        val payload = Migrations.decodeBackup(json) ?: return false
         if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
         _servers.value = payload.servers
         _subs.value = payload.subs
@@ -664,7 +663,8 @@ object Repo {
         persistServers()
         persistSubs()
         persistSettings()
-        setSelected(payload.selectedId.ifBlank { payload.servers.firstOrNull()?.id.orEmpty() })
+        setSelected(payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
+            ?: payload.servers.firstOrNull()?.id.orEmpty())
         return true
     }
 

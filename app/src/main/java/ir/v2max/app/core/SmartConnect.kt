@@ -234,7 +234,7 @@ object SmartConnect {
                         val current = Repo.serverById(tunnel.serverId)
                         val connected = tunnel.status == TunnelStatus.CONNECTED
                         val sameAsRunning = connected && current?.id == selection.id &&
-                            TunnelController.matchesActiveProfile(selection.server())
+                            TunnelController.matchesActiveProfile(selection.server(), settings)
                         // Avoid interrupting a working, comparable connection.
                         val keepCurrent = preferredId == null && connected && current != null &&
                             !sameAsRunning && current.bestPing() > 0 &&
