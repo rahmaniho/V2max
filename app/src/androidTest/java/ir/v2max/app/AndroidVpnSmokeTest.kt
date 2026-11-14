@@ -262,6 +262,9 @@ class AndroidVpnSmokeTest {
             name = "Local Xray fixture", proto = Proto.VLESS, address = "10.0.2.2", port = 18080,
             uuid = "11111111-2222-3333-4444-555555555555", method = "none", network = "tcp", security = "none"
         )
+        // This emulator is disposable. Isolate recovery from profiles left by
+        // other instrumentation cases so there is exactly one available fixture.
+        Repo.removeServers(Repo.servers.value.map { it.id })
         Repo.addServers(listOf(server))
         Repo.setSelected(server.id)
         assertNull("CI must grant ACTIVATE_VPN app-op before this test", VpnService.prepare(context))
@@ -382,6 +385,62 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("Edited profile was not applied: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            assertTunTraffic(instrumentation)
+
+            // Simulate the native core stopping. With no other fixture profile,
+            // recovery must re-test this profile rather than trust its old ping.
+            val oldRetestAction = Notifier.build(context, Repo.tunnel.value, false).actions[1].actionIntent
+            Repo.updateSettings { it.copy(smartFailover = true, autoUpdateSubs = false, killSwitch = false) }
+            XrayCore.stop()
+            val recoveryStartDeadline = SystemClock.elapsedRealtime() + 30_000
+            while (SystemClock.elapsedRealtime() < recoveryStartDeadline &&
+                Repo.tunnel.value.status != TunnelStatus.CONNECTING) SystemClock.sleep(50)
+            assertEquals("Unexpected core stop was not detected", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            assertTrue("Recovery falsely claimed the VPN was running", !V2maxVpnService.running)
+            assertEquals("Only Stop should be offered during recovery", 1,
+                Notifier.build(context, Repo.tunnel.value, false).actions.size)
+            oldRetestAction.send() // an action queued before the core stopped
+            ContextCompat.startForegroundService(context, Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_START
+                putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, V2maxVpnService.currentActionGeneration() - 1)
+            })
+            SystemClock.sleep(400)
+            assertEquals("A stale service action canceled recovery", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            val recoveryDeadline = SystemClock.elapsedRealtime() + 90_000
+            while (SystemClock.elapsedRealtime() < recoveryDeadline &&
+                !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(edited))) {
+                SystemClock.sleep(100)
+            }
+            assertTrue("VPN did not recover: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            assertTunTraffic(instrumentation)
+
+            // A user stop while recovery is waiting must cancel retries, including
+            // when the existing TUN is being retained for Kill Switch.
+            Repo.updateSettings { it.copy(killSwitch = true) }
+            XrayCore.stop()
+            val blockedDeadline = SystemClock.elapsedRealtime() + 30_000
+            while (SystemClock.elapsedRealtime() < blockedDeadline &&
+                Repo.tunnel.value.status != TunnelStatus.CONNECTING) SystemClock.sleep(50)
+            assertEquals("Second core stop was not detected", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            assertTrue("Recovery did not report the retained Kill Switch",
+                Repo.tunnel.value.message.contains("ترافیک مسدود"))
+            TunnelController.stop(context)
+            val recoveryStopDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < recoveryStopDeadline &&
+                Repo.tunnel.value.status != TunnelStatus.DISCONNECTED) SystemClock.sleep(50)
+            SystemClock.sleep(21_000) // beyond the first and second recovery backoffs
+            assertEquals("Recovery reconnected after the user stopped it", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
+            assertTrue("Core restarted after the user stopped it", !XrayCore.isRunning && !V2maxVpnService.running)
+
+            Repo.updateSettings { it.copy(smartFailover = false, killSwitch = false) }
+            assertTrue("Preflight after recovery stop failed: ${Repo.scan.value.message}",
+                runBlocking { SmartConnect.connectVerified(context, edited.id) })
+            val restartDeadline = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < restartDeadline &&
+                !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(edited))) {
+                SystemClock.sleep(100)
+            }
+            assertTrue("Manual reconnect did not start: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
             assertTunTraffic(instrumentation)
 
             // Start a slow automatic replacement, then supersede it. Even if its

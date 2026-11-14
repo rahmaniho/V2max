@@ -13,6 +13,7 @@ import ir.v2max.app.core.AppliedTunnelPolicy
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.Failover
 import ir.v2max.app.core.PreflightTickets
+import ir.v2max.app.core.RecoveryLoop
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelResourceOwnership
 import ir.v2max.app.core.VerifiedSelection
@@ -76,8 +77,9 @@ class V2maxVpnService : VpnService() {
         /** سقف زمان انتظار پیش از جایگزینی اجباری */
         private const val MAX_FAIL_RESILIENCE = 15
 
-        /** حداکثر تعداد جابه‌جایی خودکار در یک نشست */
+        /** حداکثر تعداد جابه‌جایی پیاپی قبل از وقفه و تلاش دوباره */
         private const val MAX_FAILOVERS = 10
+        private const val STABLE_RECOVERY_RESET_NANOS = 120_000_000_000L
 
         // Service callbacks and coroutine work run on different threads. Share
         // this gate across service instances so a newer user action invalidates
@@ -133,6 +135,7 @@ class V2maxVpnService : VpnService() {
     private val connectMutex = Mutex()
 
     private var connectedAt = 0L
+    private var connectedAtNanos = 0L
     private var totalUp = 0L
     private var totalDown = 0L
 
@@ -141,6 +144,7 @@ class V2maxVpnService : VpnService() {
     private fun coreTraffic(): LongArray = XrayCore.trafficSinceLastQuery()
 
     @Volatile private var failoverAttempts = 0
+    @Volatile private var recoveryAttempt = 0
 
     /** شبکه عوض شده و باید سریع دوباره سنجیده شود */
     @Volatile
@@ -234,6 +238,16 @@ class V2maxVpnService : VpnService() {
             }
         }
 
+        // Next/retest are meaningful only for an actual running tunnel. In
+        // particular an old notification action must not cancel recovery and
+        // leave the service stuck in CONNECTING.
+        if (action == ACTION_NEXT || action == ACTION_RETEST) {
+            val connected = synchronized(coreStartStopLock) {
+                running && coreRunning() && tun != null && Repo.tunnel.value.status == TunnelStatus.CONNECTED
+            }
+            if (!connected) return ignoreStaleCommand(intent, startId)
+        }
+
         if (action == ACTION_NEXT) {
             val generation = synchronized(coreStartStopLock) {
                 if (commandGeneration != null && commandGeneration != connectToken.get()) return START_STICKY
@@ -288,7 +302,8 @@ class V2maxVpnService : VpnService() {
                         val result = ProbePlanner.verify(server, Repo.settings.value, ir.v2max.app.net.HealthScanner::realDelay)
                         coroutineContext.ensureActive()
                         if (generation != connectToken.get() || Repo.tunnel.value.status != TunnelStatus.CONNECTED ||
-                            currentServer?.id != id || Repo.serverById(id)?.fingerprint() != server.fingerprint()) {
+                            !running || !coreRunning() || currentServer?.id != id ||
+                            Repo.serverById(id)?.fingerprint() != server.fingerprint()) {
                             resumeMonitorIfCurrent(generation)
                             return@launch
                         }
@@ -391,7 +406,8 @@ class V2maxVpnService : VpnService() {
             startForegroundCompat()
             isForeground = true
         }
-        if (!running && preflightJob?.isActive != true && connectJob?.isActive != true && actionJob?.isActive != true) {
+        if (!running && preflightJob?.isActive != true && connectJob?.isActive != true &&
+            actionJob?.isActive != true && monitorJob?.isActive != true) {
             stopForegroundCompat()
             stopSelf(startId)
             return START_NOT_STICKY
@@ -616,9 +632,13 @@ class V2maxVpnService : VpnService() {
                 activeIdentity = identity(server, settings)
                 running = true
                 connectedAt = System.currentTimeMillis()
+                connectedAtNanos = System.nanoTime()
                 totalUp = 0
                 totalDown = 0
-                if (!isFailover) failoverAttempts = 0
+                if (!isFailover) {
+                    failoverAttempts = 0
+                    recoveryAttempt = 0
+                }
                 Failover.markWorking(server.id)
 
                 publish(
@@ -643,7 +663,9 @@ class V2maxVpnService : VpnService() {
             if (replacedTunnel) releaseOwnedResources(token)
             throw e
         } catch (e: PreflightChanged) {
-            preflightFailed("کانفیگ، شبکه یا تنظیمات پس از تست تغییر کرد؛ دوباره تلاش کنید", token, requestStartId)
+            val message = "کانفیگ، شبکه یا تنظیمات پس از تست تغییر کرد"
+            if (isFailover && !running && Repo.settings.value.smartFailover) beginRecovery(message, token, requestStartId)
+            else preflightFailed("$message؛ دوباره تلاش کنید", token, requestStartId)
         } catch (t: Exception) {
             if (token != connectToken.get()) {
                 if (replacedTunnel) releaseOwnedResources(token)
@@ -665,7 +687,7 @@ class V2maxVpnService : VpnService() {
             if (isFailover && Repo.settings.value.smartFailover && failoverAttempts < MAX_FAILOVERS) {
                 val failedId = currentServer?.id.orEmpty()
                 Failover.markFailed(failedId)
-                val next = Failover.findReplacement(applicationContext, failedId)
+                val next = findReplacementSafely(failedId)
                 coroutineContext.ensureActive()
                 if (next != null && connect(next, token, isFailover = true, requestStartId = requestStartId)) {
                     Log.i(TAG, "failover retry #$failoverAttempts")
@@ -673,9 +695,14 @@ class V2maxVpnService : VpnService() {
                 }
             }
 
-            if (token == connectToken.get()) currentServer?.let { Repo.recordOutcome(it.id, false) }
+            if (token == connectToken.get()) currentServer?.let { server ->
+                runCatching { Repo.recordOutcome(server.id, false) }
+                    .onFailure { Log.w(TAG, "could not persist failed connection statistics", it) }
+            }
             val raw = (t.message ?: t.javaClass.simpleName).take(180)
-            fail("اتصال برقرار نشد: $raw", token, requestStartId)
+            val message = "اتصال برقرار نشد: $raw"
+            if (Repo.settings.value.smartFailover) beginRecovery(message, token, requestStartId)
+            else fail(message, token, requestStartId)
         }
     }
 
@@ -762,7 +789,9 @@ class V2maxVpnService : VpnService() {
     }
 
     private fun resumeMonitorIfCurrent(generation: Int) = synchronized(coreStartStopLock) {
-        if (generation == connectToken.get() && running && coreRunning() && tun != null) startMonitor()
+        // The core may have stopped during a retest. Resume monitoring so it
+        // can detect the failure and start recovery instead of going silent.
+        if (generation == connectToken.get() && running && tun != null) startMonitor()
     }
 
     private fun startMonitor() {
@@ -780,6 +809,22 @@ class V2maxVpnService : VpnService() {
                 if (monitorGeneration != connectToken.get()) return@launch
                 val state = Repo.tunnel.value
                 if (state.status != TunnelStatus.CONNECTED) break
+
+                // A stopped core is detectable without a network probe. Check on
+                // every monitor tick instead of waiting up to the battery-saver
+                // probe interval before starting recovery.
+                if (withContext(Dispatchers.IO) { !coreRunning() }) {
+                    Log.w(TAG, "core stopped unexpectedly")
+                    if (Repo.settings.value.smartFailover) {
+                        if (rotate("بازسازی هسته", monitorGeneration, monitorStartId)) return@launch
+                        if (Repo.settings.value.smartFailover) {
+                            beginRecovery("هسته متوقف شد", monitorGeneration, monitorStartId)
+                            return@launch
+                        }
+                    }
+                    fail("اتصال قطع شد", monitorGeneration, monitorStartId)
+                    return@launch
+                }
 
                 val traffic = withContext(Dispatchers.IO) { coreTraffic() }
                 totalUp += traffic[0]
@@ -823,16 +868,6 @@ class V2maxVpnService : VpnService() {
                 if (now - lastProbe < interval) continue
                 lastProbe = now
 
-                // اگر هسته از کار افتاده باشد، اتصال بدون دخالت کاربر بازسازی می‌شود
-                if (withContext(Dispatchers.IO) { !coreRunning() }) {
-                    Log.w(TAG, "core stopped unexpectedly")
-                    if (Repo.settings.value.smartFailover) {
-                        if (rotate("بازسازی هسته", monitorGeneration, monitorStartId)) return@launch
-                    }
-                    fail("اتصال قطع شد", monitorGeneration, monitorStartId)
-                    return@launch
-                }
-
                 // Use the destination that actually worked and a second independent
                 // endpoint before treating a temporary destination outage as a tunnel failure.
                 val options = Repo.settings.value
@@ -851,6 +886,14 @@ class V2maxVpnService : VpnService() {
                     failures = 0
                     if (!publishIfCurrent(Repo.tunnel.value.copy(ping = ping.toInt(), message = "متصل"), monitorGeneration))
                         return@launch
+                    if (System.nanoTime() - connectedAtNanos >= STABLE_RECOVERY_RESET_NANOS) {
+                        synchronized(coreStartStopLock) {
+                            if (monitorGeneration == connectToken.get()) {
+                                recoveryAttempt = 0
+                                failoverAttempts = 0
+                            }
+                        }
+                    }
                     Repo.pushLatency(ping.toInt())
                     continue
                 }
@@ -883,6 +926,60 @@ class V2maxVpnService : VpnService() {
         }
     }
 
+    /** Keep retrying after the core actually stops, without pretending traffic is protected. */
+    private fun beginRecovery(message: String, generation: Int, requestStartId: Int) = synchronized(coreStartStopLock) {
+        if (generation != connectToken.get()) return@synchronized
+        monitorJob?.cancel()
+        resourceOwner.clear()
+        XrayCore.stop()
+        val blocked = Repo.settings.value.killSwitch && tun != null
+        if (!blocked) closeTun()
+        running = false
+        activeIdentity = null
+        Repo.poolSize.value = 0
+        failoverAttempts = 0
+        publish(Repo.tunnel.value.copy(
+            status = TunnelStatus.CONNECTING,
+            downSpeed = 0,
+            upSpeed = 0,
+            message = if (blocked) "$message؛ ترافیک مسدود است و اتصال دوباره بررسی می‌شود"
+                else "$message؛ VPN قطع است و اینترنت ممکن است مستقیم باشد. در حال تلاش دوباره…"
+        ))
+        val startingAttempt = recoveryAttempt
+        monitorJob = scope.launch {
+            val next = RecoveryLoop.awaitVerified(
+                isCurrent = { generation == connectToken.get() && Repo.settings.value.smartFailover },
+                initialAttempt = startingAttempt,
+                onAttempt = { nextAttempt ->
+                    synchronized(coreStartStopLock) {
+                        if (generation == connectToken.get()) recoveryAttempt = nextAttempt
+                    }
+                },
+                findVerified = {
+                    // Previously failed profiles may work again on a recovered
+                    // network. Re-test them; never reuse a cached success.
+                    Failover.reset()
+                    findReplacementSafely(null)
+                }
+            )
+            coroutineContext.ensureActive()
+            if (next != null) {
+                connect(next, generation, isFailover = true, requestStartId = requestStartId)
+            } else if (generation == connectToken.get() && !Repo.settings.value.smartFailover) {
+                fail("بازیابی خودکار خاموش شد", generation, requestStartId)
+            }
+        }
+    }
+
+    private suspend fun findReplacementSafely(currentId: String?): VerifiedSelection? = try {
+        Failover.findReplacement(applicationContext, currentId)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "replacement search failed", e)
+        null
+    }
+
     /** جابه‌جایی تنها به سروری که تست واقعی را گذرانده است. */
     private suspend fun rotate(reason: String, generation: Int, requestStartId: Int): Boolean {
         if (generation != connectToken.get()) return false
@@ -902,7 +999,7 @@ class V2maxVpnService : VpnService() {
             ), generation
         )) return false
 
-        val next = Failover.findReplacement(applicationContext, currentId) ?: return false
+        val next = findReplacementSafely(currentId) ?: return false
         coroutineContext.ensureActive()
         if (!connect(next, generation, isFailover = true, requestStartId = requestStartId)) return false
         Log.i(TAG, "failover #$failoverAttempts ($reason)")
@@ -960,6 +1057,10 @@ class V2maxVpnService : VpnService() {
                 message = "$message؛ اتصال فعلی حفظ شد"
             ))
             startMonitor()
+        } else if (running && active != null && Repo.settings.value.smartFailover) {
+            // The live core may have stopped while another preflight was in
+            // progress. Resume recovery instead of leaving monitoring canceled.
+            beginRecovery(message, generation, requestStartId)
         } else {
             fail(message, generation, requestStartId)
         }

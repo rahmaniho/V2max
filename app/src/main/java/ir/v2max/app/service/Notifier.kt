@@ -95,7 +95,7 @@ object Notifier {
         val text = if (hideDetails) {
             when (state.status) {
                 ir.v2max.app.data.TunnelStatus.CONNECTED -> "اتصال برقرار است"
-                ir.v2max.app.data.TunnelStatus.CONNECTING -> "در حال اتصال…"
+                ir.v2max.app.data.TunnelStatus.CONNECTING -> "در حال اتصال؛ VPN هنوز برقرار نیست"
                 ir.v2max.app.data.TunnelStatus.ERROR -> "اتصال ناموفق بود"
                 else -> "اتصال قطع است"
             }
@@ -103,7 +103,7 @@ object Notifier {
             ir.v2max.app.data.TunnelStatus.CONNECTED ->
                 if (showSpeed) "↓ ${Format.speed(state.downSpeed)}   ↑ ${Format.speed(state.upSpeed)}" else "اتصال برقرار است"
 
-            ir.v2max.app.data.TunnelStatus.CONNECTING -> "لطفاً کمی صبر کنید…"
+            ir.v2max.app.data.TunnelStatus.CONNECTING -> state.message.ifBlank { "VPN هنوز برقرار نیست؛ لطفاً صبر کنید" }
             ir.v2max.app.data.TunnelStatus.ERROR -> state.message.ifBlank { "اتصال ناموفق بود" }
             else -> "اتصال قطع است"
         }
@@ -119,9 +119,13 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openIntent)
-            .addAction(0, "سرور بعدی", nextIntent)
-            .addAction(0, "تست مجدد", retestIntent)
-            .addAction(0, "قطع", stopIntent)
+            .apply {
+                if (state.status == ir.v2max.app.data.TunnelStatus.CONNECTED) {
+                    addAction(0, "سرور بعدی", nextIntent)
+                    addAction(0, "تست مجدد", retestIntent)
+                }
+                addAction(0, "قطع", stopIntent)
+            }
             .build()
     }
 

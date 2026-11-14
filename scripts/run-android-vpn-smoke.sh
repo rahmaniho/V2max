@@ -138,7 +138,8 @@ if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
 import base64, hashlib, pathlib, sys
 image = pathlib.Path(sys.argv[1]).read_bytes()
 encoded = base64.b64encode(image).decode('ascii')
-chunks = [encoded[i:i + 6000] for i in range(0, len(encoded), 6000)]
+# GitHub truncates individual annotation messages at 4096 characters.
+chunks = [encoded[i:i + 3000] for i in range(0, len(encoded), 3000)]
 if len(chunks) > 40:
     raise SystemExit('Emulator preview is too large for check annotations')
 print(f'::notice title=V2MAX_UI_SHA256::{hashlib.sha256(image).hexdigest()}')
