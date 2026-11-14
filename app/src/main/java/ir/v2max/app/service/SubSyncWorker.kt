@@ -10,7 +10,6 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
-import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.net.SubscriptionPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -51,7 +50,7 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 subs.map { sub ->
                     async(Dispatchers.IO) {
                         if (sub.builtIn && !PublicSources.ALL.any { it.url.trim() == sub.url.trim() }) return@async
-                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
+                        val result = semaphore.withPermit { SubscriptionPolicy.fetch(sub) }
                         val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
                         if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(
                                 sub, trimmed, result.upload, result.download, result.total, result.expireAt

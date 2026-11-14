@@ -20,6 +20,16 @@ object SubscriptionPolicy {
         val limit = limit(sub)
         return if (limit > 0) usable.take(limit) else usable
     }
+
+    /** Only exact, predefined public feeds may be sent to a third-party mirror. */
+    fun allowPublicMirrors(sub: Subscription): Boolean {
+        val url = sub.url.trim()
+        return sub.builtIn && PublicSources.forUrl(url)?.url == url
+    }
+
+    suspend fun fetch(sub: Subscription): SubscriptionFetcher.Result = SubscriptionFetcher.fetch(
+        sub.url, maxConfigs = limit(sub), allowPublicMirrors = allowPublicMirrors(sub)
+    )
 }
 
 /** Start with the first usable source rather than waiting for every slow public feed. */
@@ -29,9 +39,7 @@ object SubscriptionBootstrap {
     internal suspend fun firstUsable(
         sources: List<Subscription>,
         parallelism: Int = 6,
-        fetch: suspend (Subscription) -> SubscriptionFetcher.Result = {
-            SubscriptionFetcher.fetch(it.url, maxConfigs = SubscriptionPolicy.limit(it))
-        },
+        fetch: suspend (Subscription) -> SubscriptionFetcher.Result = SubscriptionPolicy::fetch,
         onProgress: (Int, Int) -> Unit = { _, _ -> }
     ): Found? = coroutineScope {
         if (sources.isEmpty()) return@coroutineScope null

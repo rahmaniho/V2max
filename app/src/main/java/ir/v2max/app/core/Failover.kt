@@ -4,7 +4,6 @@ import android.content.Context
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
-import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.net.SubscriptionPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -65,7 +64,7 @@ object Failover {
         var refreshed = false
         for (sub in sources) {
             currentCoroutineContext().ensureActive()
-            val result = SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub))
+            val result = SubscriptionPolicy.fetch(sub)
             currentCoroutineContext().ensureActive()
             if (!result.ok) continue
             val configs = SubscriptionPolicy.candidates(sub, result.configs)

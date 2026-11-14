@@ -428,7 +428,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val sub = Repo.subById(id) ?: return
         viewModelScope.launch(errorHandler) {
             _busy.value = true
-            val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
+            val result = withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
             _busy.value = false
             if (!result.ok) {
                 Repo.recordSubscriptionRefreshError(sub, result.error)
@@ -483,7 +483,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             coroutineScope {
                 targets.map { sub ->
                     async(Dispatchers.IO) {
-                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
+                        val result = semaphore.withPermit { SubscriptionPolicy.fetch(sub) }
                         val count = if (result.ok) applyFetchedSubscription(sub, result) else 0
                         if (count > 0) {
                             okCount.incrementAndGet()

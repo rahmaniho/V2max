@@ -1,6 +1,7 @@
 package ir.v2max.app.net
 
 import android.util.Base64
+import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.core.model.SubscriptionUsage
 import kotlinx.coroutines.CancellationException
@@ -14,6 +15,7 @@ import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -45,14 +47,13 @@ object SubscriptionFetcher {
     }
 
     /**
-     * آدرس‌های جایگزین برای منابع گیت‌هابی.
-     * چون raw.githubusercontent.com در ایران معمولاً مسدود/کند است،
-     * اگر اتصال مستقیم شکست بخورد از آینه‌ی jsDelivr استفاده می‌شود.
+     * Public-feed fallbacks only. A personal URL can contain credentials in
+     * either its path or query and must never be disclosed to third parties.
      */
-    fun mirrorsFor(url: String): List<String> {
-        val out = ArrayList<String>()
-        out.add(url)
+    fun mirrorsFor(url: String, allowPublicMirrors: Boolean = false): List<String> {
         val clean = url.trim()
+        val out = arrayListOf(clean)
+        if (!allowPublicMirrors || PublicSources.forUrl(clean)?.url != clean) return out
         val prefix = "https://raw.githubusercontent.com/"
         if (clean.startsWith(prefix)) {
             val rest = clean.removePrefix(prefix).split('/')
@@ -68,12 +69,16 @@ object SubscriptionFetcher {
         return out
     }
 
-    suspend fun fetch(url: String, maxConfigs: Int = 0): Result = withContext(Dispatchers.IO) {
+    suspend fun fetch(
+        url: String,
+        maxConfigs: Int = 0,
+        allowPublicMirrors: Boolean = false
+    ): Result = withContext(Dispatchers.IO) {
         val cleaned = url.trim()
         if (cleaned.isEmpty()) return@withContext Result(error = "آدرس اشتراک خالی است")
 
         var last = Result(error = "دریافت اشتراک ناموفق بود")
-        val candidates = mirrorsFor(cleaned)
+        val candidates = mirrorsFor(cleaned, allowPublicMirrors)
         for ((index, candidate) in candidates.withIndex()) {
             val result = fetchOnce(candidate, maxConfigs)
             if (result.ok) return@withContext result
@@ -136,15 +141,29 @@ object SubscriptionFetcher {
             }
 
             override fun onResponse(call: Call, response: Response) {
+                if (!continuation.isActive) {
+                    response.close()
+                    return
+                }
                 val data = try {
                     response.use {
                         if (!it.isSuccessful) ResponseData(error = "خطای سرور: ${it.code}")
-                        else ResponseData(
-                            body = it.body?.string().orEmpty(),
-                            userInfo = it.header("subscription-userinfo"),
-                            title = it.header("profile-title")
-                        )
+                        else {
+                            val body = it.body
+                            val text = if (body == null) "" else {
+                                val bytes = SubscriptionBody.read(body.byteStream(), body.contentLength())
+                                // Preserve OkHttp's BOM and declared-charset handling.
+                                bytes.toResponseBody(body.contentType()).string()
+                            }
+                            ResponseData(
+                                body = text,
+                                userInfo = it.header("subscription-userinfo"),
+                                title = it.header("profile-title")
+                            )
+                        }
                     }
+                } catch (_: SubscriptionBody.TooLarge) {
+                    ResponseData(error = "اندازهٔ پاسخ اشتراک بیش از ۸ مگابایت است")
                 } catch (_: Exception) {
                     ResponseData(error = "خواندن پاسخ اشتراک ناموفق بود")
                 }
@@ -167,8 +186,12 @@ object SubscriptionFetcher {
     suspend fun fetchText(url: String): String? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url(url).header("User-Agent", "V2max/1.0").build()
-            client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
-        } catch (t: Throwable) {
+            val response = awaitResponse(request)
+            currentCoroutineContext().ensureActive()
+            response.body.takeIf { response.error.isEmpty() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
             null
         }
     }
