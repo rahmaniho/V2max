@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ir.v2max.app.net.UpdateInstaller
 import ir.v2max.app.service.Notifier
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -25,5 +26,13 @@ class AndroidUpdatePermissionTest {
         assertEquals(PackageManager.PERMISSION_DENIED,
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS))
         assertFalse(Notifier.updateAvailable(context, "99.0.0"))
+    }
+
+    @Test fun installSourcePermissionReflectsAndroidSetting() {
+        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+        val expected = InstrumentationRegistry.getArguments().getString("expectInstallPermission")
+        assumeTrue(expected == "true" || expected == "false")
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        assertEquals(expected == "true", UpdateInstaller.canRequestInstalls(context))
     }
 }

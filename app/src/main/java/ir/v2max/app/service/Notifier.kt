@@ -27,6 +27,8 @@ object Notifier {
     const val NOTIFICATION_ID = 1001
     private const val UPDATE_CHANNEL_ID = "v2max_updates"
     private const val UPDATE_NOTIFICATION_ID = 1003
+    internal const val INSTALL_NOTIFICATION_ID = 1004
+    internal fun installNotificationTag(sessionId: Int) = "v2max-install-$sessionId"
 
     /** Distinct PendingIntent identity per generation keeps queued old actions stale. */
     private fun serviceAction(context: Context, action: String, requestCode: Int, generation: Int): PendingIntent =
@@ -192,20 +194,25 @@ object Notifier {
         }
     }
 
-    /** Best-effort system notification; opening it shows the in-app installer. */
-    fun updateAvailable(context: Context, version: String): Boolean = runCatching {
+    private fun updateManager(context: Context): NotificationManager? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            return false
+            return null
         }
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return false
-        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return null
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(NotificationChannel(
                 UPDATE_CHANNEL_ID, "به‌روزرسانی برنامه", NotificationManager.IMPORTANCE_DEFAULT
-            ).apply { description = "اطلاع از انتشار نسخهٔ جدید V2max" })
-            if (manager.getNotificationChannel(UPDATE_CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE) return false
+            ).apply { description = "اطلاع از انتشار نسخه و تأیید نصب V2max" })
+            if (manager.getNotificationChannel(UPDATE_CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE) return null
         }
+        return manager
+    }
+
+    /** Best-effort system notification; opening it shows the in-app installer. */
+    fun updateAvailable(context: Context, version: String): Boolean = runCatching {
+        val manager = updateManager(context) ?: return false
         val open = PendingIntent.getActivity(context, 50,
             Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -220,6 +227,35 @@ object Notifier {
         manager.notify(UPDATE_NOTIFICATION_ID, notification)
         true
     }.getOrDefault(false)
+
+    /**
+     * A user-tapped notification can open Android's confirmation even if the
+     * app process has since died. Never launch an activity from the receiver.
+     */
+    fun installConfirmation(context: Context, sessionId: Int, confirmation: Intent): Boolean = runCatching {
+        val manager = updateManager(context) ?: return false
+        val action = PendingIntent.getActivity(
+            context, sessionId, Intent(confirmation).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("تأیید نصب V2max")
+            .setContentText("برای ادامه، تأیید نصب اندروید را باز کنید")
+            .setAutoCancel(true)
+            .setContentIntent(action)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        manager.notify(installNotificationTag(sessionId), INSTALL_NOTIFICATION_ID, notification)
+        true
+    }.getOrDefault(false)
+
+    fun cancelInstallConfirmation(context: Context, sessionId: Int) {
+        runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(installNotificationTag(sessionId), INSTALL_NOTIFICATION_ID)
+        }
+    }
 
     fun cancelUpdate(context: Context) {
         runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(UPDATE_NOTIFICATION_ID) }

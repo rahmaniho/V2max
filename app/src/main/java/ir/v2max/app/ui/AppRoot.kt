@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.BuildConfig
 import ir.v2max.app.data.Repo
+import ir.v2max.app.service.InstallConfirmation
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
@@ -55,6 +56,7 @@ fun AppRoot(vm: AppViewModel) {
     val update by vm.update.collectAsStateWithLifecycle()
     val updateProgress by Repo.updateProgress.collectAsStateWithLifecycle()
     val installMessage by Repo.installMessage.collectAsStateWithLifecycle()
+    val pendingInstall by InstallConfirmation.pending.collectAsStateWithLifecycle()
     val latencySamples by Repo.latencyHistory.collectAsStateWithLifecycle()
     val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
@@ -73,8 +75,13 @@ fun AppRoot(vm: AppViewModel) {
     var pendingRestoreText by remember { mutableStateOf("") }
     var showRestoreDialog by remember { mutableStateOf(false) }
     var restoreError by remember { mutableStateOf("") }
+    var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    fun beginOrContinueInstall() {
+        if (pendingInstall != null) deferredInstall = null else vm.downloadAndInstallUpdate()
+    }
 
     fun handleDiagAction(action: String) {
         when (action) {
@@ -169,6 +176,35 @@ fun AppRoot(vm: AppViewModel) {
         if (message.isNotBlank()) {
             snackbarHostState.showSnackbar(message)
             vm.clearMessage()
+        }
+    }
+
+    pendingInstall?.let { request ->
+        if (request !== deferredInstall) {
+            var installError by remember(request) { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { deferredInstall = request },
+                containerColor = V2.SurfaceHigh,
+                title = { Text("تأیید نصب به‌روزرسانی", color = V2.TextPrimary) },
+                text = {
+                    Column {
+                        Text("اندروید برای نصب به‌روزرسانی به تأیید شما نیاز دارد. در مرحلهٔ بعد جزئیات نصب را بررسی کنید.", color = V2.TextPrimary)
+                        if (installError.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(installError, color = V2.Amber)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (InstallConfirmation.open(context, request)) deferredInstall = request
+                        else installError = "باز کردن تأیید نصب ممکن نشد؛ دوباره تلاش کنید."
+                    }) { Text("ادامه نصب") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deferredInstall = request }) { Text("بعداً") }
+                }
+            )
         }
     }
 
@@ -378,7 +414,7 @@ fun AppRoot(vm: AppViewModel) {
                         onRestart = { vm.restartScan() },
                         onRefreshNetwork = { vm.refreshNetworkAssessment() },
                         onOpenUpdate = { vm.openUpdatePage() },
-                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
+                        onInstallUpdate = { beginOrContinueInstall() },
                         updateProgress = updateProgress,
                         killSwitchBlocked = tunnel.killSwitchRetained,
                         onUnblock = { vm.disconnectTunnel() },
@@ -447,7 +483,7 @@ fun AppRoot(vm: AppViewModel) {
                         },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
-                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
+                        onInstallUpdate = { beginOrContinueInstall() },
                         onScanQr = { showQr = true },
                         onOpenRouting = { showRouting = true },
                         onOpenDiag = { showDiag = true },

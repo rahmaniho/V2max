@@ -669,6 +669,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             openUpdatePage()
             return
         }
+        if (!ir.v2max.app.net.UpdateInstaller.canRequestInstalls(app)) {
+            val opened = ir.v2max.app.net.UpdateInstaller.openInstallSettings(app)
+            showMessage(if (opened) "اجازهٔ نصب از این منبع را در تنظیمات روشن کنید؛ سپس دوباره نصب را بزنید"
+                else "اجازهٔ نصب از این منبع را در تنظیمات اندروید بررسی کنید")
+            return
+        }
         // Set before launching so two quick taps cannot start concurrent installs.
         val attempt = synchronized(updateDownloadLock) {
             if (updateDownloadActive || Repo.updateProgress.value > 0f) null else {
@@ -701,7 +707,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     } finally {
                         result.file.delete()
                     }
-                    showMessage(if (installed) "نصب‌کننده باز شد؛ تأیید کنید" else "شروع نصب ممکن نشد")
+                    showMessage(if (installed) "درخواست نصب ارسال شد؛ منتظر تأیید اندروید بمانید" else "شروع نصب ممکن نشد")
                 }
                 is ir.v2max.app.net.UpdateInstaller.Result.Failure -> showMessage(result.message)
                 is ir.v2max.app.net.UpdateInstaller.Result.Progress -> Unit

@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import ir.v2max.app.service.InstallResultReceiver
 import kotlinx.coroutines.CancellationException
@@ -41,6 +43,20 @@ object UpdateInstaller {
         data class Progress(val downloaded: Long, val total: Long) : Result
         data class Ready(val file: File) : Result
         data class Failure(val message: String) : Result
+    }
+
+    /** Android 8+ requires the user to allow this app to request package installs. */
+    fun canRequestInstalls(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            runCatching { context.packageManager.canRequestPackageInstalls() }.getOrDefault(false)
+
+    /** Called only in response to an explicit in-app install request. */
+    fun openInstallSettings(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        return runCatching {
+            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }.isSuccess
     }
 
     /** دانلود فایل APK به همراه بررسی امضا */
@@ -116,7 +132,9 @@ object UpdateInstaller {
                         session.fsync(output)
                     }
                 }
-                val callbackIntent = Intent(context, InstallResultReceiver::class.java)
+                val callbackIntent = Intent(context, InstallResultReceiver::class.java).apply {
+                    putExtra(InstallResultReceiver.EXTRA_LOCAL_SESSION_ID, id)
+                }
                 val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
                 val pending = PendingIntent.getBroadcast(context, id, callbackIntent, flags)
