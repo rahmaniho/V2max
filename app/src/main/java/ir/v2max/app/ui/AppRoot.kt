@@ -75,6 +75,7 @@ fun AppRoot(vm: AppViewModel) {
     var showBackupDialog by remember { mutableStateOf(false) }
     var pendingRestoreText by remember { mutableStateOf("") }
     var showRestoreDialog by remember { mutableStateOf(false) }
+    var showPlainRestoreDialog by remember { mutableStateOf(false) }
     var restoreError by remember { mutableStateOf("") }
     var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -99,14 +100,13 @@ fun AppRoot(vm: AppViewModel) {
         when (action) {
             ir.v2max.core.domain.ConnectionAdvice.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
             ir.v2max.core.domain.ConnectionAdvice.Action.AGGRESSIVE_FRAGMENT -> {
-                vm.updateSettings {
+                if (vm.updateSettings {
                     it.copy(
                         fragmentProfile = ir.v2max.app.data.FragmentProfile.AGGRESSIVE,
                         autoTuneFragment = false,
                         fragment = true
                     )
-                }
-                vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
+                }) vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
             }
             ir.v2max.core.domain.ConnectionAdvice.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
             ir.v2max.core.domain.ConnectionAdvice.Action.SYNC_GEO -> {
@@ -120,8 +120,7 @@ fun AppRoot(vm: AppViewModel) {
             }
             ir.v2max.core.domain.ConnectionAdvice.Action.UNBLOCK -> vm.disconnectTunnel()
             ir.v2max.core.domain.ConnectionAdvice.Action.DISABLE_BALANCER -> {
-                vm.updateSettings { it.copy(balancer = false) }
-                vm.showMessage("استخر خودکار خاموش شد")
+                if (vm.updateSettings { it.copy(balancer = false) }) vm.showMessage("استخر خودکار خاموش شد")
             }
         }
     }
@@ -167,7 +166,10 @@ fun AppRoot(vm: AppViewModel) {
                     restoreError = ""
                     showRestoreDialog = true
                 }
-                else -> vm.importBackup(text)
+                else -> {
+                    pendingRestoreText = text
+                    showPlainRestoreDialog = true
+                }
             }
         }
     }
@@ -248,6 +250,11 @@ fun AppRoot(vm: AppViewModel) {
                         fontSize = 11.sp,
                         color = V2.TextMuted
                     )
+                    if (Repo.isStorageReadOnly()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("داده‌های آسیب‌دیده در این فایل نیستند؛ این پشتیبان فقط شامل موارد قابل‌خواندن است.",
+                            fontSize = 11.sp, color = V2.Amber)
+                    }
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = password,
@@ -278,6 +285,29 @@ fun AppRoot(vm: AppViewModel) {
         )
     }
 
+    if (showPlainRestoreDialog) {
+        AlertDialog(
+            onDismissRequest = { showPlainRestoreDialog = false; pendingRestoreText = "" },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("بازیابی پشتیبان", color = V2.TextPrimary) },
+            text = { Text("سرورها، اشتراک‌ها و تنظیمات فعلی با محتوای پشتیبان جایگزین می‌شوند. " +
+                "در صورت آسیب‌دیدگی، سند فعلی نیز جایگزین خواهد شد.", color = V2.TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val text = pendingRestoreText
+                    showPlainRestoreDialog = false
+                    pendingRestoreText = ""
+                    vm.importBackup(text)
+                }) { Text("بازیابی", color = V2.Mint) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPlainRestoreDialog = false; pendingRestoreText = "" }) {
+                    Text("انصراف", color = V2.TextMuted)
+                }
+            }
+        )
+    }
+
     if (showRestoreDialog) {
         var password by remember { mutableStateOf("") }
         var restoring by remember { mutableStateOf(false) }
@@ -287,7 +317,8 @@ fun AppRoot(vm: AppViewModel) {
             title = { Text("بازیابی پشتیبان رمزدار", color = V2.TextPrimary) },
             text = {
                 Column {
-                    Text("رمز فایل پشتیبان را وارد کنید.", fontSize = 11.sp, color = V2.TextMuted)
+                    Text("رمز فایل را وارد کنید. سرورها، اشتراک‌ها و تنظیمات فعلی، از جمله سند آسیب‌دیده، " +
+                        "با محتوای پشتیبان جایگزین می‌شوند.", fontSize = 11.sp, color = V2.TextMuted)
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = password,
@@ -487,6 +518,7 @@ fun AppRoot(vm: AppViewModel) {
                         coreVersion = remember { vm.coreVersion() },
                         appVersion = BuildConfig.VERSION_NAME,
                         onChange = { block -> vm.updateSettings(block) },
+                        onSecurityChange = { block -> vm.updateSecuritySettings(block) },
                         onClearAll = { vm.resetData() },
                         onOpenPerApp = { showPerApp = true },
                         onSetFreeSources = { vm.setFreeSourcesEnabled(it) },

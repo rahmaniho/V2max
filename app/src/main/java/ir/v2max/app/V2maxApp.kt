@@ -23,9 +23,10 @@ class V2maxApp : Application() {
             .onFailure { CrashLog.record(it, "Repo.init") }
 
         val settings = runCatching { Repo.settings.value }.getOrNull()
-        if (settings != null && settings.autoRefreshOnOpen) {
-            runCatching { SubSyncWorker.schedule(this) }
-                .onFailure { CrashLog.record(it, "SubSyncWorker.schedule") }
+        if (settings != null) {
+            runCatching {
+                if (settings.autoRefreshOnOpen) SubSyncWorker.schedule(this) else SubSyncWorker.cancel(this)
+            }.onFailure { CrashLog.record(it, "SubSyncWorker.schedule") }
         }
         if (settings != null) {
             runCatching {

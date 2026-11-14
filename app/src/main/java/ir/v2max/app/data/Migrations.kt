@@ -35,7 +35,7 @@ object Migrations {
     }
 
     /** A partially damaged list should not hide its other valid entries. */
-    data class ListRecovery<T>(val values: List<T>, val rejected: Int)
+    data class ListRecovery<T>(val values: List<T>, val rejected: Int, val duplicateIds: Int)
 
     /** یک شیء JSON را با مدل فعلی هم‌تراز و پیش از استفاده اعتبارسنجی می‌کند. */
     fun <T : Any> heal(json: String, defaults: T): T? = runCatching {
@@ -45,26 +45,46 @@ object Migrations {
     }.getOrNull()
 
     /**
-     * Missing IDs must be generated per record, not copied from one template.
-     * Invalid elements are skipped individually; the caller can archive the
-     * original document before it ever persists the recovered list.
+     * Missing IDs are stable per record across restarts, not copied from one
+     * template. Invalid elements are skipped individually and duplicate IDs are
+     * reported so the caller can preserve the original before writing.
      */
     fun <T : Any> recoverList(json: String, defaults: T): ListRecovery<T>? = runCatching {
         val parsed = JsonParser.parseString(json)
         require(parsed.isJsonArray)
         val seen = HashSet<String>()
+        // Reserve all existing IDs, including entries later in the array, so a
+        // generated legacy ID cannot collide with one that has not been read yet.
+        val reserved = parsed.asJsonArray.mapNotNull { item ->
+            if (!item.isJsonObject) return@mapNotNull null
+            val id = item.asJsonObject.get("id")
+            if (id != null && id.isJsonPrimitive && id.asJsonPrimitive.isString) id.asString.takeIf { it.isNotBlank() }
+            else null
+        }.toHashSet()
         val values = ArrayList<T>()
         val expected = template(defaults)
         var rejected = 0
-        parsed.asJsonArray.forEach { item ->
+        var duplicateIds = 0
+        parsed.asJsonArray.forEachIndexed { index, item ->
             val value = runCatching {
                 require(item.isJsonObject)
                 val obj = item.asJsonObject
                 if (defaults is ServerConfig || defaults is Subscription) {
                     val id = obj.get("id")
                     val text = if (id != null && id.isJsonPrimitive && id.asJsonPrimitive.isString) id.asString else ""
-                    if (id == null || id.isJsonNull || (id.isJsonPrimitive && id.asJsonPrimitive.isString && text.isBlank()) || text in seen) {
-                        obj.addProperty("id", java.util.UUID.randomUUID().toString())
+                    val duplicate = text.isNotBlank() && text in seen
+                    if (id == null || id.isJsonNull || (id.isJsonPrimitive && id.asJsonPrimitive.isString && text.isBlank()) || duplicate) {
+                        if (duplicate) duplicateIds++
+                        var attempt = 0
+                        var generated: String
+                        do {
+                            // Stable across restarts without persisting or hashing
+                            // credentials from the damaged/legacy record.
+                            val kind = if (defaults is ServerConfig) "server" else "subscription"
+                            val seed = "v2max-legacy:$kind:$index:${attempt++}"
+                            generated = java.util.UUID.nameUUIDFromBytes(seed.toByteArray(Charsets.UTF_8)).toString()
+                        } while (generated in reserved || generated in seen)
+                        obj.addProperty("id", generated)
                     }
                 }
                 decodeStoredObject(obj, defaults, expected)
@@ -81,7 +101,7 @@ object Migrations {
                 values.add(value)
             }
         }
-        ListRecovery(values, rejected)
+        ListRecovery(values, rejected, duplicateIds)
     }.getOrNull()
 
     fun <T : Any> healList(json: String, defaults: T): List<T>? = recoverList(json, defaults)?.values

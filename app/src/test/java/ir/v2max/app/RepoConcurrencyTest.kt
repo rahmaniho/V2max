@@ -21,14 +21,14 @@ class RepoConcurrencyTest {
 
     @Before fun setUp() {
         previousSettings = Repo.settings.value.copy()
-        Repo.resetEverything()
+        assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
         Repo.saveSettings(AppSettings())
         Repo.tunnel.value = TunnelUiState()
     }
 
     @After fun cleanUp() {
         Repo.tunnel.value = TunnelUiState()
-        Repo.resetEverything()
+        assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
         Repo.saveSettings(previousSettings)
     }
 
@@ -83,6 +83,98 @@ class RepoConcurrencyTest {
         assertEquals(1, Repo.servers.value.count { it.subId == source.id })
         Repo.recordSubscriptionRefreshError(source.copy(), "outdated")
         assertEquals("", Repo.subById(source.id)?.lastError)
+    }
+
+    @Test fun `automatic refresh cannot publish after opt out and reenable but manual refresh still works`() {
+        val source = Subscription(id = "personal", url = "https://example.org/private", updatedAt = 1)
+        Repo.addSubscription(source)
+        Repo.updateServer(server("old", source.id))
+        val startup = requireNotNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))
+        val failover = requireNotNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.FAILOVER))
+        assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = false) })
+        assertNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))
+        assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = true) })
+        val incoming = listOf(server("new", source.id))
+        assertFalse(Repo.automaticRefreshIsCurrent(startup))
+        assertFalse(Repo.commitSubscriptionRefresh(source, incoming, 0, 0, 0, 0, automaticPermit = startup))
+        Repo.recordSubscriptionRefreshError(source, "stale error", automaticPermit = startup)
+        assertEquals("", Repo.subById(source.id)?.lastError)
+        assertEquals("old", Repo.servers.value.single().id)
+        assertFalse(Repo.automaticRefreshIsCurrent(failover))
+        val newFailover = requireNotNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.FAILOVER))
+        assertTrue(Repo.updateSettings { it.copy(autoUpdateSubs = false) })
+        assertTrue(Repo.updateSettings { it.copy(autoUpdateSubs = true) })
+        assertFalse(Repo.automaticRefreshIsCurrent(newFailover))
+        assertTrue(Repo.automaticRefreshIsCurrent(requireNotNull(
+            Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))))
+        assertTrue(Repo.commitSubscriptionRefresh(source, incoming, 0, 0, 0, 0))
+        assertEquals("new", Repo.servers.value.single().id)
+    }
+
+    @Test fun `read only repository rejects edits and failed reset preserves data`() {
+        val source = Subscription(id = "source", url = "https://example.org/private")
+        Repo.addSubscription(source)
+        Repo.updateServer(server("keep", source.id))
+        Repo.setSelected("keep")
+        val flag = Repo::class.java.getDeclaredField("canWriteServers").apply { isAccessible = true }
+        val previous = flag.getBoolean(null)
+        try {
+            flag.setBoolean(null, false)
+            assertTrue(Repo.isStorageReadOnly())
+            assertEquals(0, Repo.addServers(listOf(server("new", source.id))))
+            assertFalse(Repo.addSubscription(Subscription(id = "new-sub")))
+            Repo.removeServer("keep")
+            Repo.removeSubscription(source.id)
+            Repo.updateServer(server("edited", source.id))
+            assertFalse(Repo.updateSettings { it.copy(appLock = true) })
+            assertNotNull(Repo.serverById("keep"))
+            assertNotNull(Repo.subById(source.id))
+            assertFalse(Repo.settings.value.appLock)
+
+            var persisted = false
+            assertFalse(Repo.resetEverything(revokeConsent = { false }, persist = { persisted = true; true }))
+            assertFalse(persisted)
+            assertFalse(Repo.resetEverything(revokeConsent = { true }, persist = { false }))
+            assertTrue(Repo.isStorageReadOnly())
+            assertNotNull(Repo.serverById("keep"))
+            assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
+            assertFalse(Repo.isStorageReadOnly())
+            assertTrue(Repo.servers.value.isEmpty())
+            assertTrue(Repo.subs.value.isEmpty())
+            assertFalse(Repo.settings.value.autoConnectOnOpen)
+            assertFalse(Repo.settings.value.autoRefreshOnOpen)
+            assertFalse(Repo.settings.value.useFreeSources)
+        } finally {
+            flag.setBoolean(null, previous)
+        }
+    }
+
+    @Test fun `restore and reset invalidate earlier downloads even for the same source`() {
+        val source = Subscription(id = "source", url = "https://example.org/private", updatedAt = 1)
+        Repo.addSubscription(source)
+        Repo.updateServer(server("old", source.id))
+        val beforeRestore = Repo.currentDataEpoch()
+        val automatic = requireNotNull(Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC))
+        assertTrue(restore(Repo.exportBackup()))
+        assertNotEquals(beforeRestore, Repo.currentDataEpoch())
+        assertFalse(Repo.automaticRefreshIsCurrent(automatic))
+        assertFalse(Repo.commitSubscriptionRefresh(
+            source, listOf(server("stale", source.id)), 0, 0, 0, 0, expectedEpoch = beforeRestore
+        ))
+        assertEquals("old", Repo.servers.value.single().id)
+        assertEquals(0, Repo.addServers(listOf(server("stale-import", "")), expectedEpoch = beforeRestore))
+        assertFalse(Repo.addFetchedSubscription(
+            Subscription(id = "stale-sub"), listOf(server("stale-node", "stale-sub")), beforeRestore
+        ))
+        val beforeReset = Repo.currentDataEpoch()
+        assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
+        assertNotEquals(beforeReset, Repo.currentDataEpoch())
+        assertFalse(Repo.addFetchedSubscription(source, emptyList(), beforeReset))
+        var restoredStale = false
+        val backup = """{"servers":[{"id":"old","address":"example.org"}]}"""
+        assertFalse(Repo.restoreBackup(backup, expectedEpoch = beforeReset) { _, _, _, _ -> restoredStale = true; true })
+        assertFalse(restoredStale)
+        assertTrue(Repo.subs.value.isEmpty())
     }
 
     @Test fun `live and manually selected ids survive refresh cap and trim`() {

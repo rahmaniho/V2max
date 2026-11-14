@@ -23,8 +23,8 @@ if (( api >= 33 )); then adb shell pm grant "$pkg" android.permission.POST_NOTIF
 classes=ir.v2max.app.AndroidSecureBackupTest,ir.v2max.app.AndroidStoredDataRecoveryTest
 expected=9
 if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
-  classes+=,ir.v2max.app.AndroidExternalControlTest
-  expected=13
+  classes+=,ir.v2max.app.AndroidExternalControlTest,ir.v2max.app.AndroidSubscriptionWorkerTest
+  expected=16
 fi
 run_instrumentation() {
   local name="$1" test_classes="$2" count="$3"; shift 3
@@ -41,7 +41,7 @@ PY
     exit 1
   fi
 }
-run_instrumentation security "$classes" "$expected" -e expectNoDeviceCredential true
+run_instrumentation security "$classes" "$expected" -e expectNoDeviceCredential true -e expectUnpreparedVpn true
 echo "Android API $api: $expected targeted security/backup tests passed (not a release build)."
 if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
   # The emulator stages its own signed debug APK, opens the real system

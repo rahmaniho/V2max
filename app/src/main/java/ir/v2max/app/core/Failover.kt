@@ -57,22 +57,29 @@ object Failover {
     /** Refresh stale subscriptions once if no existing configuration succeeds. */
     private suspend fun refreshSubscriptions(): Boolean = refreshMutex.withLock {
         val now = System.currentTimeMillis()
-        if (!Repo.settings.value.autoUpdateSubs || now - lastRefreshAt < REFRESH_INTERVAL_MS) return@withLock false
+        if (now - lastRefreshAt < REFRESH_INTERVAL_MS) return@withLock false
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.FAILOVER) ?: return@withLock false
         lastRefreshAt = now
         val sources = Repo.subs.value.filter { now - it.updatedAt > REFRESH_INTERVAL_MS }
             .sortedBy { it.builtIn }.take(6)
         var refreshed = false
         for (sub in sources) {
             currentCoroutineContext().ensureActive()
+            if (!Repo.automaticRefreshIsCurrent(permit)) break
             val result = SubscriptionPolicy.fetch(sub)
             currentCoroutineContext().ensureActive()
+            if (!Repo.automaticRefreshIsCurrent(permit)) break
             if (!result.ok) continue
             val configs = SubscriptionPolicy.candidates(sub, result.configs)
             if (configs.isEmpty()) continue
             if (Repo.commitSubscriptionRefresh(
-                    sub, configs, result.upload, result.download, result.total, result.expireAt
+                    sub, configs, result.upload, result.download, result.total, result.expireAt,
+                    automaticPermit = permit
                 )) refreshed = true
         }
+        // A user who turns refresh back on can retry without waiting for an
+        // obsolete, cancelled attempt's ten-minute throttle.
+        if (!Repo.automaticRefreshIsCurrent(permit)) lastRefreshAt = 0L
         refreshed
     }
 

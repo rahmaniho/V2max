@@ -46,6 +46,7 @@ fun SettingsScreen(
     coreVersion: String,
     appVersion: String,
     onChange: ((AppSettings) -> AppSettings) -> Unit,
+    onSecurityChange: ((AppSettings) -> AppSettings) -> Unit,
     onClearAll: () -> Unit,
     onOpenPerApp: () -> Unit = {},
     onSetFreeSources: (Boolean) -> Unit = {},
@@ -264,7 +265,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "به‌روزرسانی خودکار در شروع",
-                subtitle = "هنگام شروع، اشتراک‌های قدیمی به‌روزرسانی و سرورها بررسی می‌شوند",
+                subtitle = "اشتراک‌ها در شروع و به‌صورت دوره‌ای (حدود هر ۱۲ ساعت) به‌روزرسانی می‌شوند",
                 checked = settings.autoRefreshOnOpen
             ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
         }
@@ -296,7 +297,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سوییچ خودکار سرور",
-                subtitle = "اگر سرور فعلی قطع شد، بلافاصله سرور سالمِ جایگزین انتخاب و متصل می‌شود",
+                subtitle = "پس از قطع یا افت کیفیت، برنامه برای یافتن جایگزینِ آزموده تلاش می‌کند",
                 checked = settings.smartFailover
             ) { value -> onChange { it.copy(smartFailover = value) } }
         }
@@ -418,7 +419,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "استخر خودکار سرورها",
-                subtitle = "چند سرور برتر هم‌زمان در تانل قرار می‌گیرند و هسته سریع‌ترین را انتخاب می‌کند؛ قطعی کمتر و سرعت بیشتر",
+                subtitle = "چند سرور آزموده در تانل قرار می‌گیرند و هسته بر اساس تأخیر انتخاب می‌کند؛ نتیجه به شبکه بستگی دارد",
                 checked = settings.balancer
             ) { value -> onChange { it.copy(balancer = value) } }
         }
@@ -474,7 +475,7 @@ fun SettingsScreen(
                 if (value && !AppLock.isAvailable(context)) {
                     showLockSetupDialog = true
                 } else {
-                    onChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
+                    onSecurityChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
                 }
             }
         }
@@ -531,7 +532,7 @@ fun SettingsScreen(
                 enabled = !settings.appLock
             ) { value ->
                 if (value) showAutomationWarning = true
-                else onChange { it.copy(allowExternalAutomation = false) }
+                else onSecurityChange { it.copy(allowExternalAutomation = false) }
             }
         }
 
@@ -559,9 +560,9 @@ fun SettingsScreen(
                     .padding(16.dp)
             ) {
                 Column {
-                    Text("حذف همه‌ی داده‌ها", color = V2.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("بازنشانی داده‌ها و تنظیمات", color = V2.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text(
-                        "همه‌ی اشتراک‌ها و سرورها پاک می‌شوند",
+                        "سرورها، اشتراک‌ها و تنظیمات حذف می‌شوند",
                         color = V2.TextMuted,
                         fontSize = 11.5.sp
                     )
@@ -595,7 +596,7 @@ fun SettingsScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    onChange { if (it.appLock) it else it.copy(allowExternalAutomation = true) }
+                    onSecurityChange { if (it.appLock) it else it.copy(allowExternalAutomation = true) }
                     showAutomationWarning = false
                 }) { Text("فعال‌سازی", color = V2.Red) }
             },
@@ -695,8 +696,8 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             containerColor = V2.SurfaceHigh,
-            title = { Text("حذف همه‌ی داده‌ها", color = V2.TextPrimary) },
-            text = { Text("مطمئن هستید؟ این کار قابل بازگشت نیست.", color = V2.TextSecondary) },
+            title = { Text("بازنشانی داده‌ها و تنظیمات", color = V2.TextPrimary) },
+            text = { Text("همهٔ سرورها، اشتراک‌ها و تنظیمات، از جمله قفل برنامه، حذف می‌شوند. این کار قابل بازگشت نیست.", color = V2.TextSecondary) },
             confirmButton = {
                 TextButton(onClick = {
                     onClearAll()

@@ -28,6 +28,7 @@ object Repo {
     private const val KEY_UPDATE_INFO = "pending_update_v1"
     private const val KEY_UPDATE_INFO_VERSION = "pending_update_for_version_v1"
     private const val KEY_UPDATE_NOTIFIED = "last_notified_update_v1"
+    private const val KEY_TRANSACTION_MARKER = "storage_transaction_marker_v1"
     // This file is excluded from Android cloud and device-transfer backups.
     private const val CONTROL_PREF_NAME = "v2max_control_consent"
     private const val KEY_EXTERNAL_AUTOMATION = "allow_external_automation"
@@ -38,6 +39,8 @@ object Repo {
     private var canWriteServers = true
     private var canWriteSubs = true
     private var canWriteSettings = true
+    // Invalidates downloads/parses that started before an explicit restore/reset.
+    private var dataEpoch = 0L
 
     /** Warning is populated only when legacy local data could not be fully read. */
     val recoveryWarning = MutableStateFlow("")
@@ -52,6 +55,16 @@ object Repo {
     val settings: StateFlow<AppSettings> = _settings.asStateFlow()
     // Invalidates automatic checks even if the user switches the setting off and back on.
     private var automaticUpdateEpoch = 0L
+    // Automatic subscription downloads started under an old opt-in must not
+    // commit if that opt-in was revoked and subsequently enabled again.
+    private var automaticRefreshEpoch = 0L
+
+    enum class AutomaticRefresh { STARTUP_OR_PERIODIC, FAILOVER }
+    data class AutomaticRefreshPermit internal constructor(
+        val dataEpoch: Long,
+        internal val settingsEpoch: Long,
+        internal val kind: AutomaticRefresh
+    )
 
     private val _selectedId = MutableStateFlow("")
     val selectedId: StateFlow<String> = _selectedId.asStateFlow()
@@ -95,8 +108,9 @@ object Repo {
         val control = app.getSharedPreferences(CONTROL_PREF_NAME, Context.MODE_PRIVATE)
         prefs = p
         controlPrefs = control
-        // Recover records independently; preserve an original damaged document
-        // before any automatic refresh can write a partial list over it.
+        // Recover records independently without overwriting damaged documents.
+        // If any section is damaged, all user data stays read-only until an
+        // explicit restore/reset; background actions are also paused.
         val servers = StoredDataRecovery.list(p, KEY_SERVERS, ServerConfig())
         val subs = StoredDataRecovery.list(p, KEY_SUBS, Subscription())
         val savedSettings = StoredDataRecovery.settings(p, KEY_SETTINGS)
@@ -107,11 +121,9 @@ object Repo {
         canWriteSettings = savedSettings.writesAllowed
         val damaged = servers.damaged || subs.damaged || savedSettings.damaged
         if (damaged) {
-            recoveryWarning.value = if (!canWriteServers || !canWriteSubs || !canWriteSettings) {
-                "بخشی از داده‌های ذخیره‌شده ناسازگار است. برای جلوگیری از حذف آن، ذخیرهٔ بخش آسیب‌دیده و کارهای خودکار متوقف شد؛ فضای دستگاه و پشتیبان خود را بررسی کنید."
-            } else {
-                "بخشی از داده‌های ذخیره‌شده ناسازگار بود و ممکن است نمایش داده نشود. اصل داده در دستگاه نگه داشته و کارهای خودکار متوقف شد؛ در صورت نیاز پشتیبان معتبر را بازیابی کنید."
-            }
+            recoveryWarning.value = "بخشی از داده‌های ذخیره‌شده ناسازگار است و ممکن است نمایش داده نشود. " +
+                "اصل داده بدون تغییر مانده؛ ویرایش، اتصال خودکار و دریافت خودکار اشتراک متوقف شده‌اند. " +
+                "برای ادامه، پشتیبان معتبر را بازیابی کنید یا پس از بررسی، داده‌ها و تنظیمات را بازنشانی کنید."
         }
         val restoredSettings = StoredDataRecovery.guardSettings(savedSettings.value, damaged)
         val consent = runCatching { control.getBoolean(KEY_EXTERNAL_AUTOMATION, false) }.getOrDefault(false)
@@ -120,7 +132,7 @@ object Repo {
         )
         // Neither a lock nor damaged data may resurrect a prior consent.
         if (consent && (damaged || restoredSettings.appLock)) {
-            runCatching { control.edit().putBoolean(KEY_EXTERNAL_AUTOMATION, false).apply() }
+            runCatching { persistControlConsent(control, false) }
         }
         _selectedId.value = runCatching { p.getString(KEY_SELECTED, "") }.getOrNull().orEmpty()
         // A pending update was compared against a particular installed version.
@@ -145,6 +157,29 @@ object Repo {
     @Volatile
     private var persistSuspensions = 0
 
+    /** A damaged section makes cross-linked user data read-only until explicit recovery. */
+    @Synchronized
+    fun isStorageReadOnly(): Boolean = !canWriteServers || !canWriteSubs || !canWriteSettings
+
+    @Synchronized
+    fun currentDataEpoch(): Long = dataEpoch
+
+    private fun autoRefreshEnabled(kind: AutomaticRefresh): Boolean = when (kind) {
+        AutomaticRefresh.STARTUP_OR_PERIODIC -> _settings.value.autoRefreshOnOpen
+        AutomaticRefresh.FAILOVER -> _settings.value.autoUpdateSubs
+    }
+
+    @Synchronized
+    fun beginAutomaticRefresh(kind: AutomaticRefresh): AutomaticRefreshPermit? =
+        if (!isStorageReadOnly() && autoRefreshEnabled(kind)) {
+            AutomaticRefreshPermit(dataEpoch, automaticRefreshEpoch, kind)
+        } else null
+
+    @Synchronized
+    fun automaticRefreshIsCurrent(permit: AutomaticRefreshPermit): Boolean =
+        !isStorageReadOnly() && permit.dataEpoch == dataEpoch && permit.settingsEpoch == automaticRefreshEpoch &&
+            autoRefreshEnabled(permit.kind)
+
     /** Batch server/subscription writes; overlapping refreshes each own a suspension. */
     @Synchronized
     fun suspendPersist(suspended: Boolean) {
@@ -159,18 +194,18 @@ object Repo {
     }
 
     private fun persistServers() {
-        if (persistSuspensions > 0 || !canWriteServers) return
+        if (persistSuspensions > 0 || isStorageReadOnly()) return
         prefs?.edit()?.putString(KEY_SERVERS, gson.toJson(_servers.value))?.apply()
     }
 
     private fun persistSubs() {
-        if (persistSuspensions > 0 || !canWriteSubs) return
+        if (persistSuspensions > 0 || isStorageReadOnly()) return
         prefs?.edit()?.putString(KEY_SUBS, gson.toJson(_subs.value))?.apply()
     }
 
     private fun persistSettings() {
         // Settings changed during a long subscription sync must not be lost.
-        if (!canWriteSettings) return
+        if (isStorageReadOnly()) return
         prefs?.edit()?.putString(KEY_SETTINGS, gson.toJson(_settings.value))?.apply()
     }
 
@@ -186,7 +221,9 @@ object Repo {
     @Synchronized
     fun setSelected(id: String) {
         _selectedId.value = id
-        prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
+        // Manual connection remains possible, but the selection is temporary
+        // while its underlying damaged catalogue is protected.
+        if (!isStorageReadOnly()) prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
     }
 
     private fun capped(list: List<ServerConfig>): List<ServerConfig> =
@@ -211,7 +248,8 @@ object Repo {
      * @return تعداد کانفیگ‌های افزوده‌شده
      */
     @Synchronized
-    fun addServers(incoming: List<ServerConfig>): Int {
+    fun addServers(incoming: List<ServerConfig>, expectedEpoch: Long? = null): Int {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch)) return 0
         val result = ServerListPolicy.appendNew(
             existing = _servers.value,
             incoming = incoming,
@@ -233,6 +271,7 @@ object Repo {
      */
     @Synchronized
     fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>) {
+        if (isStorageReadOnly()) return
         // A delayed HTTP response must not resurrect a subscription removed by the user.
         if (_subs.value.none { it.id == subId }) return
         val existing = _servers.value.filter { it.subId == subId }
@@ -284,6 +323,7 @@ object Repo {
 
     @Synchronized
     fun updateServer(server: ServerConfig) {
+        if (isStorageReadOnly()) return
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == server.id }
         if (idx >= 0) list[idx] = server else list.add(server)
@@ -293,7 +333,7 @@ object Repo {
 
     @Synchronized
     fun updateServers(updated: Collection<ServerConfig>) {
-        if (updated.isEmpty()) return
+        if (isStorageReadOnly() || updated.isEmpty()) return
         val byId = updated.associateBy { it.id }
         _servers.value = _servers.value.map { byId[it.id] ?: it }
         persistServers()
@@ -390,6 +430,7 @@ object Repo {
 
     @Synchronized
     fun setFavorite(id: String, favorite: Boolean) {
+        if (isStorageReadOnly()) return
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) return
@@ -400,6 +441,7 @@ object Repo {
 
     @Synchronized
     fun removeServer(id: String) {
+        if (isStorageReadOnly()) return
         _servers.value = _servers.value.filterNot { it.id == id }
         persistServers()
         if (_selectedId.value == id) setSelected(_servers.value.firstOrNull()?.id.orEmpty())
@@ -407,6 +449,7 @@ object Repo {
 
     @Synchronized
     fun removeServers(ids: Collection<String>) {
+        if (isStorageReadOnly()) return
         val set = ids.toHashSet()
         _servers.value = _servers.value.filterNot { it.id in set }
         persistServers()
@@ -415,6 +458,7 @@ object Repo {
 
     @Synchronized
     fun removeServersOfSubscription(subId: String) {
+        if (isStorageReadOnly()) return
         _servers.value = _servers.value.filterNot { it.subId == subId }
         persistServers()
         if (serverById(_selectedId.value) == null) setSelected(_servers.value.firstOrNull()?.id.orEmpty())
@@ -425,13 +469,25 @@ object Repo {
     fun subById(id: String): Subscription? = _subs.value.firstOrNull { it.id == id }
 
     @Synchronized
-    fun addSubscription(sub: Subscription) {
+    fun addSubscription(sub: Subscription): Boolean {
+        if (isStorageReadOnly()) return false
         _subs.value = _subs.value + sub
         persistSubs()
+        return true
+    }
+
+    /** Discard a completed download if a restore/reset superseded its request. */
+    @Synchronized
+    fun addFetchedSubscription(sub: Subscription, incoming: List<ServerConfig>, expectedEpoch: Long): Boolean {
+        if (isStorageReadOnly() || expectedEpoch != dataEpoch) return false
+        if (!addSubscription(sub)) return false
+        replaceSubscriptionServers(sub.id, incoming.map { it.copy(subId = sub.id) })
+        return true
     }
 
     @Synchronized
     fun updateSubscription(sub: Subscription) {
+        if (isStorageReadOnly()) return
         val list = _subs.value.toMutableList()
         val idx = list.indexOfFirst { it.id == sub.id }
         if (idx < 0) return
@@ -455,8 +511,13 @@ object Repo {
         upload: Long,
         download: Long,
         total: Long,
-        expireAt: Long
+        expireAt: Long,
+        expectedEpoch: Long? = null,
+        automaticPermit: AutomaticRefreshPermit? = null
     ): Boolean {
+        // Check under the same lock used by saveSettings and restore/reset.
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return false
         val current = subById(expected.id) ?: return false
         if (!sameRefreshSource(current, expected) || incoming.isEmpty()) return false
         val prepared = incoming.map { it.copy(subId = current.id) }
@@ -471,13 +532,19 @@ object Repo {
     }
 
     @Synchronized
-    fun recordSubscriptionRefreshError(expected: Subscription, message: String) {
+    fun recordSubscriptionRefreshError(
+        expected: Subscription, message: String, expectedEpoch: Long? = null,
+        automaticPermit: AutomaticRefreshPermit? = null
+    ) {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return
         val current = subById(expected.id) ?: return
         if (sameRefreshSource(current, expected)) updateSubscription(current.copy(lastError = message))
     }
 
     @Synchronized
     fun removeSubscription(id: String) {
+        if (isStorageReadOnly()) return
         _subs.value = _subs.value.filterNot { it.id == id }
         persistSubs()
         removeServersOfSubscription(id)
@@ -485,7 +552,11 @@ object Repo {
 
     /** Startup uses a small default set; the source picker can request all. */
     @Synchronized
-    fun ensureBuiltInSources(includeAll: Boolean = false): Int {
+    fun ensureBuiltInSources(
+        includeAll: Boolean = false, expectedEpoch: Long? = null, requireEnabled: Boolean = false
+    ): Int {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (requireEnabled && !_settings.value.useFreeSources)) return 0
         val known = _subs.value.map { PublicSources.normalize(it.url) }.toHashSet()
         val catalogue = if (includeAll) PublicSources.ALL else PublicSources.DEFAULT
         val toAdd = catalogue.filter { PublicSources.normalize(it.url) !in known }.map {
@@ -499,7 +570,8 @@ object Repo {
 
     /** Only an explicit catalogue selection may create a built-in source. */
     @Synchronized
-    fun addBuiltInSource(url: String): Subscription? {
+    fun addBuiltInSource(url: String, expectedEpoch: Long? = null): Subscription? {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch)) return null
         val source = PublicSources.forUrl(url) ?: return null
         val normalized = PublicSources.normalize(source.url)
         if (_subs.value.any { PublicSources.normalize(it.url) == normalized }) return null
@@ -512,6 +584,7 @@ object Repo {
     /** حذف کانفیگ‌ها و اشتراک‌های منابع رایگان داخلی */
     @Synchronized
     fun removeBuiltInSources() {
+        if (isStorageReadOnly()) return
         val ids = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
         if (ids.isEmpty()) return
         _subs.value = _subs.value.filterNot { it.id in ids }
@@ -534,7 +607,9 @@ object Repo {
      * از هر گروه، کانفیگ علاقه‌مندی/سالم‌تر نگه داشته می‌شود.
      */
     @Synchronized
-    fun dedupeAllServers(): Int {
+    fun dedupeAllServers(expectedEpoch: Long? = null, automaticPermit: AutomaticRefreshPermit? = null): Int {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return 0
         val all = _servers.value
         if (all.size < 2) return 0
         val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
@@ -594,7 +669,11 @@ object Repo {
      * ضعیف‌ترین/قدیمی‌ترین آن‌ها حذف می‌شوند.
      */
     @Synchronized
-    fun trimBuiltInServers(maxTotal: Int = 3000): Int {
+    fun trimBuiltInServers(
+        maxTotal: Int = 3000, expectedEpoch: Long? = null, automaticPermit: AutomaticRefreshPermit? = null
+    ): Int {
+        if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return 0
         val all = _servers.value
         if (all.size <= maxTotal) return 0
         val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
@@ -637,6 +716,7 @@ object Repo {
     }
 
     private fun persistProfiles() {
+        if (isStorageReadOnly()) return
         prefs?.edit()?.putString(KEY_PROFILES, gson.toJson(_profiles.value))?.apply()
     }
 
@@ -719,21 +799,45 @@ object Repo {
     // ---------------------------------------------------------------- settings
 
     @Synchronized
-    fun saveSettings(s: AppSettings) {
+    fun saveSettings(s: AppSettings): Boolean {
+        if (isStorageReadOnly()) return false
         val normalized = if (s.appLock && s.allowExternalAutomation) s.copy(allowExternalAutomation = false) else s
-        if (_settings.value.autoUpdateCheck != normalized.autoUpdateCheck) automaticUpdateEpoch++
-        if (_settings.value.allowExternalAutomation != normalized.allowExternalAutomation) {
-            // The consent is device-local and deliberately separate from the
-            // settings JSON that can be exported or restored by Android.
-            controlPrefs?.edit()?.putBoolean(KEY_EXTERNAL_AUTOMATION, normalized.allowExternalAutomation)?.apply()
+        val old = _settings.value
+        val lockChanged = old.appLock != normalized.appLock
+        if (old.allowExternalAutomation != normalized.allowExternalAutomation || lockChanged) {
+            // Do not resurrect device-local consent after a lock or restore.
+            val control = controlPrefs
+            if ((control == null && loaded) ||
+                (control != null && !persistControlConsent(control, normalized.allowExternalAutomation))) return false
+        }
+        if (lockChanged) {
+            // The UI must not claim a lock was enabled if its settings write
+            // was only queued and the process died before it reached disk.
+            val storage = prefs
+            val encoded = runCatching { gson.toJson(normalized) }.getOrNull()
+            val written = encoded != null && (storage != null && persistLockSettings(storage, encoded) ||
+                storage == null && !loaded)
+            if (!written) {
+                // Consent may already have been durably revoked in the other file.
+                if (old.allowExternalAutomation && !normalized.allowExternalAutomation) {
+                    _settings.value = old.copy(allowExternalAutomation = false)
+                }
+                return false
+            }
+        }
+        if (old.autoUpdateCheck != normalized.autoUpdateCheck) automaticUpdateEpoch++
+        if (old.autoRefreshOnOpen != normalized.autoRefreshOnOpen || old.autoUpdateSubs != normalized.autoUpdateSubs) {
+            automaticRefreshEpoch++
         }
         _settings.value = normalized
-        persistSettings()
+        if (!lockChanged) persistSettings()
+        return true
     }
 
     @Synchronized
-    fun updateSettings(block: (AppSettings) -> AppSettings) {
-        saveSettings(block(_settings.value))
+    fun updateSettings(block: (AppSettings) -> AppSettings): Boolean {
+        if (isStorageReadOnly()) return false
+        return saveSettings(block(_settings.value))
     }
 
     // ------------------------------------------------------------------- misc
@@ -751,31 +855,31 @@ object Repo {
     )
 
     /** Call from an I/O dispatcher: restore succeeds only after durable storage confirms the write. */
-    @Synchronized
-    fun restoreBackup(json: String): Boolean {
-        val storage = prefs ?: return false
-        return restoreBackup(json) { servers, subscriptions, settings, selected ->
+    fun restoreBackup(json: String, expectedEpoch: Long? = null): Boolean {
+        val storage = synchronized(this) { prefs } ?: return false
+        return restoreBackup(json, expectedEpoch) { servers, subscriptions, settings, selected ->
             persistBackup(storage, servers, subscriptions, settings, selected)
         }
     }
 
-    internal fun persistBackup(
-        storage: SharedPreferences, servers: String, subscriptions: String, settings: String, selected: String
+    /** A failed commit may still change SharedPreferences' in-memory map. */
+    private fun durableTransaction(
+        storage: SharedPreferences, keys: List<String>, change: (SharedPreferences.Editor) -> Unit
     ): Boolean {
-        // Preserve actual types too: a corrupted non-string preference should
-        // not prevent the user from restoring a valid backup.
-        val keys = listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)
         val before = runCatching { storage.all.toMap() }.getOrNull() ?: return false
         val written = runCatching {
-            storage.edit().putString(KEY_SERVERS, servers)
-                .putString(KEY_SUBS, subscriptions)
-                .putString(KEY_SETTINGS, settings)
-                .putString(KEY_SELECTED, selected)
-                .commit()
+            val editor = storage.edit()
+            change(editor)
+            // Force a real write even on a retry after a failed commit whose
+            // changes remain in the process-local SharedPreferences cache.
+            var marker: String
+            do { marker = java.util.UUID.randomUUID().toString() }
+            while (marker == before[KEY_TRANSACTION_MARKER])
+            editor.putString(KEY_TRANSACTION_MARKER, marker).commit()
         }.getOrDefault(false)
         if (!written) runCatching {
             val editor = storage.edit()
-            keys.forEach { key ->
+            (keys + KEY_TRANSACTION_MARKER).distinct().forEach { key ->
                 when (val value = before[key]) {
                     null -> editor.remove(key)
                     is String -> editor.putString(key, value)
@@ -786,31 +890,92 @@ object Repo {
                     is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
                 }
             }
+            // Best-effort rollback of memory; a disk failure cannot be promised
+            // away and the operation is always reported as unsuccessful.
             editor.apply()
         }
         return written
     }
 
-    /** Storage is injectable so failure and all-or-nothing publication can be tested without Android. */
-    @Synchronized
-    internal fun restoreBackup(json: String, persist: (String, String, String, String) -> Boolean): Boolean {
-        val payload = Migrations.decodeBackup(json) ?: return false
-        if (payload.servers.isEmpty() && payload.subs.isEmpty()) return false
+    internal fun persistBackup(
+        storage: SharedPreferences, servers: String, subscriptions: String, settings: String, selected: String
+    ): Boolean = durableTransaction(storage, listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)) { editor ->
+        // Older recovery copies may contain records not present in this backup.
+        // Preserve them until the user explicitly resets all data.
+        editor.putString(KEY_SERVERS, servers).putString(KEY_SUBS, subscriptions)
+            .putString(KEY_SETTINGS, settings).putString(KEY_SELECTED, selected)
+    }
+
+    internal fun persistReset(storage: SharedPreferences, settings: String): Boolean {
+        val dataKeys = listOf(KEY_SERVERS, KEY_SUBS, KEY_SETTINGS, KEY_SELECTED)
+        val legacyKeys = StoredDataRecovery.legacyArchiveKeys(*dataKeys.toTypedArray())
+        return durableTransaction(storage, dataKeys + KEY_PROFILES + legacyKeys) { editor ->
+            editor.putString(KEY_SERVERS, "[]").putString(KEY_SUBS, "[]")
+                .putString(KEY_SETTINGS, settings).putString(KEY_SELECTED, "").remove(KEY_PROFILES)
+            StoredDataRecovery.removeLegacyArchives(editor, *dataKeys.toTypedArray())
+        }
+    }
+
+    internal fun persistControlConsent(storage: SharedPreferences, enabled: Boolean): Boolean =
+        durableTransaction(storage, listOf(KEY_EXTERNAL_AUTOMATION)) {
+            it.putBoolean(KEY_EXTERNAL_AUTOMATION, enabled)
+        }
+
+    internal fun persistLockSettings(storage: SharedPreferences, settings: String): Boolean =
+        durableTransaction(storage, listOf(KEY_SETTINGS)) { it.putString(KEY_SETTINGS, settings) }
+
+    private fun revokeControlConsent(storage: SharedPreferences): Boolean =
+        durableTransaction(storage, listOf(KEY_EXTERNAL_AUTOMATION)) { it.remove(KEY_EXTERNAL_AUTOMATION) }
+
+    private data class PreparedBackup(
+        val payload: BackupPayload, val servers: String, val subscriptions: String, val selected: String
+    )
+
+    /** Parse and encode potentially large, untrusted input without holding the UI's repository lock. */
+    private fun prepareBackup(json: String): PreparedBackup? = runCatching {
+        val payload = Migrations.decodeBackup(json) ?: return@runCatching null
+        if (payload.servers.isEmpty() && payload.subs.isEmpty()) return@runCatching null
         val selected = payload.selectedId.takeIf { id -> payload.servers.any { it.id == id } }
             ?: payload.servers.firstOrNull()?.id.orEmpty()
+        PreparedBackup(payload, gson.toJson(payload.servers), gson.toJson(payload.subs), selected)
+    }.getOrNull()
+
+    /** Storage is injectable so failure and all-or-nothing publication can be tested without Android. */
+    internal fun restoreBackup(
+        json: String, expectedEpoch: Long? = null, persist: (String, String, String, String) -> Boolean
+    ): Boolean {
+        if (expectedEpoch != null && expectedEpoch != currentDataEpoch()) return false
+        val prepared = prepareBackup(json) ?: return false
+        return restorePreparedBackup(prepared, expectedEpoch, persist)
+    }
+
+    @Synchronized
+    private fun restorePreparedBackup(
+        prepared: PreparedBackup, expectedEpoch: Long?, persist: (String, String, String, String) -> Boolean
+    ): Boolean {
+        if (expectedEpoch != null && expectedEpoch != dataEpoch) return false
+        val payload = prepared.payload
         // Backups cannot grant this permission. Preserve a previously granted
         // local consent only when the restored settings do not enable app lock.
         val restoredSettings = payload.settings.copy(
             allowExternalAutomation = _settings.value.allowExternalAutomation && !payload.settings.appLock
         )
-        val encoded = runCatching {
-            Triple(gson.toJson(payload.servers), gson.toJson(payload.subs), gson.toJson(restoredSettings))
-        }.getOrNull() ?: return false
+        val encodedSettings = runCatching { gson.toJson(restoredSettings) }.getOrNull() ?: return false
+        if (!restoredSettings.allowExternalAutomation) {
+            val control = controlPrefs
+            if ((control == null && loaded) || (control != null && !persistControlConsent(control, false))) return false
+            // Revocation stays in force even if the following backup write fails.
+            if (_settings.value.allowExternalAutomation) {
+                _settings.value = _settings.value.copy(allowExternalAutomation = false)
+            }
+        }
         // One transaction replaces all sections, even during suspended list writes.
-        if (!runCatching { persist(encoded.first, encoded.second, encoded.third, selected) }.getOrDefault(false)) {
+        if (!runCatching { persist(prepared.servers, prepared.subscriptions, encodedSettings, prepared.selected) }.getOrDefault(false)) {
             return false
         }
-        // An explicit successful restore replaces the damaged sections.
+        // An explicit successful restore replaces the damaged sections and
+        // invalidates any older in-flight import/refresh.
+        dataEpoch++
         canWriteServers = true
         canWriteSubs = true
         canWriteSettings = true
@@ -818,24 +983,48 @@ object Repo {
         _servers.value = payload.servers
         _subs.value = payload.subs
         if (_settings.value.autoUpdateCheck != restoredSettings.autoUpdateCheck) automaticUpdateEpoch++
-        if (_settings.value.allowExternalAutomation != restoredSettings.allowExternalAutomation) {
-            controlPrefs?.edit()?.putBoolean(KEY_EXTERNAL_AUTOMATION, restoredSettings.allowExternalAutomation)?.apply()
-        }
         _settings.value = restoredSettings
-        _selectedId.value = selected
+        _selectedId.value = prepared.selected
         return true
     }
 
-    fun resetEverything() {
+    /** Call on an I/O dispatcher; never claim deletion when a commit failed. */
+    @Synchronized
+    fun resetEverything(): Boolean {
+        val storage = prefs ?: return false
+        val control = controlPrefs ?: return false
+        return resetEverything(
+            revokeConsent = { revokeControlConsent(control) },
+            persist = { settings -> persistReset(storage, gson.toJson(settings)) }
+        )
+    }
+
+    /** Injectable transactions make both partial-failure cases testable. */
+    @Synchronized
+    internal fun resetEverything(revokeConsent: () -> Boolean, persist: (AppSettings) -> Boolean): Boolean {
+        // Revoke device-local automation before resetting a possible app lock.
+        if (!runCatching { revokeConsent() }.getOrDefault(false)) return false
+        if (_settings.value.allowExternalAutomation) {
+            _settings.value = _settings.value.copy(allowExternalAutomation = false)
+        }
+        // Resetting must not silently start fetching public sources or connecting.
+        val defaults = AppSettings(
+            autoConnectOnOpen = false, autoConnectOnBoot = false,
+            autoRefreshOnOpen = false, autoUpdateSubs = false, useFreeSources = false,
+            allowExternalAutomation = false
+        )
+        if (!runCatching { persist(defaults) }.getOrDefault(false)) return false
+        dataEpoch++
+        canWriteServers = true
+        canWriteSubs = true
+        canWriteSettings = true
+        recoveryWarning.value = ""
         _servers.value = emptyList()
         _subs.value = emptyList()
         _selectedId.value = ""
-        // This is a deliberate deletion, including any archived credentials.
-        canWriteServers = true
-        canWriteSubs = true
-        prefs?.let { StoredDataRecovery.removeArchive(it, KEY_SERVERS, KEY_SUBS) }
-        persistServers()
-        persistSubs()
-        prefs?.edit()?.putString(KEY_SELECTED, "")?.apply()
+        _profiles.value = emptyMap()
+        if (_settings.value.autoUpdateCheck != defaults.autoUpdateCheck) automaticUpdateEpoch++
+        _settings.value = defaults
+        return true
     }
 }

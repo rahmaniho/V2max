@@ -1,5 +1,6 @@
 package ir.v2max.app
 
+import android.app.Application
 import android.app.Instrumentation
 import android.app.NotificationManager
 import android.content.Context
@@ -7,6 +8,8 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import ir.v2max.app.core.PreflightTickets
@@ -30,6 +33,7 @@ import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.V2maxVpnService
 import ir.v2max.app.service.V2maxWidget
 import ir.v2max.app.service.WidgetActionReceiver
+import ir.v2max.app.ui.AppViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -260,7 +264,7 @@ class AndroidVpnSmokeTest {
         Repo.init(context)
         Repo.updateSettings {
             it.copy(
-                autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false,
+                autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false, autoUpdateCheck = false,
                 appLock = false, allowExternalAutomation = false,
                 useFreeSources = false, deepProbe = false, fragment = false, balancer = false,
                 geoAssets = false, multiPing = false, speedTest = false, smartFailover = false,
@@ -297,6 +301,7 @@ class AndroidVpnSmokeTest {
             assertTunTrafficEventually(instrumentation, "initial")
             assertEquals("The VPN app's underlying network changed during tunnel setup",
                 networkBeforeVpn, CarrierProbe.networkHandle(context))
+            assertQrImportsPreserveLiveTunnel(instrumentation, server)
 
             // Explicit broadcasts from the shell UID simulate an unrelated app.
             // Neither the old exported widget action nor private receiver may
@@ -478,6 +483,7 @@ class AndroidVpnSmokeTest {
             assertTrue("Recovery did not report the retained VPN interface", Repo.tunnel.value.killSwitchRetained)
             assertDirectFixtureBlocked(instrumentation)
             assertEquals("Recovery restarted the core during the blocking probe", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            assertQrImportsPreserveRecovery(instrumentation)
             // A user stop must win even when a slow native probe finishes later.
             TunnelController.stop(context)
             fixtureControl("hold-release")
@@ -603,6 +609,90 @@ class AndroidVpnSmokeTest {
             TunnelController.stop(context)
             runCatching { fixtureControl("hold-release") }
             Repo.removeServer("held-replacement")
+        }
+    }
+
+    /** The actual QR handler downloads/imports, but must not supersede a live tunnel. */
+    private fun assertQrImportsPreserveLiveTunnel(instrumentation: Instrumentation, active: ServerConfig) {
+        val context = instrumentation.targetContext
+        val url = "http://10.0.2.2:18081/subscription"
+        val qrHost = "qr-import.example.invalid"
+        val store = ViewModelStore()
+        lateinit var vm: AppViewModel
+        val generation = V2maxVpnService.currentActionGeneration()
+        val selected = Repo.selectedId.value
+        try {
+            instrumentation.runOnMainSync {
+                val app = context.applicationContext as Application
+                vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
+                vm.onQrScanned(url)
+            }
+            val subscriptionDeadline = SystemClock.elapsedRealtime() + 20_000
+            while (SystemClock.elapsedRealtime() < subscriptionDeadline &&
+                Repo.subs.value.none { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } }) {
+                assertEquals("QR subscription interrupted the VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+                SystemClock.sleep(50)
+            }
+            assertTrue("QR subscription was not imported: ${vm.message.value}",
+                Repo.subs.value.any { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } })
+            instrumentation.runOnMainSync {
+                vm.onQrScanned("vless://11111111-2222-3333-4444-555555555555@$qrHost:443?security=tls#QR")
+            }
+            val linkDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < linkDeadline && Repo.servers.value.none { it.address == qrHost }) {
+                assertEquals("QR profile import interrupted the VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+                SystemClock.sleep(50)
+            }
+            assertTrue("QR profile was not imported: ${vm.message.value}", Repo.servers.value.any { it.address == qrHost })
+            assertEquals("Import changed the active VPN generation", generation, V2maxVpnService.currentActionGeneration())
+            assertEquals("Import changed the user's selection", selected, Repo.selectedId.value)
+            assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTrue("Import replaced the live profile", V2maxVpnService.activeProfileMatches(active))
+            assertTunTraffic(instrumentation)
+        } finally {
+            instrumentation.runOnMainSync { store.clear() }
+            Repo.subs.value.filter { it.url == url }.forEach { Repo.removeSubscription(it.id) }
+            Repo.removeServers(Repo.servers.value.filter { it.address == qrHost }.map { it.id })
+        }
+    }
+
+    /** Import must not cancel a service-owned recovery or release its retained interface. */
+    private fun assertQrImportsPreserveRecovery(instrumentation: Instrumentation) {
+        val context = instrumentation.targetContext
+        val url = "http://10.0.2.2:18081/subscription"
+        val qrHost = "qr-recovery.example.invalid"
+        val generation = V2maxVpnService.currentActionGeneration()
+        val selected = Repo.selectedId.value
+        val store = ViewModelStore()
+        lateinit var vm: AppViewModel
+        try {
+            instrumentation.runOnMainSync {
+                val app = context.applicationContext as Application
+                vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
+                vm.onQrScanned(url)
+                vm.onQrScanned("vless://11111111-2222-3333-4444-555555555555@$qrHost:443?security=tls#QR")
+            }
+            val deadline = SystemClock.elapsedRealtime() + 6_000
+            while (SystemClock.elapsedRealtime() < deadline &&
+                (Repo.subs.value.none { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } } ||
+                    Repo.servers.value.none { it.address == qrHost })) {
+                assertEquals("QR import interrupted recovery", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+                assertTrue("QR import released the retained interface", Repo.tunnel.value.killSwitchRetained)
+                SystemClock.sleep(30)
+            }
+            assertTrue("QR subscription was not imported during recovery: ${vm.message.value}",
+                Repo.subs.value.any { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } })
+            assertTrue("QR profile was not imported during recovery: ${vm.message.value}",
+                Repo.servers.value.any { it.address == qrHost })
+            assertEquals("QR import changed the recovery generation", generation, V2maxVpnService.currentActionGeneration())
+            assertEquals("QR import changed the selection", selected, Repo.selectedId.value)
+            assertEquals(TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            assertTrue("Recovery no longer retains the interface", Repo.tunnel.value.killSwitchRetained)
+            assertTrue("Recovery core unexpectedly restarted", !V2maxVpnService.running && !XrayCore.isRunning)
+        } finally {
+            instrumentation.runOnMainSync { store.clear() }
+            Repo.subs.value.filter { it.url == url }.forEach { Repo.removeSubscription(it.id) }
+            Repo.removeServers(Repo.servers.value.filter { it.address == qrHost }.map { it.id })
         }
     }
 

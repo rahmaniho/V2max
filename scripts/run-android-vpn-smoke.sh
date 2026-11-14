@@ -51,6 +51,12 @@ class Fixture(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the caller canceled while the slow response was pending
+        elif self.path == '/subscription':
+            body = b'vless://22222222-3333-4444-5555-666666666666@10.0.2.2:18080?type=tcp&security=none#QR-fixture'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         elif self.path == '/speed':
             total = 1_200_000
             self.send_response(200)

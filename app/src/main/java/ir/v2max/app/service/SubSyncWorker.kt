@@ -38,6 +38,9 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     private suspend fun run(): Result {
         Repo.init(applicationContext)
+        // WorkManager may still have a request scheduled by an older process or
+        // version. Re-check consent at execution time, including after recovery.
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC) ?: return Result.success()
         val subs = Repo.subs.value
         if (subs.isEmpty()) return Result.success()
 
@@ -52,14 +55,22 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                         // The catalogue accepts trailing slashes; SubscriptionPolicy
                         // canonicalizes known built-ins before allowing mirrors.
                         if (sub.builtIn && PublicSources.forUrl(sub.url) == null) return@async
-                        val result = semaphore.withPermit { SubscriptionPolicy.fetch(sub) }
+                        val result = semaphore.withPermit {
+                            if (!Repo.automaticRefreshIsCurrent(permit)) return@async
+                            SubscriptionPolicy.fetch(sub)
+                        }
+                        if (!Repo.automaticRefreshIsCurrent(permit)) return@async
                         val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
                         if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(
-                                sub, trimmed, result.upload, result.download, result.total, result.expireAt
+                                sub, trimmed, result.upload, result.download, result.total, result.expireAt,
+                                automaticPermit = permit
                             )) {
                             updated.incrementAndGet()
                         } else if (trimmed.isEmpty()) {
-                            Repo.recordSubscriptionRefreshError(sub, result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" })
+                            Repo.recordSubscriptionRefreshError(
+                                sub, result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" },
+                                automaticPermit = permit
+                            )
                         }
                         // کمی فاصله تا منابع همزمان فشار نیاورند
                         delay(120)
@@ -71,8 +82,9 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             Repo.persistNow()
         }
 
-        Repo.dedupeAllServers()
-        Repo.trimBuiltInServers()
+        if (!Repo.automaticRefreshIsCurrent(permit)) return Result.success()
+        Repo.dedupeAllServers(automaticPermit = permit)
+        Repo.trimBuiltInServers(automaticPermit = permit)
         Repo.persistNow()
 
         return if (updated.get() == 0) Result.retry() else Result.success()

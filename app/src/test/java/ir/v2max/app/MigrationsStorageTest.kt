@@ -24,13 +24,26 @@ class MigrationsStorageTest {
         ]""".trimIndent()
         val recovered = Migrations.recoverList(json, ServerConfig())!!
         assertEquals(5, recovered.rejected)
+        assertEquals(1, recovered.duplicateIds)
         assertEquals(5, recovered.values.size)
         assertEquals(5, recovered.values.map { it.id }.toSet().size)
+        assertEquals(recovered.values.map { it.id }, Migrations.recoverList(json, ServerConfig())!!.values.map { it.id })
         assertTrue(recovered.values.all { it.id.isNotBlank() })
         assertEquals("same", recovered.values[2].id)
         assertEquals("secret", recovered.values.last().obfsPassword)
         assertEquals("", recovered.values.last().hoppingPorts)
         assertNull(Migrations.healList("{\"not\":\"an array\"}", ServerConfig()))
+    }
+
+    @Test fun `generated legacy ids do not collide with a later existing id`() {
+        val reserved = java.util.UUID.nameUUIDFromBytes("v2max-legacy:server:0:0".toByteArray()).toString()
+        val json = """[{"address":"first.example.org"},{"id":"$reserved","address":"second.example.org"}]"""
+        val first = Migrations.recoverList(json, ServerConfig())!!
+        val second = Migrations.recoverList(json, ServerConfig())!!
+        assertEquals(0, first.duplicateIds)
+        assertEquals(reserved, first.values.last().id)
+        assertNotEquals(reserved, first.values.first().id)
+        assertEquals(first.values.map { it.id }, second.values.map { it.id })
     }
 
     @Test fun `legacy subscriptions receive defaults and bad entries are isolated`() {

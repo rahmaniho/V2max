@@ -27,21 +27,20 @@ class AndroidStoredDataRecoveryTest {
 
     @After fun cleanUp() { prefs.edit().clear().commit() }
 
-    @Test fun damagedListsKeepValidEntriesAndArchiveOriginalBeforeWrites() {
-        val original = """[{"address":"one.example.org"},null,{"address":"two.example.org"}]"""
+    @Test fun damagedListsKeepValidEntriesReadOnlyWithoutCopyingOriginal() {
+        val original = """[{"address":"one.example.org","uuid":"secret"},null,{"address":"two.example.org"}]"""
         assertTrue(prefs.edit().putString("servers_v1", original).commit())
         val result = StoredDataRecovery.list(prefs, "servers_v1", ServerConfig())
         assertTrue(result.damaged)
-        assertTrue(result.writesAllowed)
+        assertFalse(result.writesAllowed)
         assertEquals(2, result.value.size)
         assertEquals(2, result.value.map { it.id }.toSet().size)
-        assertEquals(original, prefs.getString("recovery_copy_servers_v1", null))
+        assertEquals(result.value.map { it.id }, StoredDataRecovery.list(prefs, "servers_v1", ServerConfig()).value.map { it.id })
         assertEquals(original, prefs.getString("servers_v1", null))
-        StoredDataRecovery.removeArchive(prefs, "servers_v1")
         assertFalse(prefs.contains("recovery_copy_servers_v1"))
     }
 
-    @Test fun existingDifferentRecoveryCopyBlocksOverwritingDamagedDocument() {
+    @Test fun resetDeletesPreReleaseRecoveryCopiesInSameTransaction() {
         val old = "[{\"id\":\"older\"}]"
         val damaged = "[null]"
         assertTrue(prefs.edit().putString("recovery_copy_servers_v1", old)
@@ -51,6 +50,9 @@ class AndroidStoredDataRecoveryTest {
         assertFalse(result.writesAllowed)
         assertEquals(old, prefs.getString("recovery_copy_servers_v1", null))
         assertEquals(damaged, prefs.getString("servers_v1", null))
+        assertTrue(Repo.persistReset(prefs, "{}"))
+        assertEquals("[]", prefs.getString("servers_v1", null))
+        assertFalse(prefs.contains("recovery_copy_servers_v1"))
     }
 
     @Test fun corruptSettingsAndPreferenceTypesDoNotGrantAutomationOrStartConnections() {
@@ -67,17 +69,20 @@ class AndroidStoredDataRecoveryTest {
         assertTrue(prefs.edit().putString("settings_v1", original).commit())
         val malformed = StoredDataRecovery.settings(prefs, "settings_v1")
         assertTrue(malformed.damaged)
-        assertTrue(malformed.writesAllowed)
+        assertFalse(malformed.writesAllowed)
         assertTrue(malformed.value.appLock)
-        assertEquals(original, prefs.getString("recovery_copy_settings_v1", null))
+        assertEquals(original, prefs.getString("settings_v1", null))
+        assertFalse(prefs.contains("recovery_copy_settings_v1"))
     }
 
     @Test fun explicitBackupRestoreCanReplaceNonStringPreferenceValues() {
-        assertTrue(prefs.edit().putInt("servers_v1", 5).putBoolean("settings_v1", true).commit())
+        assertTrue(prefs.edit().putInt("servers_v1", 5).putBoolean("settings_v1", true)
+            .putString("recovery_copy_servers_v1", "older credentials").commit())
         assertTrue(Repo.persistBackup(prefs, "[]", "[]", "{}", "chosen"))
         assertEquals("[]", prefs.getString("servers_v1", null))
         assertEquals("{}", prefs.getString("settings_v1", null))
         assertEquals("chosen", prefs.getString("selected_v1", null))
+        assertEquals("older credentials", prefs.getString("recovery_copy_servers_v1", null))
     }
 
     @Test fun legacySubscriptionsGetDistinctIdsWithoutCreatingAnArchive() {
@@ -87,6 +92,7 @@ class AndroidStoredDataRecoveryTest {
         assertFalse(result.damaged)
         assertTrue(result.writesAllowed)
         assertEquals(2, result.value.map { it.id }.toSet().size)
+        assertEquals(result.value.map { it.id }, StoredDataRecovery.list(prefs, "subs_v1", Subscription()).value.map { it.id })
         assertFalse(prefs.contains("recovery_copy_subs_v1"))
     }
 }
