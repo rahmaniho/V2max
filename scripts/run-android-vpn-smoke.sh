@@ -29,9 +29,12 @@ hold_release = threading.Event()
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/hold-status', '/hold-release'):
+        if self.path in ('/hold-status', '/hold-release', '/hold-reset'):
             if self.path == '/hold-release':
                 hold_release.set()
+            elif self.path == '/hold-reset':
+                hold_started.clear()
+                hold_release.clear()
             body = b'started' if hold_started.is_set() else b'waiting'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -126,6 +129,7 @@ status=$?
 printf '\nNC_EXIT=%s\n' "$status"
 SH
 adb push "$work/direct-probe.sh" /data/local/tmp/v2max-direct-probe.sh
+if [[ "${V2MAX_UI_ONLY:-false}" != true ]]; then
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
   # Report all handovers together: GitHub limits annotations per step. Any
@@ -172,6 +176,11 @@ PY
   echo '::endgroup::'
   exit 1
 fi
+fi
+
+# Use the actual activity, first-time Android consent and selected server on
+# both ordinary and UI-only emulator runs; this is separate from the direct API smoke.
+bash scripts/run-android-ui-connect-smoke.sh debug
 
 # Only a manually requested preview run installs and tests the separate preview
 # APK. The same local fixtures remain alive, and the exact tested APK is later

@@ -298,6 +298,17 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-update-smoke.sh
 
+      - name: Android 35 UI VPN consent and selected-server smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          V2MAX_UI_ONLY: "true"
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/run-android-vpn-smoke.sh
+
       - name: Upload CI-only APKs (not a production update)
         uses: actions/upload-artifact@v4
         with:

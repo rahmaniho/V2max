@@ -46,5 +46,8 @@ print(f'::error title=Preview smoke::{text}')
 PY
   exit 1
 fi
+# Revoke the shell-granted app-op and exercise the installed preview through
+# its real UI and Android's first-time consent dialog, not just SmartConnect.
+bash scripts/run-android-ui-connect-smoke.sh preview
 sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"
-echo '::notice title=Preview smoke::Non-debuggable preview installed alongside v2.3.1 and carried local-fixture traffic through Android TUN.'
+echo '::notice title=Preview smoke::Non-debuggable preview coexisted with v2.3.1 and passed local TUN and UI consent tests.'
