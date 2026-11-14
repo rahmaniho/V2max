@@ -32,12 +32,19 @@ class PreviewApkTest(unittest.TestCase):
 
     def test_signer_is_read_and_official_signer_is_rejected(self):
         test_cert = "ab" * 32
-        self.assertEqual(test_cert, preview.verify_signer(f"Signer #1 certificate SHA-256 digest: {test_cert}\n"))
+        for output in (
+            f"Signer #1 certificate SHA-256 digest: {test_cert}\n",
+            f"V2 Signer: certificate SHA-256 digest: {test_cert}\n",
+            f"Number of signers: 1\nV2 Signer: certificate SHA-256 digest: {test_cert}\n"
+            f"V3 Signer: certificate SHA-256 digest: {test_cert}\n",
+        ):
+            self.assertEqual(test_cert, preview.verify_signer(output))
         for output in (
             "",
             "Signer #1 certificate SHA-256 digest: abcd\n",
             f"Signer #1 certificate SHA-256 digest: {preview.OFFICIAL_CERT}\n",
-            f"Signer #1 certificate SHA-256 digest: {test_cert}\nSigner #2 certificate SHA-256 digest: {test_cert}\n",
+            f"Signer #1 certificate SHA-256 digest: {test_cert}\nSigner #2 certificate SHA-256 digest: {'cd' * 32}\n",
+            f"Number of signers: 2\nSigner #1 certificate SHA-256 digest: {test_cert}\n",
         ):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 preview.verify_signer(output)

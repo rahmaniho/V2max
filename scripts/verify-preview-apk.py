@@ -31,10 +31,14 @@ def verify_badging(badging, version, code):
 
 
 def verify_signer(output):
-    matches = re.findall(r"(?im)^Signer #(\d+) certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$", output)
-    if len(matches) != 1 or matches[0][0] != "1":
-        raise ValueError("Preview APK must have exactly one readable signer")
-    digest = matches[0][1].replace(":", "").lower()
+    # Android build-tools versions use both "Signer #1" and "V2 Signer"
+    # prefixes; some report the same certificate once per signature scheme.
+    matches = re.findall(r"(?im)^.*?certificate SHA-256 digest:\s*([0-9a-f:]+)\s*$", output)
+    digests = {match.replace(":", "").lower() for match in matches}
+    signer_counts = re.findall(r"(?im)^Number of signers:\s*(\d+)\s*$", output)
+    if len(digests) != 1 or any(count != "1" for count in signer_counts):
+        raise ValueError("Preview APK must have exactly one distinct readable signer")
+    digest = next(iter(digests))
     if not re.fullmatch(r"[0-9a-f]{64}", digest) or digest == OFFICIAL_CERT:
         raise ValueError("Preview signer is invalid or matches the official signer")
     return digest
