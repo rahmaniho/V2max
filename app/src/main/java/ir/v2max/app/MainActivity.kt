@@ -50,23 +50,38 @@ class MainActivity : FragmentActivity() {
             ActivityResultContracts.StartActivityForResult()
         ) { result ->
             viewModel.onVpnPermissionResult(result.resultCode == RESULT_OK)
+            // If an Activity was recreated while the VPN dialog was in flight,
+            // its optional notification request was deferred until this result.
+            askNotificationPermission()
         }
 
         notificationLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
-        ) { /* اختیاری */ }
+        ) { viewModel.onNotificationPermissionResult() }
 
         setContent {
-            val pending by viewModel.pendingVpnRequest.collectAsStateWithLifecycle()
-            LaunchedEffect(pending) {
-                if (pending) {
-                    val intent = VpnService.prepare(this@MainActivity)
-                    if (intent == null) {
-                        viewModel.onVpnPermissionResult(true)
-                    } else {
-                        runCatching { vpnPermissionLauncher.launch(intent) }
-                            .onFailure { viewModel.onVpnPermissionResult(false) }
-                    }
+            val permission by viewModel.vpnPermissionState.collectAsStateWithLifecycle()
+            val notificationInFlight by viewModel.notificationPermissionInFlight.collectAsStateWithLifecycle()
+            LaunchedEffect(permission, notificationInFlight) {
+                if (permission.pendingId != null && permission.inFlightId == null && !notificationInFlight &&
+                    viewModel.claimVpnPermissionRequest()) {
+                    runCatching { VpnService.prepare(this@MainActivity) }.fold(
+                        onSuccess = { intent ->
+                            if (intent == null) {
+                                viewModel.onVpnPermissionResult(true)
+                                askNotificationPermission()
+                            } else {
+                                runCatching { vpnPermissionLauncher.launch(intent) }.onFailure {
+                                    viewModel.onVpnPermissionLaunchFailure()
+                                    askNotificationPermission()
+                                }
+                            }
+                        },
+                        onFailure = {
+                            viewModel.onVpnPermissionLaunchFailure()
+                            askNotificationPermission()
+                        }
+                    )
                 }
             }
             V2maxTheme {
@@ -221,8 +236,9 @@ class MainActivity : FragmentActivity() {
             this,
             Manifest.permission.POST_NOTIFICATIONS
         ) == PackageManager.PERMISSION_GRANTED
-        if (!granted) {
+        if (!granted && viewModel.claimNotificationPermission()) {
             runCatching { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                .onFailure { viewModel.onNotificationPermissionResult() }
         }
     }
 }

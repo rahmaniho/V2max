@@ -14,15 +14,26 @@ case "${1:-debug}" in
 esac
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+stage='checking emulator'
+trap 'code=$?; echo "::error title=Android UI connection smoke::Stage $stage failed at line $LINENO (exit $code)"' ERR
 # Stop the earlier smoke process and revoke its shell-granted VPN app-op. The
 # instrumentation itself asserts that VpnService.prepare still needs consent.
-adb shell am force-stop "$pkg"
-adb shell appops set "$pkg" ACTIVATE_VPN ignore
+stage='stop previous app process'
+if ! output=$(adb shell am force-stop "$pkg" 2>&1); then
+  echo "::error title=Android UI connection smoke::Could not stop the previous app process: $output"
+  exit 1
+fi
+stage='revoke emulator VPN app-op'
+if ! output=$(adb shell appops set "$pkg" ACTIVATE_VPN ignore 2>&1); then
+  echo "::error title=Android UI connection smoke::Could not revoke the test VPN app-op: $output"
+  exit 1
+fi
+stage='instrumentation'
 status=0
 adb shell am instrument -w -r -e enableUiVpnTests true \
   -e class ir.v2max.app.AndroidUiConnectionTest \
   "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tr -d '\r' | tee "$work/test.log" || status=$?
-if (( status != 0 )) || ! grep -Fq 'OK (2 tests)' "$work/test.log"; then
+if (( status != 0 )) || ! grep -Fq 'OK (3 tests)' "$work/test.log"; then
   python3 - "$work/test.log" <<'PY'
 import pathlib, sys
 text = pathlib.Path(sys.argv[1]).read_text(errors='replace')[-3400:]

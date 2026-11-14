@@ -55,14 +55,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
-    private val _pendingVpnRequest = MutableStateFlow(false)
-    val pendingVpnRequest: StateFlow<Boolean> = _pendingVpnRequest.asStateFlow()
+    private sealed class VpnAction {
+        data class Server(val id: String) : VpnAction()
+        data class Smart(val subscriptionId: String?) : VpnAction()
+        object Quick : VpnAction()
+        object Restart : VpnAction()
+    }
 
-    private var pendingServerId: String? = null
-    private var pendingScanSubId: String? = null
-    private var pendingSmartScan = false
-    private var pendingRestart = false
-    private var pendingQuickConnect = false
+    private val vpnPermissions = VpnPermissionQueue<VpnAction>()
+    private val _vpnPermissionState = MutableStateFlow(vpnPermissions.snapshot())
+    internal val vpnPermissionState: StateFlow<VpnPermissionState> = _vpnPermissionState.asStateFlow()
+    private val _notificationPermissionInFlight = MutableStateFlow(false)
+    internal val notificationPermissionInFlight: StateFlow<Boolean> = _notificationPermissionInFlight.asStateFlow()
+    private var notificationPermissionAttempted = false
     private var startupJob: Job? = null
     private var startupRefreshJob: Job? = null
     private val dataJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
@@ -163,7 +168,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!Repo.settings.value.autoConnectOnOpen || Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
             // Do not restart a connection or compete with a scan the user already started.
             if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
-            if (VpnService.prepare(app) != null) {
+            val needsPermission = vpnPermissionRequired() ?: return
+            if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
                 if (settings.autoConnectOnOpen) requestSmartConnectInternal()
                 return
             }
@@ -237,27 +243,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         TunnelController.stop(getApplication())
     }
 
-    /** درخواست اتصال؛ در صورت نیاز مجوز VPN از کاربر گرفته می‌شود */
+    /** A row or its explicit connect control selects and tests that same profile. */
     fun requestConnect(serverId: String?) {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = serverId
-            pendingScanSubId = null
-            pendingSmartScan = false
-            pendingQuickConnect = false
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            return
-        }
         if (serverId == null) {
-            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
-            return
-        }
-        // پیش از اتصال، همان سرور تست می‌شود (یا در صورت خرابی، چرخه‌ی کامل اجرا می‌شود)
-        viewModelScope.launch(errorHandler) {
-            val ok = SmartConnect.connectVerified(app, serverId)
-            if (!ok) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+            if (hasServers()) runOrRequestVpn(VpnAction.Quick)
+        } else if (Repo.serverById(serverId) == null) {
+            showMessage("سرور انتخاب‌شده دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+        } else {
+            Repo.setSelected(serverId)
+            if (Repo.isStorageReadOnly()) showMessage("انتخاب سرور تا بستن برنامه موقت است؛ داده‌ها فقط‌خواندنی‌اند")
+            runOrRequestVpn(VpnAction.Server(serverId))
         }
     }
 
@@ -267,55 +263,95 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun requestSmartConnectInternal(subscriptionId: String? = null) {
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = null
-            pendingSmartScan = true
-            pendingQuickConnect = false
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            pendingScanSubId = subscriptionId
+        if (hasServers(subscriptionId)) runOrRequestVpn(VpnAction.Smart(subscriptionId))
+    }
+
+    private fun hasServers(subscriptionId: String? = null): Boolean {
+        if (Repo.servers.value.any { subscriptionId == null || it.subId == subscriptionId }) return true
+        val text = "سروری برای اتصال وجود ندارد؛ ابتدا یک اشتراک یا کانفیگ اضافه کنید"
+        Repo.scan.value = ir.v2max.app.data.ScanState(finished = true, message = text)
+        showMessage(text)
+        return false
+    }
+
+    /** Null means Android could not determine consent; never start a tunnel in that case. */
+    private fun vpnPermissionRequired(): Boolean? = try {
+        VpnService.prepare(getApplication<Application>()) != null
+    } catch (_: Exception) {
+        showMessage("بررسی مجوز VPN ممکن نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+        null
+    }
+
+    private fun runOrRequestVpn(action: VpnAction) {
+        val needsPermission = vpnPermissionRequired() ?: return
+        if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
+            vpnPermissions.enqueue(action)
+            _vpnPermissionState.value = vpnPermissions.snapshot()
         } else {
-            launchSmartConnect(subscriptionId)
+            executeVpnAction(action)
         }
     }
 
     private fun clearPendingVpnRequest() {
-        _pendingVpnRequest.value = false
-        pendingServerId = null
-        pendingScanSubId = null
-        pendingSmartScan = false
-        pendingQuickConnect = false
-        pendingRestart = false
+        vpnPermissions.cancel()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
     }
 
-    fun onVpnPermissionResult(granted: Boolean) {
-        // Ignore a permission result arriving after the request was cancelled/reset.
-        if (!_pendingVpnRequest.value) return
-        val id = pendingServerId
-        val subscriptionId = pendingScanSubId
-        val restart = pendingRestart
-        val quickConnect = pendingQuickConnect
-        val smartScan = pendingSmartScan
-        clearPendingVpnRequest()
+    /** Claim before launching so recreation does not launch a second system dialog. */
+    internal fun claimVpnPermissionRequest(): Boolean {
+        val claimed = vpnPermissions.claim()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        return claimed
+    }
+
+    internal fun onVpnPermissionResult(granted: Boolean) {
+        val action = vpnPermissions.complete()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        // A canceled or superseded request must not consume this old dialog result.
+        if (action == null) return
         if (!granted) {
-            showMessage("برای اتصال، اجازه‌ی ساخت VPN لازم است")
+            showMessage("برای اتصال، اجازه‌ی ساخت VPN لازم است؛ در پنجره‌ی اندروید تأیید کنید")
             return
         }
-        if (restart) {
-            launchRestart()
-        } else if (quickConnect) {
-            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(getApplication()) }
-        } else if (smartScan) {
-            launchSmartConnect(subscriptionId)
-        } else {
-            viewModelScope.launch(errorHandler) {
-                val app = getApplication<Application>()
-                if (id == null) SmartConnect.quickConnect(app)
-                else if (!SmartConnect.connectVerified(app, id)) {
+        when (vpnPermissionRequired()) {
+            false -> executeVpnAction(action)
+            true -> showMessage("مجوز VPN فعال نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+            null -> Unit // vpnPermissionRequired already reported the failure
+        }
+    }
+
+    internal fun onVpnPermissionLaunchFailure() {
+        val action = vpnPermissions.complete()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        if (action != null) showMessage("پنجره‌ی مجوز VPN باز نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+    }
+
+    /** The optional notification prompt must not overlap the VPN consent dialog. */
+    internal fun claimNotificationPermission(): Boolean {
+        if (notificationPermissionAttempted || vpnPermissions.snapshot().inFlightId != null) return false
+        notificationPermissionAttempted = true
+        _notificationPermissionInFlight.value = true
+        return true
+    }
+
+    internal fun onNotificationPermissionResult() {
+        _notificationPermissionInFlight.value = false
+    }
+
+    private fun executeVpnAction(action: VpnAction) {
+        when (action) {
+            is VpnAction.Server -> viewModelScope.launch(errorHandler) {
+                if (!SmartConnect.connectVerified(getApplication(), action.id)) {
                     showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
                 }
             }
+            is VpnAction.Smart -> launchSmartConnect(action.subscriptionId)
+            VpnAction.Quick -> viewModelScope.launch(errorHandler) {
+                if (!SmartConnect.quickConnect(getApplication())) {
+                    showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+                }
+            }
+            VpnAction.Restart -> launchRestart()
         }
     }
 
@@ -328,17 +364,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun quickConnect() {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingSmartScan = false
-            pendingScanSubId = null
-            pendingServerId = null
-            pendingQuickConnect = true
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            return
-        }
-        viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
+        if (hasServers()) runOrRequestVpn(VpnAction.Quick)
     }
 
     // ----------------------------------------------------------------- tests
@@ -378,17 +404,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun restartScan() {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = null
-            pendingSmartScan = false
-            pendingScanSubId = null
-            pendingQuickConnect = false
-            pendingRestart = true
-            _pendingVpnRequest.value = true
-            return
-        }
-        launchRestart()
+        if (hasServers()) runOrRequestVpn(VpnAction.Restart)
     }
 
     private fun launchRestart() {
@@ -681,14 +697,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Repo.setFavorite(id, !server.favorite)
     }
 
-    fun selectServer(id: String) {
-        cancelStartupForUserAction()
-        Repo.setSelected(id)
-        if (Repo.tunnel.value.isActive) {
-            requestConnect(id)
-        }
-        if (Repo.isStorageReadOnly()) showMessage("انتخاب سرور تا بستن برنامه موقت است؛ داده‌ها فقط‌خواندنی‌اند")
-    }
+    /** Tapping a server behaves the same whether or not a VPN is already running. */
+    fun selectServer(id: String) = requestConnect(id)
 
     fun saveEditedServer(server: ServerConfig, expectedFingerprint: String, expectedEpoch: Long): Boolean {
         if (!requireWritableData()) return false

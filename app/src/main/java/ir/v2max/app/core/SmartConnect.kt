@@ -264,10 +264,10 @@ object SmartConnect {
     }
 
     /** Test the selected server first; try other verified candidates if it fails. */
-    suspend fun quickConnect(context: Context) {
+    suspend fun quickConnect(context: Context): Boolean {
         val selected = Repo.selectedServer()
-        if (selected != null) connectVerified(context, selected.id)
-        else scanAndConnect(context, autoConnect = true)
+        return if (selected != null) connectVerified(context, selected.id)
+        else scanAndConnect(context, autoConnect = true) != null
     }
 
     /** An explicit selection is honored whenever that same server passes the real test. */

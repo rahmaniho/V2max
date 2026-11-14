@@ -93,6 +93,7 @@ class AndroidUiConnectionTest {
                 .flatMap { monitor.getActivitiesInStage(it).toList() }
                 .filterIsInstance<MainActivity>().distinct().forEach { it.finish() }
         }
+        instrumentation.waitForIdleSync()
         SmartConnect.cancelScan()
         TunnelController.stop(context)
         val deadline = SystemClock.elapsedRealtime() + 10_000
@@ -145,6 +146,27 @@ class AndroidUiConnectionTest {
         fixtureControl("hold-release")
         awaitConnected(alpha.id)
         assertTunTraffic()
+
+        // The home power control must disconnect and then reconnect the chosen
+        // profile without asking for a permission that is already granted.
+        clickText("خانه")
+        clickDescription("قطع اتصال")
+        awaitDisconnected()
+        assertTrue("VPN permission was unexpectedly lost", VpnService.prepare(context) == null)
+        clickDescription("اتصال")
+        awaitConnected(alpha.id)
+        assertTunTraffic()
+    }
+
+    @Test fun emptyListExplainsWhyConnectionCannotStart() {
+        Repo.removeServers(Repo.servers.value.map { it.id })
+        grantNotificationsIfNeeded()
+        launchActivity()
+        clickDescription("اتصال")
+        awaitText("سروری برای اتصال وجود ندارد")
+        assertNotNull("An empty list must not silently authorize VPN", VpnService.prepare(context))
+        assertFalse("An empty list started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
+        assertFalse("An empty list started a scan", Repo.scan.value.running)
     }
 
     @Test fun automaticConnectionWaitsForRuntimeNotificationAndVpnConsent() {
@@ -237,8 +259,33 @@ class AndroidUiConnectionTest {
     }
 
     private fun clickText(text: String) {
-        for (node in awaitText(text)) if (clickNode(node)) return
-        throw AssertionError("Text was not clickable: $text; ${visibleSummary()}")
+        val deadline = SystemClock.elapsedRealtime() + 15_000
+        var lastScroll = 0L
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val tree = nodes()
+            tree.filter { it.text?.toString()?.contains(text) == true }
+                .forEach { if (clickNode(it)) return }
+            // Server rows are lazy and may be below the fold on small emulators.
+            if (text.startsWith("UI ") && SystemClock.elapsedRealtime() - lastScroll > 700) {
+                val list = tree.firstOrNull { it.isScrollable }
+                if (list != null && !list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                    list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                }
+                lastScroll = SystemClock.elapsedRealtime()
+            }
+            SystemClock.sleep(100)
+        }
+        throw AssertionError("Text not visible/clickable: $text; active=${activePackage()}; ${visibleSummary()}")
+    }
+
+    private fun clickDescription(description: String) {
+        val deadline = SystemClock.elapsedRealtime() + 15_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            nodes().filter { it.contentDescription?.toString() == description }
+                .forEach { if (clickNode(it)) return }
+            SystemClock.sleep(100)
+        }
+        throw AssertionError("Action not visible/clickable: $description; ${visibleSummary()}")
     }
 
     private fun clickViewId(suffix: String) {
@@ -280,6 +327,15 @@ class AndroidUiConnectionTest {
             SystemClock.sleep(100)
         }
         throw AssertionError("UI VPN did not connect $id: tunnel=${Repo.tunnel.value}; scan=${Repo.scan.value}")
+    }
+
+    private fun awaitDisconnected() {
+        val deadline = SystemClock.elapsedRealtime() + 15_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (!Repo.tunnel.value.isActive && !V2maxVpnService.running && !XrayCore.isRunning) return
+            SystemClock.sleep(100)
+        }
+        throw AssertionError("The home control did not disconnect the VPN: ${Repo.tunnel.value}")
     }
 
     private fun assertTunTraffic() {

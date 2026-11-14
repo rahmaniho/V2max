@@ -124,7 +124,7 @@ class AndroidSubscriptionWorkerTest {
                 val app = context.applicationContext as Application
                 vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
                 vm.requestConnect(selected.id)
-                assertTrue("No VPN permission request was recorded", vm.pendingVpnRequest.value)
+                assertTrue("No VPN permission request was recorded", vm.vpnPermissionState.value.pendingId != null)
                 vm.onQrScanned(url)
                 vm.onQrScanned("vless://11111111-2222-3333-4444-555555555555@$qrHost:443?security=tls#QR")
             }
@@ -132,17 +132,20 @@ class AndroidSubscriptionWorkerTest {
             while (SystemClock.elapsedRealtime() < deadline &&
                 (Repo.subs.value.none { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } } ||
                     Repo.servers.value.none { it.address == qrHost })) {
-                assertTrue("Import discarded the pending permission request", vm.pendingVpnRequest.value)
+                assertTrue("Import discarded the pending permission request", vm.vpnPermissionState.value.pendingId != null)
                 SystemClock.sleep(50)
             }
             assertTrue("Subscription import failed: ${vm.message.value}",
                 Repo.subs.value.any { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } })
             assertTrue("Profile import failed: ${vm.message.value}", Repo.servers.value.any { it.address == qrHost })
-            assertTrue("Import discarded the pending permission request", vm.pendingVpnRequest.value)
+            assertTrue("Import discarded the pending permission request", vm.vpnPermissionState.value.pendingId != null)
             assertEquals("Import changed the selected profile", selected.id, Repo.selectedId.value)
             assertEquals("Import started a connection", generation, V2maxVpnService.currentActionGeneration())
-            instrumentation.runOnMainSync { vm.onVpnPermissionResult(false) }
-            assertFalse(vm.pendingVpnRequest.value)
+            instrumentation.runOnMainSync {
+                assertTrue(vm.claimVpnPermissionRequest())
+                vm.onVpnPermissionResult(false)
+            }
+            assertTrue(vm.vpnPermissionState.value.pendingId == null)
             assertFalse("A denied permission started a tunnel", Repo.tunnel.value.isActive)
         } finally {
             instrumentation.runOnMainSync { store.clear() }

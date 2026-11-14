@@ -46,6 +46,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -150,6 +151,17 @@ fun ServersScreen(
         }
 
         item { ScanBanner(scan) }
+
+        if (servers.isNotEmpty()) {
+            item {
+                Text(
+                    if (selectionMode) "سرورها را برای عملیات گروهی انتخاب کنید"
+                    else "برای اتصال، سرور موردنظر را لمس کنید؛ تست‌ها پیش از اتصال کامل می‌شوند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = V2.TextSecondary
+                )
+            }
+        }
 
         item {
             OutlinedTextField(
@@ -346,7 +358,11 @@ private fun ServerRow(
                 )
             )
             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .clickable { onClick() }
+            .clickable(
+                role = Role.Button,
+                onClickLabel = if (selectable) "انتخاب ${server.displayName()}" else "اتصال به ${server.displayName()}",
+                onClick = onClick
+            )
     ) {
         Row(
             Modifier
@@ -436,10 +452,20 @@ private fun ServerRow(
             }
             Spacer(Modifier.width(8.dp))
             PingBadge(server.bestPing(), compact = true)
+            if (!selectable) {
+                IconButton(onClick = onConnect, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = "اتصال به ${server.displayName()}",
+                        tint = V2.Mint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
             IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
                 Icon(
                     Icons.Filled.Star,
-                    contentDescription = null,
+                    contentDescription = if (server.favorite) "حذف از علاقه‌مندی‌ها" else "افزودن به علاقه‌مندی‌ها",
                     tint = if (server.favorite) V2.Amber else V2.TextMuted,
                     modifier = Modifier.size(17.dp)
                 )
@@ -448,7 +474,7 @@ private fun ServerRow(
                 IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(34.dp)) {
                     Icon(
                         Icons.Filled.MoreVert,
-                        contentDescription = null,
+                        contentDescription = "گزینه‌های ${server.displayName()}",
                         tint = V2.TextMuted,
                         modifier = Modifier.size(18.dp)
                     )

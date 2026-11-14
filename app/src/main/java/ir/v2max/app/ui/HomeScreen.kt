@@ -47,6 +47,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -94,6 +96,8 @@ fun HomeScreen(
     val displayStatus = if (scan.running && tunnel.status != TunnelStatus.CONNECTED) {
         TunnelStatus.CONNECTING
     } else tunnel.status
+    val scanFailed = !scan.running && scan.finished && scan.bestName.isBlank() &&
+        scan.message.isNotBlank() && !tunnel.isActive
 
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     // تیک ثانیه‌ای فقط وقتی اتصال برقرار است (به‌جای بازسازی مداوم صفحه در حالت قطع)
@@ -135,7 +139,11 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (scan.running) "در حال بررسی هوشمند" else statusTitle(tunnel),
+                    text = when {
+                        scan.running -> "در حال بررسی پیش از اتصال"
+                        scanFailed -> "اتصال آغاز نشد"
+                        else -> statusTitle(tunnel)
+                    },
                     fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     color = statusColor(displayStatus)
@@ -143,13 +151,15 @@ fun HomeScreen(
                 Spacer(Modifier.height(4.dp))
                 Text(
                     text = when {
-                        scan.running -> "تست پیش از اتصال؛ برای لغو دکمه را لمس کنید"
+                        scan.running -> "${scan.phase.ifBlank { "تست پیش از اتصال" }}؛ برای لغو دکمه را لمس کنید"
+                        scanFailed -> scan.message
                         tunnel.message.isNotBlank() && tunnel.status == TunnelStatus.CONNECTING -> tunnel.message
                         else -> tunnel.serverName.ifBlank { selected?.displayName() ?: "سروری انتخاب نشده" }
                     },
                     fontSize = 12.5.sp,
                     color = V2.TextMuted,
-                    maxLines = 1,
+                    textAlign = TextAlign.Center,
+                    maxLines = if (scanFailed) 3 else 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
@@ -466,7 +476,9 @@ private fun ConnectOrb(status: TunnelStatus, scanning: Boolean, onClick: () -> U
     }
 
     Box(
-        modifier = Modifier.size(210.dp).clickable(role = Role.Button, onClickLabel = action, onClick = onClick),
+        modifier = Modifier.size(210.dp)
+            .semantics { contentDescription = action }
+            .clickable(role = Role.Button, onClickLabel = action, onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Canvas(Modifier.matchParentSize()) {
