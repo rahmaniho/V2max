@@ -11,6 +11,8 @@ internal class TunnelResourceOwnership {
 
     fun claim(owner: Int) { generation = owner }
 
+    fun isOwner(owner: Int): Boolean = generation == owner
+
     fun release(owner: Int): Boolean {
         if (generation != owner) return false
         generation = null

@@ -12,6 +12,7 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
+trap 'status=$?; echo "::error title=Android VPN smoke::Command failed at script line $LINENO (exit $status)"' ERR
 # Slow streaming makes it possible to verify real TUN traffic while a second
 # no-TUN Xray instance is serving a download, and again after cancellation.
 cat > "$work/http-fixture.py" <<'PY'
@@ -90,6 +91,15 @@ SH
 adb push "$work/tun-probe.sh" /data/local/tmp/v2max-tun-probe.sh
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
+  # Report, rather than conceal, any TUN handover retry after a new interface.
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" =~ attempts=([2-9]|[1-9][0-9]+) ]]; then
+      echo "::warning title=VPN TUN handover::$line"
+    else
+      echo "::notice title=VPN TUN handover::$line"
+    fi
+  done < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)
 else
   echo '::group::Android VPN diagnostics'
   adb logcat -d -s V2maxVpn:V V2maxCore:V GoLog:V AndroidRuntime:E > "$work/logcat.txt" || true
@@ -129,7 +139,17 @@ if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
   adb exec-out screencap -p > "$work/home.png"
   preview="$work/home.png"
   if command -v convert >/dev/null 2>&1; then
-    convert "$work/home.png" -resize 720x -quality 72 "$work/home.jpg"
+    convert "$work/home.png" -resize 480x -quality 65 "$work/home.jpg"
+    preview="$work/home.jpg"
+  elif python3 -c 'import PIL' >/dev/null 2>&1; then
+    python3 - "$work/home.png" "$work/home.jpg" <<'PY'
+from PIL import Image
+import sys
+with Image.open(sys.argv[1]) as image:
+    image = image.convert('RGB')
+    image.thumbnail((480, 960))
+    image.save(sys.argv[2], format='JPEG', quality=65, optimize=True)
+PY
     preview="$work/home.jpg"
   fi
   # Small notices can be read through the GitHub check API if artifact storage
@@ -139,9 +159,10 @@ import base64, hashlib, pathlib, sys
 image = pathlib.Path(sys.argv[1]).read_bytes()
 encoded = base64.b64encode(image).decode('ascii')
 # GitHub truncates individual annotation messages at 4096 characters.
-chunks = [encoded[i:i + 3000] for i in range(0, len(encoded), 3000)]
-if len(chunks) > 40:
-    raise SystemExit('Emulator preview is too large for check annotations')
+chunks = [encoded[i:i + 3800] for i in range(0, len(encoded), 3800)]
+if len(chunks) > 45:
+    print(f'::error title=UI capture::Preview is too large ({len(image)} bytes)')
+    raise SystemExit(1)
 print(f'::notice title=V2MAX_UI_SHA256::{hashlib.sha256(image).hexdigest()}')
 for number, chunk in enumerate(chunks):
     print(f'::notice title=V2MAX_UI_{number:03d}::{chunk}')

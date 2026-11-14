@@ -55,13 +55,20 @@ class PreflightTest {
 
     @Test fun `late cleanup cannot release resources claimed by a newer service generation`() {
         val owner = TunnelResourceOwnership()
+        assertFalse(owner.isOwner(10))
         owner.claim(10)
+        assertTrue(owner.isOwner(10))
         owner.claim(11)
+        assertFalse(owner.isOwner(10))
+        assertTrue(owner.isOwner(11))
         assertFalse(owner.release(10))
+        assertTrue(owner.isOwner(11))
         assertTrue(owner.release(11))
+        assertFalse(owner.isOwner(11))
         assertFalse(owner.release(11))
         owner.claim(12)
         owner.clear()
+        assertFalse(owner.isOwner(12))
         assertFalse(owner.release(12))
     }
 

@@ -282,7 +282,7 @@ class AndroidVpnSmokeTest {
             assertEquals("VPN did not connect: ${Repo.tunnel.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
 
-            assertTunTraffic(instrumentation)
+            assertTunTrafficEventually(instrumentation, "initial")
             assertEquals("The VPN app's underlying network changed during tunnel setup",
                 networkBeforeVpn, CarrierProbe.networkHandle(context))
 
@@ -385,7 +385,7 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("Edited profile was not applied: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
-            assertTunTraffic(instrumentation)
+            assertTunTrafficEventually(instrumentation, "profile-switch")
 
             // Simulate the native core stopping. With no other fixture profile,
             // recovery must re-test this profile rather than trust its old ping.
@@ -412,7 +412,7 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("VPN did not recover: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
-            assertTunTraffic(instrumentation)
+            assertTunTrafficEventually(instrumentation, "automatic-recovery")
 
             // A user stop while recovery is waiting must cancel retries, including
             // when the existing TUN is being retained for Kill Switch.
@@ -441,7 +441,7 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("Manual reconnect did not start: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
-            assertTunTraffic(instrumentation)
+            assertTunTrafficEventually(instrumentation, "manual-restart")
 
             // Start a slow automatic replacement, then supersede it. Even if its
             // native probe returns later, it must not override the current tunnel.
@@ -494,6 +494,29 @@ class AndroidVpnSmokeTest {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
         }
+    }
+
+    private fun assertTunTrafficEventually(instrumentation: Instrumentation, phase: String) {
+        // A new VPN interface may need a short handover after Xray's outbound
+        // probe succeeds. Record retries rather than hiding that interruption;
+        // tests of an already-running tunnel still use the strict single probe.
+        val start = SystemClock.elapsedRealtime()
+        val deadline = start + 12_000
+        var attempts = 0
+        var lastFailure: AssertionError? = null
+        do {
+            attempts++
+            try {
+                assertTunTraffic(instrumentation)
+                assertTrue("Core stopped while waiting for TUN", V2maxVpnService.running && XrayCore.isRunning)
+                android.util.Log.i("V2maxTunTest", "V2MAX_TUN_READY phase=$phase attempts=$attempts elapsed_ms=${SystemClock.elapsedRealtime() - start}")
+                return
+            } catch (failure: AssertionError) {
+                lastFailure = failure
+            }
+            if (SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(250)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        throw AssertionError("Android TUN did not pass within the handover window ($phase, $attempts attempts)", lastFailure)
     }
 
     private fun assertTunTraffic(instrumentation: Instrumentation) {
