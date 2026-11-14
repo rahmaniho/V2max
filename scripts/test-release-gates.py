@@ -29,6 +29,7 @@ class GatesTest(unittest.TestCase):
             ("v2max-preview-tested-apk", "untested-preview-apk"),
             ('sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"', "echo 'skip checksum'"),
             ("--prerelease --latest=false", "--latest"),
+            ('draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)', 'draft_api=invalid'),
         )
         for before, after in changes:
             with self.subTest(before=before, after=after):

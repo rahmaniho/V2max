@@ -504,7 +504,12 @@ jobs:
           [ "$tag_sha" = "$GITHUB_SHA" ] || { echo '::error::Unexpected release tag target'; exit 1; }
           gh release create "$TAG" signed-apks/*.apk --verify-tag --draft \
             --title "V2max $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/draft.json"
+          # The REST releases/tags endpoint does not return drafts. Resolve the
+          # draft through gh and read its numeric release endpoint instead.
+          draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)
+          prefix="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/"
+          [[ "$draft_api" == "$prefix"* && "${draft_api#"$prefix"}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Unexpected draft release API URL'; exit 1; }
+          gh api "$draft_api" > "$RUNNER_TEMP/draft.json"
           python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"
           if [ "$(main_sha)" != "$GITHUB_SHA" ]; then
             echo '::error::main advanced during upload; draft left unpublished for owner review'
@@ -548,6 +553,7 @@ jobs:
           VERSION: ${{ steps.preview.outputs.version }}
         run: |
           set -euo pipefail
+          trap 'status=$?; echo "::error title=Preview publish::Command failed at script line $LINENO (exit $status)"' ERR
           branch_sha() { gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" --jq '.object.sha'; }
           if [[ "$GITHUB_REF" != refs/heads/arena/* ]] || [[ "$(branch_sha)" != "$GITHUB_SHA" ]]; then
             echo '::error::Preview branch moved or is not an arena branch; refusing publication'
@@ -567,7 +573,11 @@ jobs:
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')" = "$GITHUB_SHA"
           gh release create "$TAG" preview/V2max-PREVIEW-universal.apk --verify-tag --draft --prerelease --latest=false \
             --title "V2max $VERSION — نسخهٔ آزمایشی مجزا" --notes-file "$RUNNER_TEMP/preview-notes.md"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/preview-draft.json"
+          # A draft is visible by its numeric release ID, not releases/tags.
+          draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)
+          prefix="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/"
+          [[ "$draft_api" == "$prefix"* && "${draft_api#"$prefix"}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Unexpected draft release API URL'; exit 1; }
+          gh api "$draft_api" > "$RUNNER_TEMP/preview-draft.json"
           python3 scripts/verify-preview-release.py "$RUNNER_TEMP/preview-draft.json" preview/V2max-PREVIEW-universal.apk "$TAG" draft
           if [[ "$(branch_sha)" != "$GITHUB_SHA" ]]; then
             echo '::error::Preview branch advanced; leaving the verified draft unpublished'

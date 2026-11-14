@@ -47,6 +47,9 @@ def verify(source):
         raise ValueError("Signing job must not have repository write access")
     if re.search(r"secrets\.V2MAX_RELEASE_", publication):
         raise ValueError("Publication job must not receive the private signing key")
+    draft_lookup = 'draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)'
+    if draft_lookup not in publication or 'gh api "$draft_api"' not in publication:
+        raise ValueError("Stable draft must be resolved by release ID before verification")
 
     preview_input = re.search(r"(?ms)^      publish_test_release:\n(.*?)(?=^      [a-z_]+:\n|^env:\n)", source)
     if not preview_input or not re.search(r"(?m)^        default: false\s*$", preview_input.group(1)):
@@ -63,6 +66,8 @@ def verify(source):
         raise ValueError("Preview publication must not receive production signing secrets")
     if preview.count("--prerelease --latest=false") < 2 or "scripts/verify-preview-release.py" not in preview:
         raise ValueError("Preview must be verified, marked prerelease and never marked latest")
+    if draft_lookup not in preview or 'gh api "$draft_api"' not in preview:
+        raise ValueError("Preview draft must be resolved by release ID before verification")
     build = section(source, "build")
     for name in ("Build isolated preview and its instrumentation APK",
                  "Stage the exact preview APK that passed the TUN test",
