@@ -1,5 +1,7 @@
 package ir.v2max.app
 
+import android.app.Instrumentation
+import android.content.Intent
 import android.net.VpnService
 import android.os.SystemClock
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -13,9 +15,17 @@ import ir.v2max.app.data.RoutingMode
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
+import ir.v2max.app.data.TunnelUiState
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbeResult
+import ir.v2max.app.net.SpeedTester
+import ir.v2max.app.service.V2maxVpnService
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -74,6 +84,51 @@ class AndroidVpnSmokeTest {
             assertNull(Repo.subById(sub.id))
             assertNull(Repo.serverById(newer.id))
         } finally {
+            Repo.removeSubscription(sub.id)
+            if (previousSelection.isBlank() || Repo.serverById(previousSelection) != null) Repo.setSelected(previousSelection)
+        }
+    }
+
+    @Test fun olderSubscriptionResponseCannotOverwriteANewerRefresh() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        Repo.init(context)
+        val source = Subscription(id = "race-fixture", name = "fixture", url = "https://example.org/race", updatedAt = 10)
+        val fresh = fixture("race-new", 18080).copy(subId = source.id, address = "new.example.org")
+        val stale = fixture("race-old", 18080).copy(subId = source.id, address = "old.example.org")
+        Repo.addSubscription(source)
+        try {
+            assertTrue(Repo.commitSubscriptionRefresh(source.copy(), listOf(fresh), 0, 0, 0, 0))
+            assertTrue(!Repo.commitSubscriptionRefresh(source.copy(), listOf(stale), 0, 0, 0, 0))
+            Repo.recordSubscriptionRefreshError(source.copy(), "stale error")
+            assertEquals("", Repo.subById(source.id)?.lastError)
+            assertEquals(fresh.id, Repo.serverById(fresh.id)?.id)
+            assertNull(Repo.serverById(stale.id))
+        } finally {
+            Repo.removeSubscription(source.id)
+        }
+    }
+
+    @Test fun distinctLiveAndSelectedProfilesSurviveDedupeAndTrimming() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        Repo.init(context)
+        val previousSelection = Repo.selectedId.value
+        val previousTunnel = Repo.tunnel.value
+        val sub = Subscription(id = "protect-fixture", name = "fixture", url = "https://example.org/protect", builtIn = true)
+        val live = fixture("protect-live", 18080).copy(subId = sub.id, address = "same.example.org")
+        val selected = live.copy(id = "protect-selected")
+        Repo.addSubscription(sub)
+        try {
+            Repo.updateServer(live)
+            Repo.updateServer(selected)
+            Repo.setSelected(selected.id)
+            Repo.tunnel.value = TunnelUiState(status = TunnelStatus.CONNECTED, serverId = live.id)
+            Repo.dedupeAllServers()
+            Repo.trimBuiltInServers(maxTotal = 1)
+            assertEquals(live.id, Repo.serverById(live.id)?.id)
+            assertEquals(selected.id, Repo.serverById(selected.id)?.id)
+            assertEquals(selected.id, Repo.selectedId.value)
+        } finally {
+            Repo.tunnel.value = previousTunnel
             Repo.removeSubscription(sub.id)
             if (previousSelection.isBlank() || Repo.serverById(previousSelection) != null) Repo.setSelected(previousSelection)
         }
@@ -142,19 +197,102 @@ class AndroidVpnSmokeTest {
             assertEquals("VPN did not connect: ${Repo.tunnel.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
 
-            // UiAutomation runs the command outside the app UID. It uses Runtime.exec,
-            // not a shell, so the CI runner installs a script for the piped HTTP request.
-            val descriptor = instrumentation.uiAutomation.executeShellCommand("sh /data/local/tmp/v2max-tun-probe.sh")
-            val output = descriptor.use { FileInputStream(it.fileDescriptor).bufferedReader().readText() }.trim()
-            val probeUid = output.lineSequence().firstOrNull { it.startsWith("PROBE_UID=") }
-                ?.substringAfter('=')?.trim()?.toIntOrNull()
-            assertTrue("Probe must run outside the VPN app UID: $output",
-                probeUid != null && probeUid != android.os.Process.myUid())
-            assertTrue("No traffic through Android TUN: $output\n${XrayCore.logs().joinToString("\n")}",
-                output.contains(" 200 ") && output.contains("v2max-tun-ok") && output.contains("NC_EXIT=0"))
+            assertTunTraffic(instrumentation)
+
+            // Test real native Xray controllers with actual traffic before, during,
+            // and after two downloads. A slow local fixture guarantees overlap.
+            runBlocking {
+                repeat(2) {
+                    val options = Repo.settings.value.copy(speedTest = true, speedTestCount = 1)
+                    val scan = async(Dispatchers.IO) {
+                        HealthScanner.scanPrepared(
+                            listOf(server), options,
+                            HealthScanner.Operations(
+                                tcp = HealthScanner::tcpPing,
+                                real = HealthScanner::realDelay,
+                                speed = { cfg, variant ->
+                                    SpeedTester.measure(cfg, variant, "http://198.51.100.1:18081/speed")
+                                }
+                            )
+                        )
+                    }
+                    withTimeout(30_000) {
+                        while (!XrayCore.isSpeedTestRunning() && !scan.isCompleted) delay(20)
+                    }
+                    assertTrue("Speed core never started: ${XrayCore.logs()}", XrayCore.isSpeedTestRunning())
+                    assertTunTraffic(instrumentation)
+                    assertTrue("Download did not overlap the TUN probe", XrayCore.isSpeedTestRunning())
+                    val result = withTimeout(30_000) { scan.await() }
+                    assertEquals(server.id, result.best?.id)
+                    assertTrue("Real download did not succeed: ${result.message}", result.speedCompared)
+                    assertTrue(result.best!!.speedKbps > 0)
+                    assertTrue(XrayCore.isRunning)
+                    assertTunTraffic(instrumentation)
+                }
+
+                // Cancellation must stop only the temporary controller, not the VPN.
+                val download = async(Dispatchers.IO) {
+                    SpeedTester.measure(server, Repo.settings.value, "http://198.51.100.1:18081/speed")
+                }
+                withTimeout(30_000) {
+                    while (!XrayCore.isSpeedTestRunning() && !download.isCompleted) delay(20)
+                }
+                assertTrue("Speed core never started for cancellation", XrayCore.isSpeedTestRunning())
+                withTimeout(10_000) { download.cancelAndJoin() }
+                assertTrue("Temporary core still running after cancellation", !XrayCore.isSpeedTestRunning())
+                assertTrue("Live core stopped with the temporary core", XrayCore.isRunning)
+                assertTunTraffic(instrumentation)
+            }
+
+            // A revoked/invalid service handoff must not tear down a live tunnel.
+            context.startService(Intent(context, V2maxVpnService::class.java).apply {
+                action = V2maxVpnService.ACTION_START
+                putExtra(V2maxVpnService.EXTRA_SERVER_ID, server.id)
+                putExtra(V2maxVpnService.EXTRA_PREFLIGHT_TICKET, "revoked-test-ticket")
+            })
+            val staleDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < staleDeadline &&
+                !Repo.tunnel.value.message.contains("اتصال فعلی حفظ شد")) SystemClock.sleep(50)
+            assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTrue("Stale handoff was not handled", Repo.tunnel.value.message.contains("اتصال فعلی حفظ شد"))
+            assertTunTraffic(instrumentation)
+
+            TunnelController.cancelPreflight(context)
+            SystemClock.sleep(300)
+            assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            assertTunTraffic(instrumentation)
+
+            // Editing a profile can keep its ID while changing the actual outbound.
+            // A manual connect must use the freshly tested new version, not mistake
+            // the old live tunnel for the updated configuration.
+            val edited = server.copy(uuid = "22222222-3333-4444-5555-666666666666")
+            assertTrue(V2maxVpnService.activeProfileMatches(server))
+            assertTrue(!V2maxVpnService.activeProfileMatches(edited))
+            Repo.updateServer(edited)
+            assertTrue(runBlocking { SmartConnect.connectVerified(context, edited.id) })
+            val editDeadline = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < editDeadline &&
+                !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(edited))) {
+                SystemClock.sleep(100)
+            }
+            assertTrue("Edited profile was not applied: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            assertTunTraffic(instrumentation)
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
         }
+    }
+
+    private fun assertTunTraffic(instrumentation: Instrumentation) {
+        // UiAutomation runs outside the app UID. The target is unreachable directly;
+        // the local VLESS fixture redirects it only after it traverses the VPN/TUN.
+        val descriptor = instrumentation.uiAutomation.executeShellCommand("sh /data/local/tmp/v2max-tun-probe.sh")
+        val output = descriptor.use { FileInputStream(it.fileDescriptor).bufferedReader().readText() }.trim()
+        val probeUid = output.lineSequence().firstOrNull { it.startsWith("PROBE_UID=") }
+            ?.substringAfter('=')?.trim()?.toIntOrNull()
+        assertTrue("Probe must run outside the VPN app UID: $output",
+            probeUid != null && probeUid != android.os.Process.myUid())
+        assertTrue("No traffic through Android TUN: $output\n${XrayCore.logs().joinToString("\n")}",
+            output.contains(" 200 ") && output.contains("v2max-tun-ok") && output.contains("NC_EXIT=0"))
     }
 }

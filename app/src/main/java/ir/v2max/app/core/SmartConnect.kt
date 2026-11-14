@@ -31,16 +31,17 @@ object SmartConnect {
 
     // Cancel queued scans too, so an automatic scan cannot reconnect after a user cancels.
     fun cancelScan() {
-        val jobs = synchronized(scanJobs) { scanJobs.toList() }
-        jobs.forEach { it.cancel() }
+        synchronized(scanJobs) {
+            scanJobs.toList().forEach { it.cancel() }
+            PreflightTickets.revokeAll()
+        }
     }
 
     /** بررسی عمیق شبکه (اپراتور، DNS، DPI، تأخیر/لرزش) و انتشار نتیجه برای رابط کاربری */
-    suspend fun assessNetwork(context: Context, force: Boolean = false) {
-        if (!Repo.settings.value.deepProbe) return
-        probeMutex.withLock {
-            val before = CarrierProbe.networkHandle(context)
-            if (!force && before != null && before == assessmentNetwork && Repo.network.value.fresh) return@withLock
+    suspend fun assessNetwork(context: Context, force: Boolean = false): Boolean {
+        return probeMutex.withLock {
+            val before = CarrierProbe.networkHandle(context) ?: return@withLock false
+            if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
             Repo.scan.value = Repo.scan.value.copy(
                 phase = "بررسی عمیق شبکه‌ی اپراتور",
                 message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
@@ -50,21 +51,30 @@ object SmartConnect {
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                return@withLock
+                return@withLock false
             }
             val after = CarrierProbe.networkHandle(context)
             if (before != after) {
                 assessmentNetwork = null
                 Repo.network.value = ir.v2max.app.data.NetworkAssessment()
-                return@withLock
+                return@withLock false
             }
             assessmentNetwork = after
             Repo.network.value = result
+            true
         }
     }
 
+    /** Only use a deep-probe recommendation for the network on which it was measured. */
+    internal fun effectiveScanSettings(context: Context, settings: ir.v2max.app.data.AppSettings): ir.v2max.app.data.AppSettings {
+        val assessment = Repo.network.value
+        val valid = settings.deepProbe && assessment.fresh && assessmentNetwork != null &&
+            assessmentNetwork == CarrierProbe.networkHandle(context)
+        return if (settings.autoTuneFragment && valid) settings.copy(fragmentProfile = assessment.recommendedFragment) else settings
+    }
+
     /** اتمام تست‌ها، انتخاب یک سرور واقعاً پاسخ‌گو، سپس اتصال اختیاری. */
-    suspend fun scanAndConnect(
+    internal suspend fun scanAndConnect(
         context: Context,
         autoConnect: Boolean = true,
         subscriptionId: String? = null,
@@ -72,7 +82,7 @@ object SmartConnect {
         preferredId: String? = null,
         excludedIds: Set<String> = emptySet(),
         exhaustive: Boolean = false
-    ): ServerConfig? {
+    ): VerifiedSelection? {
         val job = currentCoroutineContext()[Job]
         if (job != null) scanJobs.add(job)
         try {
@@ -100,20 +110,31 @@ object SmartConnect {
                         message = "در حال بررسی مرحله‌ای کانفیگ‌ها"
                     )
 
+                    val settings = Repo.settings.value.copy()
+                    val networkAtStart = CarrierProbe.networkHandle(context)
+                    if (networkAtStart == null) {
+                        Repo.scan.value = Repo.scan.value.copy(
+                            running = false, finished = true,
+                            message = "شبکه‌ی فعالی پیدا نشد؛ اتصال جدید آغاز نشد"
+                        )
+                        return@withLock null
+                    }
                     // This assessment, when enabled, is complete before any connection.
-                    assessNetwork(context)
-                    val settings = Repo.settings.value
+                    if (settings.deepProbe && !assessNetwork(context, force = true)) {
+                        Repo.scan.value = Repo.scan.value.copy(
+                            running = false, finished = true,
+                            message = "بررسی شبکه کامل نشد؛ اتصال جدید آغاز نشد"
+                        )
+                        return@withLock null
+                    }
                     val assessment = Repo.network.value
                     val assessmentValid = settings.deepProbe && assessment.fresh && assessmentNetwork != null &&
-                        assessmentNetwork == CarrierProbe.networkHandle(context)
-                    val scanSettings = if (settings.autoTuneFragment && assessmentValid) {
-                        settings.copy(fragmentProfile = assessment.recommendedFragment)
-                    } else settings
+                        assessmentNetwork == networkAtStart
+                    val scanSettings = effectiveScanSettings(context, settings)
                     val profileKey = if (assessmentValid) profileKeyOf(assessment) else ""
                     val rememberedId = if (preferredId == null && settings.rememberNetworks && profileKey.isNotBlank()) {
                         Repo.profileFor(profileKey)?.serverId
                     } else null
-                    val scanStartedAt = System.currentTimeMillis()
                     val outcome = try {
                         HealthScanner.scan(
                             context = context,
@@ -158,15 +179,21 @@ object SmartConnect {
                     }
                     currentCoroutineContext().ensureActive()
 
-                    // A refresh or edit can replace a config while its snapshot is being tested.
-                    // Never turn that old result into permission to start the new configuration.
-                    val qualified = outcome.qualified.mapNotNull { tested ->
-                        Repo.serverById(tested.id)?.takeIf { current ->
-                            current.fingerprint() == tested.fingerprint() && current.testedAt >= scanStartedAt &&
-                                current.realPing > 0 && current.testedUrl == tested.testedUrl &&
-                                current.testedFragment == tested.testedFragment &&
-                                (!current.testedFragment || current.testedFragmentProfile == tested.testedFragmentProfile)
-                        }
+                    // Do not authorize a connection if the network or any test option
+                    // changed mid-scan. An old ping in Repo is not proof of this scan.
+                    if (networkAtStart != CarrierProbe.networkHandle(context) ||
+                        PreflightPolicy.from(settings) != PreflightPolicy.from(Repo.settings.value)) {
+                        Repo.scan.value = Repo.scan.value.copy(
+                            running = false, finished = true,
+                            message = "شبکه یا تنظیمات هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                        )
+                        withContext(Dispatchers.IO) { Repo.persistNow() }
+                        return@withLock null
+                    }
+                    // Use the actual tested snapshots. A refresh/editor may have
+                    // replaced a profile with another configuration bearing its ID.
+                    val qualified = outcome.qualified.filter { tested ->
+                        Repo.serverById(tested.id)?.fingerprint() == tested.fingerprint()
                     }
                     val best = qualified.firstOrNull { it.id == preferredId } ?: qualified.firstOrNull()
                     val remembered = qualified.firstOrNull { it.id == rememberedId }
@@ -201,27 +228,29 @@ object SmartConnect {
                     )
 
                     currentCoroutineContext().ensureActive()
-                    if (chosen != null) {
+                    val selection = chosen?.let { VerifiedSelection.create(it, qualified, settings, networkAtStart) }
+                    if (selection != null && autoConnect) {
                         val tunnel = Repo.tunnel.value
                         val current = Repo.serverById(tunnel.serverId)
                         val connected = tunnel.status == TunnelStatus.CONNECTED
-                        val sameAsRunning = connected && current?.id == chosen.id
+                        val sameAsRunning = connected && current?.id == selection.id &&
+                            TunnelController.matchesActiveProfile(selection.server())
                         // Avoid interrupting a working, comparable connection.
-                        val keepCurrent = preferredId == null && autoConnect && connected && current != null &&
+                        val keepCurrent = preferredId == null && connected && current != null &&
                             !sameAsRunning && current.bestPing() > 0 &&
                             ProbePlanner.latencyScore(current) <= ProbePlanner.latencyScore(chosen) * 1.35f
                         when {
-                            sameAsRunning -> Repo.setSelected(chosen.id)
+                            sameAsRunning -> Repo.setSelected(selection.id)
                             keepCurrent -> Unit
-                            else -> {
-                                Repo.setSelected(chosen.id)
-                                if (autoConnect) TunnelController.start(context, chosen.id, verified = true)
+                            else -> synchronized(scanJobs) {
+                                // Cancellation and receipt hand-off must not cross.
+                                if (job?.isActive != false) TunnelController.startVerified(context, selection)
                             }
                         }
                     }
                     // Serialization of a large list must not block the UI or delay issuing the start command.
                     withContext(Dispatchers.IO) { Repo.persistNow() }
-                    chosen
+                    selection
                 } finally {
                     if (activeScanJob === job) activeScanJob = null
                     if (job?.isCancelled == true) {
@@ -259,7 +288,7 @@ object SmartConnect {
      * «ری‌استارت جستجو»: نتایج قبلی پاک می‌شوند و کل چرخه از نو اجرا می‌شود.
      * اتصال فعلی تا پیدا شدن گزینه‌ی بهتر برقرار می‌ماند (بدون قطعی برای کاربر).
      */
-    suspend fun restart(context: Context, autoConnect: Boolean = true): ServerConfig? {
+    internal suspend fun restart(context: Context, autoConnect: Boolean = true): VerifiedSelection? {
         Failover.reset()
         Repo.clearTestResults()
         Repo.scan.value = ScanState()

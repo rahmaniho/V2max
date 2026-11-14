@@ -81,6 +81,10 @@ data class ServerConfig(
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
     var obfsPassword: String = "",
+    /** Optional Hysteria2 Gecko bounds and UDP hopping ports from share links. */
+    var obfsMinPacketSize: String = "",
+    var obfsMaxPacketSize: String = "",
+    var hoppingPorts: String = "",
 
     var subId: String = "",
     var favorite: Boolean = false,
@@ -184,7 +188,8 @@ data class ServerConfig(
         headerType, host, path, serviceName, mode, authority, xhttpExtra, finalMask,
         kcpSeed, kcpMtu.toString(), kcpTti.toString(), security, sni, alpn, fingerprint,
         publicKey, shortId, spiderX, allowInsecure.toString(), echConfigList,
-        verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword
+        verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword,
+        obfsMinPacketSize, obfsMaxPacketSize, hoppingPorts
     ).joinToString("|")
 
     /** شناسه پایداری که مستقل از id است (برای تطبیق با کانفیگ قبلی پس از به‌روزرسانی اشتراک) */
@@ -225,7 +230,7 @@ enum class PerAppMode {
 
 /** بسته‌ی پشتیبان */
 data class BackupPayload(
-    val version: Int = 2,
+    val version: Int = 3,
     val createdAt: Long = System.currentTimeMillis(),
     val servers: List<ServerConfig> = emptyList(),
     val subs: List<Subscription> = emptyList(),
@@ -278,7 +283,7 @@ data class AppSettings(
     /** استفاده از حافظه‌ی شبکه‌های آشنا برای انتخاب خودکار */
     var rememberNetworks: Boolean = true,
 
-    /** حالت کم‌مصرف: تست‌های سنگین‌تر و دانلود تست سرعت انجام نمی‌شود */
+    /** UI turns off the optional download test when this is enabled. */
     var dataSaver: Boolean = false,
 
     /** اتصال خودکار فقط روی وای‌فای */

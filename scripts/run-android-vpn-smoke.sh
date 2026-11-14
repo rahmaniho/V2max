@@ -12,9 +12,40 @@ cleanup() {
   rm -rf "$work"
 }
 trap cleanup EXIT
-printf 'v2max-tun-ok' > "$work/probe"
-printf 'v2max-tun-ok' > "$work/tun-check"
-python3 -m http.server 18081 --bind 127.0.0.1 --directory "$work" > "$work/http.log" 2>&1 &
+# Slow streaming makes it possible to verify real TUN traffic while a second
+# no-TUN Xray instance is serving a download, and again after cancellation.
+cat > "$work/http-fixture.py" <<'PY'
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import time
+
+class Fixture(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ('/probe', '/tun-check'):
+            body = b'v2max-tun-ok'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path == '/speed':
+            total = 1_200_000
+            self.send_response(200)
+            self.send_header('Content-Length', str(total))
+            self.end_headers()
+            try:
+                while total:
+                    chunk = b'x' * min(32_000, total)
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    total -= len(chunk)
+                    time.sleep(0.08)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # expected on cancellation
+        else:
+            self.send_error(404)
+
+ThreadingHTTPServer(('127.0.0.1', 18081), Fixture).serve_forever()
+PY
+python3 "$work/http-fixture.py" > "$work/http.log" 2>&1 &
 http_pid=$!
 cat > "$work/xray.json" <<'JSON'
 {
@@ -23,7 +54,10 @@ cat > "$work/xray.json" <<'JSON'
     "listen": "0.0.0.0", "port": 18080, "protocol": "vless",
     "settings": {
       "decryption": "none",
-      "clients": [{"id": "11111111-2222-3333-4444-555555555555"}]
+      "clients": [
+        {"id": "11111111-2222-3333-4444-555555555555"},
+        {"id": "22222222-3333-4444-5555-666666666666"}
+      ]
     }
   }],
   "outbounds": [{"protocol": "freedom", "settings": {

@@ -52,21 +52,13 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                     async(Dispatchers.IO) {
                         if (sub.builtIn && !PublicSources.ALL.any { it.url.trim() == sub.url.trim() }) return@async
                         val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
-                        val current = Repo.subById(sub.id) ?: return@async
-                        val trimmed = if (result.ok) SubscriptionPolicy.candidates(current, result.configs) else emptyList()
-                        if (trimmed.isNotEmpty()) {
-                            trimmed.forEach { it.subId = current.id }
-                            Repo.replaceSubscriptionServers(current.id, trimmed)
-                            Repo.updateSubscription(
-                                current.copy(
-                                    updatedAt = System.currentTimeMillis(), count = trimmed.size,
-                                    upload = result.upload, download = result.download,
-                                    total = result.total, expireAt = result.expireAt, lastError = ""
-                                )
-                            )
+                        val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
+                        if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(
+                                sub, trimmed, result.upload, result.download, result.total, result.expireAt
+                            )) {
                             updated.incrementAndGet()
-                        } else {
-                            Repo.updateSubscription(current.copy(lastError = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }))
+                        } else if (trimmed.isEmpty()) {
+                            Repo.recordSubscriptionRefreshError(sub, result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" })
                         }
                         // کمی فاصله تا منابع همزمان فشار نیاورند
                         delay(120)

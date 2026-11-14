@@ -103,6 +103,18 @@ jobs:
               print('::error title=core-tests::core test results contain no test cases')
               sys.exit(1)
           print(f'core suite ran: {total} test case(s) across {len(paths)} result file(s)')
+
+          # Local-Xray tests are intentionally optional on developer machines.
+          # CI downloads the pinned executable, so none may be silently skipped here.
+          xray_paths = glob.glob('app/build/test-results/**/TEST-*XrayIntegrationTest.xml', recursive=True)
+          if not xray_paths:
+              print('::error title=xray-tests::no Xray integration results')
+              sys.exit(1)
+          cases = [case for p in xray_paths for case in ET.parse(p).iter('testcase')]
+          if len(cases) < 3 or any(case.find('skipped') is not None for case in cases):
+              print('::error title=xray-tests::Xray integration tests missing or skipped')
+              sys.exit(1)
+          print(f'Xray integration suite ran: {len(cases)} unskipped test case(s)')
           PY
 
       - name: Report test failures

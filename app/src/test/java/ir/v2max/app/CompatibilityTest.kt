@@ -1,8 +1,11 @@
 package ir.v2max.app
 
+import com.google.gson.Gson
 import com.google.gson.JsonParser
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.data.AppSettings
+import ir.v2max.app.data.BackupPayload
+import ir.v2max.app.data.Migrations
 import ir.v2max.app.data.FragmentProfile
 import ir.v2max.app.data.PingTargets
 import ir.v2max.app.data.Proto
@@ -40,6 +43,89 @@ class CompatibilityTest {
         assertEquals("cdn.example.org", cfg.authority)
         assertEquals("svc", cfg.serviceName)
         assertTrue(cfg.allowInsecure)
+    }
+
+    @Test fun `old profiles and version two backups receive hysteria field defaults`() {
+        val oldServer = """{"id":"old","address":"example.org","obfsPassword":"pw"}"""
+        val healed = Migrations.healList("[$oldServer]", ServerConfig())!!.single()
+        assertEquals("", healed.obfsMinPacketSize)
+        assertEquals("", healed.obfsMaxPacketSize)
+        assertEquals("", healed.hoppingPorts)
+        val oldBackup = Gson().fromJson("""{"version":2,"servers":[$oldServer]}""", BackupPayload::class.java)
+        val upgraded = Migrations.migrateBackup(oldBackup)
+        assertEquals(3, upgraded.version)
+        assertEquals("", upgraded.servers.single().hoppingPorts)
+        assertEquals("pw", upgraded.servers.single().obfsPassword)
+    }
+
+    @Test fun `vmess qr preserves advanced transport fields through share round trip`() {
+        val mask = "{\"tcp\":[]}"
+        val extra = "{\"xPaddingBytes\":\"100-200\"}"
+        val cfg = ServerConfig(
+            proto = Proto.VMESS, address = "example.org", uuid = uuid, method = "auto",
+            network = "xhttp", path = "/path", mode = "packet-up", security = "tls",
+            finalMask = mask, xhttpExtra = extra, echConfigList = "ech-value"
+        )
+        val restored = LinkParser.parseLine(LinkParser.toLink(cfg))!!
+        assertEquals(mask, restored.finalMask)
+        assertEquals(extra, restored.xhttpExtra)
+        assertEquals("packet-up", restored.mode)
+        assertEquals("ech-value", restored.echConfigList)
+        val stream = ConfigBuilder.outbound(restored, AppSettings(fragment = false)).getAsJsonObject("streamSettings")
+        assertEquals(0, stream.getAsJsonObject("finalmask").getAsJsonArray("tcp").size())
+        assertEquals("100-200", stream.getAsJsonObject("xhttpSettings").getAsJsonObject("extra").get("xPaddingBytes").asString)
+    }
+
+    @Test fun `hysteria gecko and port hopping survive import and sharing`() {
+        val link = "hysteria2://secret@example.org:443?sni=example.org&obfs=gecko&obfs-password=pw" +
+            "&minPacketSize=600&maxPacketSize=1300&mport=8443%2C9000-9002"
+        val cfg = LinkParser.parseLine(link)!!
+        val restored = LinkParser.parseLine(LinkParser.toLink(cfg))!!
+        assertEquals("gecko", restored.obfsType)
+        assertEquals("600", restored.obfsMinPacketSize)
+        assertEquals("1300", restored.obfsMaxPacketSize)
+        assertEquals("8443,9000-9002", restored.hoppingPorts)
+        assertEquals(cfg.fingerprint(), restored.fingerprint())
+        val masks = ConfigBuilder.outbound(restored, AppSettings(fragment = false))
+            .getAsJsonObject("streamSettings").getAsJsonObject("finalmask").getAsJsonArray("udp")
+        assertEquals("salamander", masks[0].asJsonObject.get("type").asString)
+        assertEquals("600-1300", masks[0].asJsonObject.getAsJsonObject("settings").get("packetSize").asString)
+        assertEquals("udphop", masks[1].asJsonObject.get("type").asString)
+        assertEquals("8443,9000-9002", masks[1].asJsonObject.getAsJsonObject("settings").get("remotePorts").asString)
+    }
+
+    @Test fun `unknown hysteria obfuscation and invalid hopping fail explicitly`() {
+        val unknown = LinkParser.parseLine("hysteria2://secret@example.org:443?obfs=other&obfs-password=pw")!!
+        assertThrows(IllegalArgumentException::class.java) { ConfigBuilder.testConfig(unknown, AppSettings()) }
+        val invalid = LinkParser.parseLine("hysteria2://secret@example.org:443?mport=9000-7000")!!
+        assertThrows(IllegalArgumentException::class.java) { ConfigBuilder.testConfig(invalid, AppSettings()) }
+        val invalidGecko = LinkParser.parseLine(
+            "hysteria2://secret@example.org:443?obfs=gecko&obfs-password=pw&minPacketSize=1300&maxPacketSize=600"
+        )!!
+        assertThrows(IllegalArgumentException::class.java) { ConfigBuilder.testConfig(invalidGecko, AppSettings()) }
+        val withoutPassword = LinkParser.parseLine("hysteria2://secret@example.org:443?obfs=gecko")!!
+        assertThrows(IllegalArgumentException::class.java) { ConfigBuilder.testConfig(withoutPassword, AppSettings()) }
+    }
+
+    @Test fun `hysteria gecko defaults and hopping without obfuscation are encoded`() {
+        val gecko = LinkParser.parseLine("hy2://secret@example.org:443?obfs=gecko&obfs-password=pw")!!
+        val masks = ConfigBuilder.outbound(gecko, AppSettings()).getAsJsonObject("streamSettings")
+            .getAsJsonObject("finalmask").getAsJsonArray("udp")
+        assertEquals("512-1200", masks[0].asJsonObject.getAsJsonObject("settings").get("packetSize").asString)
+        val hop = LinkParser.parseLine("hy2://secret@example.org:443?mport=1000-1003")!!
+        val hops = ConfigBuilder.outbound(hop, AppSettings()).getAsJsonObject("streamSettings")
+            .getAsJsonObject("finalmask").getAsJsonArray("udp")
+        assertEquals(1, hops.size())
+        assertEquals("udphop", hops[0].asJsonObject.get("type").asString)
+    }
+
+    @Test fun `hysteria explicit mask is retained when sharing`() {
+        val cfg = ServerConfig(proto = Proto.HYSTERIA2, address = "example.org", password = "secret",
+            finalMask = "{\"udp\":[]}")
+        val restored = LinkParser.parseLine(LinkParser.toLink(cfg))!!
+        assertEquals(cfg.finalMask, restored.finalMask)
+        assertEquals(0, ConfigBuilder.outbound(restored, AppSettings()).getAsJsonObject("streamSettings")
+            .getAsJsonObject("finalmask").getAsJsonArray("udp").size())
     }
 
     @Test fun `xhttp extra reality parameters and encoded path survive sharing`() {

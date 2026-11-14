@@ -61,10 +61,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingQuickConnect = false
     private var startupJob: Job? = null
     private val syncMutex = kotlinx.coroutines.sync.Mutex()
+    private val actionLock = Any()
+    private var actionGeneration = 0L
 
-    private fun cancelStartupForUserAction() {
+    private fun cancelStartupForUserAction(): Long {
+        val generation = synchronized(actionLock) { ++actionGeneration }
         startupJob?.cancel()
         startupJob = null
+        clearPendingVpnRequest()
+        // A newer manual action supersedes queued and in-flight automatic scans.
+        SmartConnect.cancelScan()
+        return generation
+    }
+
+    private inline fun ifCurrentAction(generation: Long, action: () -> Unit) {
+        synchronized(actionLock) { if (actionGeneration == generation) action() }
     }
 
     /**
@@ -167,11 +178,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // --------------------------------------------------------------- connect
 
     fun toggleConnection() {
+        // Capture the state before cancellation can asynchronously update it.
+        val wasScanning = Repo.scan.value.running
+        val wasConnected = Repo.tunnel.value.status == ir.v2max.app.data.TunnelStatus.CONNECTED
         cancelStartupForUserAction()
-        if (Repo.scan.value.running) {
-            SmartConnect.cancelScan()
-            if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
-            else showMessage("تست اتصال لغو شد")
+        if (wasScanning) {
+            if (wasConnected) {
+                // The button cancels the new search, not the working VPN underneath it.
+                TunnelController.cancelPreflight(getApplication())
+                showMessage("بررسی لغو شد؛ اتصال فعلی برقرار است")
+            } else {
+                if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
+                showMessage("تست اتصال لغو شد")
+            }
         } else if (Repo.tunnel.value.isActive) {
             TunnelController.stop(getApplication())
         } else {
@@ -354,7 +373,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------- subscriptions
 
     fun addSubscription(name: String, url: String) {
-        cancelStartupForUserAction()
+        val generation = cancelStartupForUserAction()
         val cleanUrl = url.trim()
         if (cleanUrl.isEmpty()) {
             showMessage("آدرس اشتراک را وارد کنید")
@@ -384,25 +403,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Repo.addSubscription(sub)
             result.configs.forEach { it.subId = sub.id }
             Repo.replaceSubscriptionServers(sub.id, result.configs)
-            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد؛ در حال بررسی…")
-            requestSmartConnect(sub.id)
+            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد")
+            // Finishing an old download must not reconnect after a newer user action.
+            ifCurrentAction(generation) { requestSmartConnect(sub.id) }
         }
     }
 
     /** Apply only a still-existing source and preserve user subscriptions without a count cap. */
     private fun applyFetchedSubscription(sub: Subscription, result: SubscriptionFetcher.Result): Int {
-        val current = Repo.subById(sub.id) ?: return 0
         if (!result.ok) return 0
-        val configs = SubscriptionPolicy.candidates(current, result.configs)
+        val configs = SubscriptionPolicy.candidates(sub, result.configs)
         if (configs.isEmpty()) return 0
-        configs.forEach { it.subId = current.id }
-        Repo.replaceSubscriptionServers(current.id, configs)
-        Repo.updateSubscription(current.copy(
-            updatedAt = System.currentTimeMillis(), count = configs.size,
-            upload = result.upload, download = result.download, total = result.total,
-            expireAt = result.expireAt, lastError = ""
-        ))
-        return configs.size
+        return if (Repo.commitSubscriptionRefresh(
+                sub, configs, result.upload, result.download, result.total, result.expireAt
+            )) configs.size else 0
     }
 
     fun refreshSubscription(id: String) {
@@ -412,14 +426,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
             _busy.value = false
             if (!result.ok) {
-                Repo.updateSubscription(sub.copy(lastError = result.error))
+                Repo.recordSubscriptionRefreshError(sub, result.error)
                 showMessage(result.error)
                 return@launch
             }
             val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result) }
             if (count == 0) {
-                Repo.subById(sub.id)?.let { Repo.updateSubscription(it.copy(lastError = "کانفیگ قابل استفاده‌ای دریافت نشد")) }
-                showMessage("کانفیگ قابل استفاده‌ای دریافت نشد؛ فهرست قبلی حفظ شد")
+                Repo.recordSubscriptionRefreshError(sub, "کانفیگ قابل استفاده‌ای دریافت نشد")
+                showMessage("کانفیگ قابل استفاده‌ای دریافت نشد یا اشتراک هم‌زمان تغییر کرد؛ فهرست فعلی حفظ شد")
             } else {
                 showMessage("اشتراک به‌روزرسانی شد (${Format.number(count)} کانفیگ)")
             }
@@ -470,7 +484,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                             okCount.incrementAndGet()
                         } else {
                             val error = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }
-                            Repo.subById(sub.id)?.let { Repo.updateSubscription(it.copy(lastError = error)) }
+                            Repo.recordSubscriptionRefreshError(sub, error)
                         }
                         val done = doneCount.incrementAndGet()
                         Repo.sync.value = Repo.sync.value.copy(
@@ -506,6 +520,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------- منابع رایگان
 
     fun addFreeSources() {
+        val generation = cancelStartupForUserAction()
         val added = Repo.ensureBuiltInSources()
         if (added == 0) {
             showMessage("منابع رایگان از قبل اضافه شده‌اند")
@@ -515,7 +530,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
         viewModelScope.launch(errorHandler) {
             syncAll(announce = false)
-            requestSmartConnect(null)
+            ifCurrentAction(generation) { requestSmartConnect(null) }
         }
     }
 
@@ -539,6 +554,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------ import/CRUD
 
     fun importText(text: String) {
+        val generation = cancelStartupForUserAction()
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
@@ -555,7 +571,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     showMessage("این کانفیگ قبلاً اضافه شده بود")
                 } else {
                     showMessage("${Format.number(added)} کانفیگ اضافه شد")
-                    Repo.setSelected(configs.first().id)
+                    ifCurrentAction(generation) {
+                        configs.firstOrNull { Repo.serverById(it.id) != null }?.let { Repo.setSelected(it.id) }
+                    }
                 }
             }
         }
@@ -572,6 +590,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectServer(id: String) {
+        cancelStartupForUserAction()
         Repo.setSelected(id)
         if (Repo.tunnel.value.isActive) {
             requestConnect(id)
@@ -584,6 +603,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun cloneServer(copy: ServerConfig) {
+        cancelStartupForUserAction()
         Repo.updateServer(copy)
         Repo.setSelected(copy.id)
         showMessage("نسخه‌ی کپی ساخته شد")
@@ -723,6 +743,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun resetData() {
+        cancelStartupForUserAction()
         clearPendingVpnRequest()
         SmartConnect.cancelScan()
         TunnelController.stop(getApplication())

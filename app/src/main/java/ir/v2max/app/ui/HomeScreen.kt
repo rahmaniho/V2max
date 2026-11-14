@@ -1,11 +1,15 @@
 package ir.v2max.app.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -40,11 +44,15 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ir.v2max.app.R
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.NetworkAssessment
 import ir.v2max.app.data.ScanState
@@ -117,7 +125,7 @@ fun HomeScreen(
                     .padding(top = 6.dp),
                 contentAlignment = Alignment.Center
             ) {
-                ConnectOrb(displayStatus, onToggle)
+                ConnectOrb(displayStatus, scan.running, onToggle)
             }
         }
 
@@ -335,7 +343,7 @@ fun HomeScreen(
             item {
                 EmptyState(
                     title = "هنوز هیچ سروری ندارید",
-                    description = "لینک اشتراک خود را اضافه کنید؛ V2max به‌صورت خودکار سالم‌ترین و سریع‌ترین سرور را انتخاب و وصل می‌شود.",
+                    description = "لینک اشتراک خود را اضافه کنید؛ V2max کانفیگ‌ها را بررسی و از سرورهای پاسخ‌گو انتخاب می‌کند.",
                     actionLabel = "افزودن اشتراک",
                     onAction = onOpenSubs
                 )
@@ -429,81 +437,76 @@ private fun HeaderRow(tunnel: TunnelUiState) {
     }
 }
 
-/**
- * دکمه‌ی اصلی اتصال — نسخه‌ی ساده و سبک.
- *
- * نسخه‌ی قبلی سه انیمیشن بی‌پایان (پالس، چرخش، تنفس) روی یک Canvas ۲۶۸dp با
- * گرادیان‌های شعاعی داشت که هر فریم دوباره رسم می‌شد؛ روی گوشی‌های ضعیف باعث
- * کندی، داغ شدن و حتی بسته‌شدن برنامه می‌شد. حالا فقط یک چرخش ساده هنگام
- * اتصال داریم و بقیه‌ی حالت‌ها ثابت‌اند.
- */
+/** The supplied emblem settles gently on state changes; only a busy ring loops. */
 @Composable
-private fun ConnectOrb(status: TunnelStatus, onClick: () -> Unit) {
+private fun ConnectOrb(status: TunnelStatus, scanning: Boolean, onClick: () -> Unit) {
     val accent = statusColor(status)
-    val busy = status == TunnelStatus.CONNECTING || status == TunnelStatus.DISCONNECTING
+    val busy = scanning || status == TunnelStatus.CONNECTING || status == TunnelStatus.DISCONNECTING
+    val emblemScale = remember { Animatable(0.92f) }
+    LaunchedEffect(status) {
+        emblemScale.snapTo(0.92f)
+        emblemScale.animateTo(1.025f, tween(540, easing = FastOutSlowInEasing))
+        emblemScale.animateTo(1f, spring(dampingRatio = 0.72f, stiffness = 300f))
+    }
     val spin = if (busy) {
-        val transition = rememberInfiniteTransition(label = "spin")
+        val transition = rememberInfiniteTransition(label = "connectionRing")
         val value by transition.animateFloat(
             initialValue = 0f,
             targetValue = 360f,
             animationSpec = infiniteRepeatable(tween(1100, easing = LinearEasing)),
-            label = "spinAngle"
+            label = "ringAngle"
         )
         value
-    } else {
-        0f
+    } else 0f
+    val action = when {
+        scanning -> "لغو بررسی"
+        status == TunnelStatus.CONNECTED -> "قطع اتصال"
+        busy -> "لغو اتصال"
+        else -> "اتصال"
     }
 
-    Canvas(
-        modifier = Modifier
-            .size(210.dp)
-            .clickable { onClick() }
+    Box(
+        modifier = Modifier.size(210.dp).clickable(role = Role.Button, onClickLabel = action, onClick = onClick),
+        contentAlignment = Alignment.Center
     ) {
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val maxRadius = size.minDimension / 2f - 4.dp.toPx()
-
-        // حلقه‌ی پس‌زمینه
-        drawCircle(
-            color = V2.SurfaceHigh,
-            radius = maxRadius,
-            center = center
+        Canvas(Modifier.matchParentSize()) {
+            val center = Offset(size.width / 2f, size.height / 2f)
+            val maxRadius = size.minDimension / 2f - 4.dp.toPx()
+            drawCircle(color = V2.SurfaceHigh, radius = maxRadius, center = center)
+            drawCircle(color = accent.copy(alpha = 0.55f), radius = maxRadius, center = center,
+                style = Stroke(width = 2.dp.toPx()))
+            drawArc(
+                color = accent, startAngle = -90f + spin, sweepAngle = if (busy) 80f else 360f,
+                useCenter = false,
+                topLeft = Offset(center.x - maxRadius + 6.dp.toPx(), center.y - maxRadius + 6.dp.toPx()),
+                size = Size((maxRadius - 6.dp.toPx()) * 2f, (maxRadius - 6.dp.toPx()) * 2f),
+                style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+        Image(
+            painter = painterResource(R.drawable.iran_emblem),
+            contentDescription = null,
+            modifier = Modifier.size(158.dp).graphicsLayer {
+                scaleX = emblemScale.value
+                scaleY = emblemScale.value
+            }
         )
-        drawCircle(
-            color = accent.copy(alpha = 0.55f),
-            radius = maxRadius,
-            center = center,
-            style = Stroke(width = 2.dp.toPx())
-        )
-
-        // حلقه‌ی وضعیت: هنگام کار می‌چرخد، در بقیه‌ی حالت‌ها ثابت است
-        drawArc(
-            color = accent,
-            startAngle = -90f + spin,
-            sweepAngle = if (busy) 80f else 360f,
-            useCenter = false,
-            topLeft = Offset(center.x - maxRadius + 6.dp.toPx(), center.y - maxRadius + 6.dp.toPx()),
-            size = Size((maxRadius - 6.dp.toPx()) * 2f, (maxRadius - 6.dp.toPx()) * 2f),
-            style = Stroke(width = 3.dp.toPx(), cap = StrokeCap.Round)
-        )
-
-        // نماد روشن/خاموش
-        val r = maxRadius * 0.22f
-        drawArc(
-            color = accent,
-            startAngle = -60f,
-            sweepAngle = 300f,
-            useCenter = false,
-            topLeft = Offset(center.x - r, center.y - r + 3.dp.toPx()),
-            size = Size(r * 2f, r * 2f),
-            style = Stroke(width = 5.dp.toPx(), cap = StrokeCap.Round)
-        )
-        drawLine(
-            color = accent,
-            start = Offset(center.x, center.y - r * 1.55f + 3.dp.toPx()),
-            end = Offset(center.x, center.y - r * 0.30f + 3.dp.toPx()),
-            strokeWidth = 5.dp.toPx(),
-            cap = StrokeCap.Round
-        )
+        // A small power glyph makes the action recognizable without obscuring the emblem.
+        Box(
+            Modifier.align(Alignment.BottomCenter).padding(bottom = 16.dp)
+                .size(28.dp).clip(CircleShape).background(V2.BackgroundDeep),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(Modifier.size(16.dp)) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val r = size.minDimension * 0.30f
+                drawArc(accent, -55f, 290f, false,
+                    topLeft = Offset(center.x - r, center.y - r + 1.dp.toPx()),
+                    size = Size(r * 2f, r * 2f), style = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round))
+                drawLine(accent, Offset(center.x, center.y - r * 1.4f),
+                    Offset(center.x, center.y - r * 0.15f), 2.dp.toPx(), cap = StrokeCap.Round)
+            }
+        }
     }
 }
 

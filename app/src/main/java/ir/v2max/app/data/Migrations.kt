@@ -17,7 +17,7 @@ import ir.v2max.core.geo.CountryFlags
 object Migrations {
 
     /** نسخه‌ی فعلی ساختار داده */
-    const val SCHEMA_VERSION = 2
+    const val SCHEMA_VERSION = 3
 
     private val gson = Gson()
 

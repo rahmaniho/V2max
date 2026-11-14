@@ -26,9 +26,8 @@ class HealthScannerTest {
     private fun ops(
         tcp: suspend (ServerConfig) -> Int = { 20 },
         real: suspend (ServerConfig, AppSettings, String) -> Int = { _, _, _ -> 50 },
-        speed: suspend (ServerConfig, AppSettings) -> Int = { _, _ -> 0 },
-        speedAvailable: () -> Boolean = { true }
-    ) = HealthScanner.Operations(tcp, real, speed, speedAvailable)
+        speed: suspend (ServerConfig, AppSettings) -> Int? = { _, _ -> 0 }
+    ) = HealthScanner.Operations(tcp, real, speed)
 
     @Test fun `fast path examines only a small window and completes the full real batch`() = runBlocking {
         val profiles = (0 until 450).map { node(it) }
@@ -146,6 +145,44 @@ class HealthScannerTest {
         assertEquals(3, published.size)
         assertEquals(2, speedDone)
         assertTrue(outcome.speedCompared)
+    }
+
+    @Test fun `enabled speed test runs even with legacy data saver setting`() = runBlocking {
+        val calls = mutableListOf<String>()
+        val outcome = HealthScanner.scanPrepared(
+            listOf(node(0), node(1)), settings.copy(speedTest = true, dataSaver = true, speedTestCount = 1),
+            ops(speed = { cfg, _ -> calls.add(cfg.id); 0 })
+        )
+        assertEquals(1, calls.size)
+        assertEquals(calls.toSet(), outcome.speedTestedIds)
+        // Even a failed download was attempted; an untested profile cannot be selected.
+        assertEquals(calls.single(), outcome.best?.id)
+        assertEquals(calls.toSet(), outcome.qualified.map { it.id }.toSet())
+    }
+
+    @Test fun `speed setup failure leaves no connectable candidate or partial result`() = runBlocking {
+        var published = 0
+        val outcome = HealthScanner.scanPrepared(
+            listOf(node(0)), settings.copy(speedTest = true),
+            ops(speed = { _, _ -> null }), onReal = { _, _ -> published++ }
+        )
+        assertNull(outcome.best)
+        assertTrue(outcome.qualified.isEmpty())
+        assertEquals(0, published)
+        assertTrue(outcome.message.contains("سنجش سرعت"))
+    }
+
+    @Test fun `an explicit choice gets a speed attempt before selection`() = runBlocking {
+        val calls = mutableListOf<String>()
+        val outcome = HealthScanner.scanPrepared(
+            listOf(node(0), node(1)), settings.copy(speedTest = true, speedTestCount = 1),
+            ops(
+                real = { cfg, _, _ -> if (cfg.id == "s1") 900 else 50 },
+                speed = { cfg, _ -> calls.add(cfg.id); 100 }
+            ), preferredId = "s1"
+        )
+        assertEquals(listOf("s1"), calls)
+        assertEquals("s1", outcome.best?.id)
     }
 
     @Test fun `cancellation does not publish partially tested successes`() = runBlocking {

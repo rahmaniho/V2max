@@ -12,10 +12,14 @@ import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.file.Files
+import java.security.MessageDigest
+import java.security.cert.CertificateFactory
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -57,7 +61,9 @@ class XrayIntegrationTest {
             "vmess://$uuid@example.org:443?type=grpc&security=tls&serviceName=svc&authority=cdn.example.org",
             "trojan://password@example.org:443?type=ws&security=tls&host=cdn.example.org&path=%2Fws",
             "ss://YWVzLTEyOC1nY206cGFzcw@example.org:443",
-            "hysteria2://password@example.org:443?sni=example.org&obfs=salamander&obfs-password=secret"
+            "hysteria2://password@example.org:443?sni=example.org&obfs=salamander&obfs-password=secret",
+            "hysteria2://password@example.org:443?sni=example.org&obfs=gecko&obfs-password=secret" +
+                "&minPacketSize=600&maxPacketSize=1300&mport=8443%2C9000-9002"
         )
         links.forEach { link ->
             val cfg = LinkParser.parseLine(link)
@@ -77,6 +83,129 @@ class XrayIntegrationTest {
         exerciseTunnel("vmess://$uuid@127.0.0.1:{port}?type=tcp&security=none", Proto.VMESS, "tcp")
         exerciseTunnel("trojan://secret@127.0.0.1:{port}?type=tcp&security=none", Proto.TROJAN, "tcp")
         exerciseTunnel("ss://YWVzLTEyOC1nY206cGFzcw@127.0.0.1:{port}", Proto.SS, "tcp")
+    }
+
+    @Test fun `hysteria gecko with a hopping port carries local traffic`() {
+        requireBinary()
+        // Disposable local certificate: the generated client pins its SHA-256.
+        val dir = Files.createTempDirectory("v2max-hy2-").toFile()
+        val cert = File(dir, "cert.pem")
+        val key = File(dir, "key.pem")
+        val openssl = ProcessBuilder(
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-subj", "/CN=localhost", "-keyout", key.absolutePath, "-out", cert.absolutePath
+        ).redirectErrorStream(true).start()
+        assertTrue("openssl timed out", openssl.waitFor(20, TimeUnit.SECONDS))
+        val opensslOutput = openssl.inputStream.bufferedReader().readText()
+        assertEquals("could not create test certificate: $opensslOutput", 0, openssl.exitValue())
+        val certificate = cert.inputStream().use { CertificateFactory.getInstance("X.509").generateCertificate(it) }
+        val pin = MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        val udpPort = DatagramSocket(0, InetAddress.getByName("127.0.0.1")).use { it.localPort }
+        val socksPort = freePort()
+        val target = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+        target.soTimeout = 15_000
+        val serverConfig = JsonObject().apply {
+            add("log", JsonObject().apply { addProperty("loglevel", "error") })
+            add("inbounds", JsonArray().apply { add(JsonObject().apply {
+                addProperty("listen", "127.0.0.1")
+                addProperty("port", udpPort)
+                addProperty("protocol", "hysteria")
+                add("settings", JsonObject().apply { addProperty("version", 2) })
+                add("streamSettings", JsonObject().apply {
+                    addProperty("network", "hysteria")
+                    addProperty("security", "tls")
+                    add("tlsSettings", JsonObject().apply {
+                        add("alpn", JsonArray().apply { add("h3") })
+                        add("certificates", JsonArray().apply { add(JsonObject().apply {
+                            addProperty("certificateFile", cert.absolutePath)
+                            addProperty("keyFile", key.absolutePath)
+                        }) })
+                    })
+                    add("hysteriaSettings", JsonObject().apply {
+                        addProperty("version", 2)
+                        addProperty("auth", "secret")
+                    })
+                    add("finalmask", JsonObject().apply { add("udp", JsonArray().apply {
+                        add(JsonObject().apply {
+                            addProperty("type", "salamander")
+                            add("settings", JsonObject().apply {
+                                addProperty("password", "maskpw")
+                                addProperty("packetSize", "600-1300")
+                            })
+                        })
+                    }) })
+                })
+            }) })
+            add("outbounds", JsonArray().apply { add(JsonObject().apply {
+                addProperty("protocol", "freedom")
+                add("settings", JsonObject().apply { add("finalRules", JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("action", "allow")
+                        add("ip", JsonArray().apply { add("127.0.0.1/32") })
+                    })
+                }) })
+            }) })
+        }.toString()
+        val serverLog = File(dir, "server.log")
+        val clientLog = File(dir, "client.log")
+        val server = ProcessBuilder(binary, "run", "-config", configFile(serverConfig).absolutePath)
+            .redirectErrorStream(true).redirectOutput(serverLog).start()
+        var client: Process? = null
+        val responder = thread(isDaemon = true) {
+            try {
+                target.accept().use { socket ->
+                    socket.soTimeout = 10_000
+                    val reader = socket.getInputStream().bufferedReader()
+                    while (true) { val line = reader.readLine() ?: break; if (line.isEmpty()) break }
+                    socket.getOutputStream().write("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nv2max".toByteArray())
+                }
+            } catch (_: Exception) { }
+        }
+        try {
+            // A UDP listener has no TCP readiness check; fail immediately if the
+            // process exits, and give the local server time to bind.
+            Thread.sleep(1_000)
+            assertTrue("Hysteria server exited: ${serverLog.readText()}", server.isAlive)
+            val link = "hysteria2://secret@127.0.0.1:$udpPort?sni=localhost&pinSHA256=$pin" +
+                "&obfs=gecko&obfs-password=maskpw&minPacketSize=600&maxPacketSize=1300&mport=$udpPort"
+            val cfg = LinkParser.parseLine(link)!!
+            val clientConfig = ConfigBuilder.socksTestConfig(cfg, settings, socksPort)
+            validate(clientConfig, "Hysteria Gecko with UDP hopping")
+            client = ProcessBuilder(binary, "run", "-config", configFile(clientConfig).absolutePath)
+                .redirectErrorStream(true).redirectOutput(clientLog).start()
+            waitForPort(socksPort, client, clientLog)
+            Socket("127.0.0.1", socksPort).use { socket ->
+                socket.soTimeout = 12_000
+                val output = socket.getOutputStream()
+                val input = socket.getInputStream()
+                output.write(byteArrayOf(5, 1, 0)); output.flush()
+                assertArrayEquals(byteArrayOf(5, 0), input.readNBytes(2))
+                val port = target.localPort
+                output.write(byteArrayOf(5, 1, 0, 1, 127, 0, 0, 1, (port shr 8).toByte(), port.toByte()))
+                output.flush()
+                val response = input.readNBytes(10)
+                assertTrue("Hysteria SOCKS failed: ${response.toList()}\n${serverLog.readText()}\n${clientLog.readText()}",
+                    response.size == 10 && response[1] == 0.toByte())
+                output.write("GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".toByteArray())
+                output.flush()
+                val body = StringBuilder()
+                while (body.length < 8192 && !body.contains("v2max")) {
+                    val byte = input.read()
+                    if (byte < 0) break
+                    body.append(byte.toChar())
+                }
+                assertTrue("Hysteria traffic failed: $body\n${serverLog.readText()}\n${clientLog.readText()}", body.contains("v2max"))
+            }
+        } finally {
+            target.close()
+            responder.join(1_000)
+            client?.destroyForcibly()
+            server.destroyForcibly()
+            client?.waitFor(3, TimeUnit.SECONDS)
+            server.waitFor(3, TimeUnit.SECONDS)
+            dir.deleteRecursively()
+        }
     }
 
     private fun exerciseTunnel(linkTemplate: String, proto: Proto, network: String) {

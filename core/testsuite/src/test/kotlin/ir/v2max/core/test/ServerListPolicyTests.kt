@@ -84,6 +84,17 @@ object ServerListPolicyTests {
         val keptSel = ServerListPolicy.capBuiltIn(selWorst, builtIn, selectedId = "selected", limit = 2)
         T.ok("selected survives", keptSel.any { it.id == "selected" })
 
+        // A live profile may differ from the current manual selection during refresh.
+        val liveAndSelected = listOf(
+            server("fast", "public", realPing = 50),
+            server("live", "public", realPing = 9000),
+            server("chosen", "public", realPing = 8000),
+        )
+        val protectedPair = ServerListPolicy.capBuiltIn(
+            liveAndSelected, builtIn, selectedId = "chosen", limit = 1, protectedIds = setOf("live")
+        )
+        T.eq("live and selected both survive the cap", setOf("live", "chosen"), protectedPair.map { it.id }.toSet())
+
         // ---- capBuiltIn: protecting more than the limit is allowed
         val allProtected = (1..5).map { server("f$it", "public", favorite = true, realPing = 9000) } +
             listOf(server("plain", "public", realPing = 50))

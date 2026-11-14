@@ -29,6 +29,9 @@ object HealthScanner {
     internal const val PRECHECK_WINDOW = 24
     internal const val REAL_BATCH_SIZE = 6
     private const val MULTI_CONCURRENCY = 4
+    // UI tests and service failover may otherwise publish conflicting results or
+    // run multiple temporary speed cores concurrently.
+    private val scanMutex = Mutex()
 
     data class Outcome(
         val best: ServerConfig? = null,
@@ -41,6 +44,8 @@ object HealthScanner {
         val tcpConnections: Int = 0,
         val elapsedMs: Long = 0,
         val speedCompared: Boolean = false,
+        /** IDs for which a download was actually attempted, including failures. */
+        val speedTestedIds: Set<String> = emptySet(),
         val qualified: List<ServerConfig> = emptyList(),
         val message: String = ""
     )
@@ -49,8 +54,8 @@ object HealthScanner {
     internal data class Operations(
         val tcp: suspend (ServerConfig) -> Int,
         val real: suspend (ServerConfig, AppSettings, String) -> Int,
-        val speed: suspend (ServerConfig, AppSettings) -> Int,
-        val speedAvailable: () -> Boolean,
+        // Null means setup failed, not an attempted download with a zero result.
+        val speed: suspend (ServerConfig, AppSettings) -> Int?,
         val problem: () -> String = { "" }
     )
 
@@ -70,29 +75,30 @@ object HealthScanner {
         onAlive: suspend (Int) -> Unit = {}
     ): Outcome = withContext(Dispatchers.IO) {
         if (servers.isEmpty()) return@withContext Outcome(message = "کانفیگی برای تست وجود ندارد")
-        XrayCore.init(context)
-        XrayCore.clearProbeProblem()
-        scanPrepared(
-            servers = servers,
-            settings = settings,
-            operations = Operations(
-                tcp = ::tcpPing,
-                real = ::realDelay,
-                speed = SpeedTester::measure,
-                speedAvailable = { !XrayCore.isRunning },
-                problem = XrayCore::probeProblem
-            ),
-            preferredId = preferredId,
-            rememberedId = rememberedId,
-            limit = limit,
-            exhaustive = exhaustive,
-            onTcp = onTcp,
-            onReal = onReal,
-            onMulti = onMulti,
-            onSpeed = onSpeed,
-            onPhase = onPhase,
-            onAlive = onAlive
-        )
+        scanMutex.withLock {
+            XrayCore.init(context)
+            XrayCore.clearProbeProblem()
+            scanPrepared(
+                servers = servers,
+                settings = settings,
+                operations = Operations(
+                    tcp = ::tcpPing,
+                    real = ::realDelay,
+                    speed = { cfg, variant -> SpeedTester.measure(cfg, variant) },
+                    problem = XrayCore::probeProblem
+                ),
+                preferredId = preferredId,
+                rememberedId = rememberedId,
+                limit = limit,
+                exhaustive = exhaustive,
+                onTcp = onTcp,
+                onReal = onReal,
+                onMulti = onMulti,
+                onSpeed = onSpeed,
+                onPhase = onPhase,
+                onAlive = onAlive
+            )
+        }
     }
 
     /**
@@ -277,15 +283,29 @@ object HealthScanner {
         }
 
         val speeds = mutableMapOf<String, Int>()
-        val speedRequested = settings.speedTest && !settings.dataSaver
-        val speedAvailable = speedRequested && operations.speedAvailable()
-        if (speedAvailable) {
-            val ranked = results.sortedBy { ProbePlanner.latencyScore(it) }.take(settings.speedTestCount.coerceIn(1, 5))
+        val speedTestedIds = mutableSetOf<String>()
+        // An explicitly enabled test always runs, even for older settings where
+        // dataSaver and speedTest were both true. Never silently bypass it.
+        if (settings.speedTest) {
+            val ranked = results.sortedWith(
+                compareByDescending<ServerConfig> { it.id == preferredId }
+                    .thenBy { ProbePlanner.latencyScore(it) }
+            ).take(settings.speedTestCount.coerceIn(1, 5))
             onPhase("سنجش سرعت دانلود", 0, ranked.size)
-            ranked.forEachIndexed { index, cfg ->
+            for ((index, cfg) in ranked.withIndex()) {
                 coroutineContext.ensureActive()
                 val variant = settings.copy(fragment = cfg.testedFragment, fragmentProfile = cfg.testedFragmentProfile)
                 val kbps = operations.speed(cfg, variant)
+                if (kbps == null) {
+                    // A setup failure is not a completed download test. Preserve a
+                    // running tunnel and do not make any candidate connectable.
+                    return Outcome(
+                        testedCount = realDone, precheckedCount = prechecked,
+                        tcpConnections = tcpConnections, elapsedMs = elapsed(),
+                        message = "آماده‌سازی سنجش سرعت ممکن نشد؛ اتصال جدید آغاز نشد. دوباره تلاش کنید."
+                    )
+                }
+                speedTestedIds.add(cfg.id)
                 if (kbps > 0) speeds[cfg.id] = kbps
                 val position = results.indexOfFirst { it.id == cfg.id }
                 if (position >= 0) results[position] = results[position].copy(speedKbps = kbps)
@@ -295,12 +315,13 @@ object HealthScanner {
         }
         coroutineContext.ensureActive()
         publishResults()
-        val qualified = ProbePlanner.rank(results, speeds)
+        // When speed testing is enabled, only profiles whose download test was
+        // actually attempted may be selected or added to the connection pool.
+        val connectable = if (settings.speedTest) results.filter { it.id in speedTestedIds } else results
+        val qualified = ProbePlanner.rank(connectable, speeds)
         val best = ProbePlanner.choose(qualified, preferredId, speeds)
         val speedNote = when {
-            settings.speedTest && settings.dataSaver -> "سنجش دانلود در حالت کم‌مصرف انجام نشد"
-            speedRequested && !speedAvailable -> "سنجش دانلود هنگام اجرای تانل انجام نشد"
-            speedAvailable && speeds.isEmpty() -> "سنجش دانلود ناموفق بود؛ انتخاب بر اساس تأخیر انجام شد"
+            settings.speedTest && speeds.isEmpty() -> "سنجش دانلود ناموفق بود؛ انتخاب بر اساس تأخیر انجام شد"
             speeds.isNotEmpty() -> "سرعت دانلود ${speeds.size} سرور سنجیده شد"
             else -> "انتخاب بر اساس تأخیر است، نه سرعت دانلود"
         }
@@ -312,6 +333,7 @@ object HealthScanner {
             tcpConnections = tcpConnections,
             elapsedMs = elapsed(),
             speedCompared = speeds.isNotEmpty(),
+            speedTestedIds = speedTestedIds,
             qualified = qualified,
             message = speedNote
         )

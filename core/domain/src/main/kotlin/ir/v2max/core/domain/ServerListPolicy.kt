@@ -33,8 +33,8 @@ object ServerListPolicy {
     /**
      * Trims built-in servers down to [limit], preserving order.
      *
-     * Favourites and the currently selected server are protected and always
-     * survive, even if protecting them leaves no room for anything else. The
+     * Favourites, the selected server, and any other protected IDs (for example
+     * a live tunnel) always survive even if that exceeds the limit. The
      * rest are ranked by [Server.score], so the worst performers go first.
      *
      * Returns the input unchanged when nothing needs trimming.
@@ -44,11 +44,13 @@ object ServerListPolicy {
         builtInSubscriptionIds: Set<String>,
         selectedId: String = "",
         limit: Int = MAX_BUILT_IN_SERVERS,
+        protectedIds: Set<String> = emptySet(),
     ): List<Server> = capBuiltIn(
         list = list,
         builtInSubscriptionIds = builtInSubscriptionIds,
         selectedId = selectedId,
         limit = limit,
+        protectedIds = protectedIds,
         idOf = { it.id },
         subscriptionIdOf = { it.subscriptionId },
         isFavorite = { it.favorite },
@@ -69,6 +71,7 @@ object ServerListPolicy {
         builtInSubscriptionIds: Set<String>,
         selectedId: String = "",
         limit: Int = MAX_BUILT_IN_SERVERS,
+        protectedIds: Set<String> = emptySet(),
         idOf: (T) -> String,
         subscriptionIdOf: (T) -> String,
         isFavorite: (T) -> Boolean,
@@ -79,7 +82,7 @@ object ServerListPolicy {
         val builtIn = list.filter { subscriptionIdOf(it) in builtInSubscriptionIds }
         if (builtIn.size <= limit) return list
 
-        fun isProtected(s: T) = isFavorite(s) || idOf(s) == selectedId
+        fun isProtected(s: T) = isFavorite(s) || idOf(s) == selectedId || idOf(s) in protectedIds
 
         val protected = builtIn.filter(::isProtected)
         val remaining = builtIn.filterNot(::isProtected).sortedBy { scoreOf(it) }

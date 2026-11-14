@@ -201,9 +201,9 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سنجش سرعت دانلود واقعی",
-                subtitle = "سرعت چند سرور تست‌شده با دانلود نمونه مقایسه می‌شود؛ زمان و حجم بیشتری مصرف می‌کند و هنگام اتصال فعال اجرا نمی‌شود",
+                subtitle = "سرعت چند سرور با دانلود نمونه بررسی می‌شود؛ زمان و حجم بیشتری مصرف می‌کند و با فعال‌سازی، حالت کم‌مصرف خاموش می‌شود",
                 checked = settings.speedTest
-            ) { value -> onChange { it.copy(speedTest = value) } }
+            ) { value -> onChange { it.copy(speedTest = value, dataSaver = if (value) false else it.dataSaver) } }
         }
 
         item {
@@ -217,9 +217,9 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "حالت کم‌مصرف",
-                subtitle = "تست سرعت و تست‌های سنگین انجام نمی‌شود؛ مناسب اینترنت محدود",
+                subtitle = "برای محدودکردن مصرف، با فعال‌سازی این حالت سنجش سرعت دانلود خاموش می‌شود",
                 checked = settings.dataSaver
-            ) { value -> onChange { it.copy(dataSaver = value) } }
+            ) { value -> onChange { it.copy(dataSaver = value, speedTest = if (value) false else it.speedTest) } }
         }
 
         item {

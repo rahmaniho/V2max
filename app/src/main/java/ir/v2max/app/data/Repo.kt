@@ -156,6 +156,7 @@ object Repo {
             list = list,
             builtInSubscriptionIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet(),
             selectedId = _selectedId.value,
+            protectedIds = setOfNotNull(tunnel.value.serverId.takeIf { tunnel.value.isActive && it.isNotBlank() }),
             idOf = { it.id },
             subscriptionIdOf = { it.subId },
             isFavorite = { it.favorite },
@@ -401,6 +402,42 @@ object Repo {
         persistSubs()
     }
 
+    private fun sameRefreshSource(current: Subscription, expected: Subscription): Boolean =
+        current.id == expected.id && current.url == expected.url &&
+            current.builtIn == expected.builtIn && current.updatedAt == expected.updatedAt
+
+    /**
+     * Apply a response only if no other request refreshed or edited this source
+     * since it was started. Both list and metadata change under the same lock.
+     */
+    @Synchronized
+    fun commitSubscriptionRefresh(
+        expected: Subscription,
+        incoming: List<ServerConfig>,
+        upload: Long,
+        download: Long,
+        total: Long,
+        expireAt: Long
+    ): Boolean {
+        val current = subById(expected.id) ?: return false
+        if (!sameRefreshSource(current, expected) || incoming.isEmpty()) return false
+        val prepared = incoming.map { it.copy(subId = current.id) }
+        replaceSubscriptionServers(current.id, prepared)
+        updateSubscription(current.copy(
+            // Two successful responses in the same millisecond still have distinct revisions.
+            updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1),
+            count = prepared.size, upload = upload, download = download,
+            total = total, expireAt = expireAt, lastError = ""
+        ))
+        return true
+    }
+
+    @Synchronized
+    fun recordSubscriptionRefreshError(expected: Subscription, message: String) {
+        val current = subById(expected.id) ?: return
+        if (sameRefreshSource(current, expected)) updateSubscription(current.copy(lastError = message))
+    }
+
     @Synchronized
     fun removeSubscription(id: String) {
         _subs.value = _subs.value.filterNot { it.id == id }
@@ -449,36 +486,23 @@ object Repo {
     fun dedupeAllServers(): Int {
         val all = _servers.value
         if (all.size < 2) return 0
-        val keep = LinkedHashMap<String, ServerConfig>()
         val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
         val selected = _selectedId.value
-        all.forEach { cfg ->
-            val key = cfg.fingerprint()
-            val current = keep[key]
-            if (current == null) {
-                keep[key] = cfg
-            } else {
-                val better = when {
-                    liveId != null && cfg.id == liveId -> cfg
-                    liveId != null && current.id == liveId -> current
-                    selected.isNotBlank() && cfg.id == selected -> cfg
-                    selected.isNotBlank() && current.id == selected -> current
+        val groups = all.groupBy { it.fingerprint() }
+        val survivors = groups.values.flatMap { group ->
+            // If two identical profiles are independently live and selected,
+            // retain both identities; otherwise a refresh can erase the user's choice.
+            val protected = group.filter { it.favorite || it.id == liveId || (selected.isNotBlank() && it.id == selected) }
+            if (protected.isNotEmpty()) protected else listOf(group.reduce { current, cfg ->
+                when {
                     cfg.favorite != current.favorite -> if (cfg.favorite) cfg else current
-                    else -> {
-                        val a = cfg.bestPing()
-                        val b = current.bestPing()
-                        when {
-                            a > 0 && (b <= 0 || a < b) -> cfg
-                            else -> current
-                        }
-                    }
+                    cfg.bestPing() > 0 && (current.bestPing() <= 0 || cfg.bestPing() < current.bestPing()) -> cfg
+                    else -> current
                 }
-                keep[key] = better
-            }
+            })
         }
-        if (keep.size == all.size) return 0
-        val removed = all.size - keep.size
-        val survivors = keep.values.toList()
+        if (survivors.size == all.size) return 0
+        val removed = all.size - survivors.size
         _servers.value = survivors
         persistServers()
         if (survivors.none { it.id == _selectedId.value }) {
@@ -524,8 +548,9 @@ object Repo {
         if (all.size <= maxTotal) return 0
         val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
         val now = System.currentTimeMillis()
+        val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
         val removable = all
-            .filter { it.subId in builtInIds && !it.favorite && it.id != _selectedId.value }
+            .filter { it.subId in builtInIds && !it.favorite && it.id != _selectedId.value && it.id != liveId }
             .sortedWith(
                 compareBy<ServerConfig> { if (it.bestPing() > 0) 1 else 0 }
                     .thenByDescending { now - it.testedAt }
@@ -603,11 +628,13 @@ object Repo {
 
     // ---------------------------------------------------------------- settings
 
+    @Synchronized
     fun saveSettings(s: AppSettings) {
         _settings.value = s
         persistSettings()
     }
 
+    @Synchronized
     fun updateSettings(block: (AppSettings) -> AppSettings) {
         saveSettings(block(_settings.value))
     }

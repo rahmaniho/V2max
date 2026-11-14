@@ -72,6 +72,14 @@ object LinkParser {
             }
             return ""
         }
+        fun jsonOrString(vararg keys: String): String {
+            for (key in keys) {
+                val value = obj.get(key)?.takeIf { !it.isJsonNull } ?: continue
+                if (value.isJsonObject) return value.toString()
+                if (value.isJsonPrimitive) return value.asString
+            }
+            return ""
+        }
 
         val host = str("add", "address")
         val port = str("port").toIntOrNull() ?: 443
@@ -91,7 +99,11 @@ object LinkParser {
         cfg.serviceName = str("serviceName").ifBlank { str("path").takeIf { cfg.network == "grpc" }.orEmpty() }
         cfg.authority = str("authority").ifBlank { str("host").takeIf { cfg.network == "grpc" }.orEmpty() }
         cfg.mode = str("mode").ifBlank { str("type").takeIf { cfg.network == "grpc" }.orEmpty() }
-        cfg.kcpSeed = str("path").takeIf { cfg.network in listOf("kcp", "mkcp") }.orEmpty()
+        cfg.xhttpExtra = jsonOrString("extra", "xhttpExtra")
+        cfg.finalMask = jsonOrString("fm", "finalmask")
+        cfg.kcpSeed = str("seed").ifBlank { str("path").takeIf { cfg.network in listOf("kcp", "mkcp") }.orEmpty() }
+        cfg.kcpMtu = str("mtu").toIntOrNull() ?: 1350
+        cfg.kcpTti = str("tti").toIntOrNull() ?: 50
         cfg.security = str("tls").let { if (it == "tls" || it == "reality") it else "" }
         cfg.sni = str("sni")
         cfg.alpn = str("alpn")
@@ -99,6 +111,8 @@ object LinkParser {
         cfg.publicKey = str("pbk")
         cfg.shortId = str("sid")
         cfg.spiderX = str("spx")
+        cfg.echConfigList = str("ech")
+        cfg.mldsa65Verify = str("pqv")
         cfg.allowInsecure = str("insecure", "allowInsecure").lowercase() in listOf("1", "true", "yes")
         cfg.verifyPeerCertByName = str("vcn")
         cfg.pinnedPeerCertSha256 = str("pcs")
@@ -174,6 +188,9 @@ object LinkParser {
                 cfg.password = decodedUser
                 cfg.obfsType = q["obfs"].orEmpty()
                 cfg.obfsPassword = q["obfs-password"].orEmpty()
+                cfg.obfsMinPacketSize = q["minPacketSize"].orEmpty()
+                cfg.obfsMaxPacketSize = q["maxPacketSize"].orEmpty()
+                cfg.hoppingPorts = q["mport"].orEmpty()
             }
 
             Proto.SOCKS, Proto.HTTP -> {
@@ -388,6 +405,18 @@ object LinkParser {
                     addProperty("insecure", if (cfg.allowInsecure) "1" else "0")
                     addProperty("vcn", cfg.verifyPeerCertByName)
                     addProperty("pcs", cfg.pinnedPeerCertSha256)
+                    if (cfg.finalMask.isNotBlank()) addProperty("fm", cfg.finalMask)
+                    if (cfg.xhttpExtra.isNotBlank()) addProperty("extra", cfg.xhttpExtra)
+                    if (cfg.mode.isNotBlank() && cfg.network != "grpc") addProperty("mode", cfg.mode)
+                    if (cfg.echConfigList.isNotBlank()) addProperty("ech", cfg.echConfigList)
+                    if (cfg.publicKey.isNotBlank()) addProperty("pbk", cfg.publicKey)
+                    if (cfg.shortId.isNotBlank()) addProperty("sid", cfg.shortId)
+                    if (cfg.spiderX.isNotBlank()) addProperty("spx", cfg.spiderX)
+                    if (cfg.mldsa65Verify.isNotBlank()) addProperty("pqv", cfg.mldsa65Verify)
+                    if (cfg.network in listOf("kcp", "mkcp")) {
+                        addProperty("mtu", cfg.kcpMtu)
+                        addProperty("tti", cfg.kcpTti)
+                    }
                 }
                 val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(obj.toString().toByteArray(Charsets.UTF_8))
                 "vmess://$encoded"
@@ -420,7 +449,6 @@ object LinkParser {
                     param("mode", cfg.mode)
                     param("headerType", cfg.headerType.takeUnless { it == "none" }.orEmpty())
                     param("extra", cfg.xhttpExtra)
-                    param("fm", cfg.finalMask)
                     if (cfg.network in listOf("kcp", "mkcp")) {
                         param("seed", cfg.kcpSeed)
                         param("mtu", cfg.kcpMtu.toString())
@@ -432,10 +460,14 @@ object LinkParser {
                     param("spx", cfg.spiderX)
                     param("pqv", cfg.mldsa65Verify)
                     param("flow", cfg.flow)
-                } else if (cfg.obfsPassword.isNotBlank()) {
-                    param("obfs", "salamander")
+                } else {
+                    param("obfs", cfg.obfsType.ifBlank { if (cfg.obfsPassword.isNotBlank()) "salamander" else "" })
                     param("obfs-password", cfg.obfsPassword)
+                    param("minPacketSize", cfg.obfsMinPacketSize)
+                    param("maxPacketSize", cfg.obfsMaxPacketSize)
+                    param("mport", cfg.hoppingPorts)
                 }
+                param("fm", cfg.finalMask)
                 param("sni", cfg.sni)
                 param("alpn", cfg.alpn)
                 param("ech", cfg.echConfigList)
