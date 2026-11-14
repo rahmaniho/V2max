@@ -166,26 +166,5 @@ fi
 # Optional manual visual inspection. The emulator and its fixture data are
 # disposable; no screenshot is captured during ordinary CI runs.
 if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
-  adb shell am force-stop ir.v2max.app.debug
-  adb shell am start -W -n ir.v2max.app.debug/ir.v2max.app.MainActivity
-  python3 -c 'import time; time.sleep(5)'
-  adb exec-out screencap -p > "$work/home.png"
-  # Use the JDK already installed in CI rather than assuming ImageMagick or
-  # Pillow is installed. The adaptive JPEG fits GitHub's per-step notice cap.
-  java -Djava.awt.headless=true scripts/UiPreview.java "$work/home.png" "$work/home.jpg"
-  # Small notices can be read through the GitHub check API if artifact storage
-  # is inaccessible from a developer's environment. No real user data is used.
-  python3 - "$work/home.jpg" <<'PY'
-import base64, hashlib, pathlib, sys
-image = pathlib.Path(sys.argv[1]).read_bytes()
-encoded = base64.b64encode(image).decode('ascii')
-# GitHub truncates individual annotation messages at 4096 characters.
-chunks = [encoded[i:i + 3800] for i in range(0, len(encoded), 3800)]
-if len(chunks) > 8:
-    print(f'::error title=UI capture::Preview exceeds the annotation budget ({len(image)} bytes)')
-    raise SystemExit(1)
-print(f'::notice title=V2MAX_UI_SHA256::{hashlib.sha256(image).hexdigest()}')
-for number, chunk in enumerate(chunks):
-    print(f'::notice title=V2MAX_UI_{number:03d}::{chunk}')
-PY
+  bash scripts/capture-android-ui.sh
 fi

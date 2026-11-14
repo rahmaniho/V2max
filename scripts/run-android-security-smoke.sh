@@ -35,3 +35,6 @@ PY
   exit 1
 fi
 echo "Android API $api: $expected targeted security/backup tests passed (not a release build)."
+if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
+  bash scripts/capture-android-ui.sh
+fi

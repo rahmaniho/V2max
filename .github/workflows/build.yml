@@ -294,6 +294,7 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         env:
           V2MAX_BACKUP_ONLY: ${{ matrix.backup_only && 'true' || 'false' }}
+          V2MAX_CAPTURE_UI: ${{ matrix.api == 30 && inputs.capture_ui && 'true' || 'false' }}
         with:
           api-level: ${{ matrix.api }}
           arch: x86_64
