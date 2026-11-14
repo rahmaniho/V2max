@@ -43,47 +43,61 @@ import ir.v2max.app.data.ServerConfig
 @Composable
 fun ConfigEditorScreen(
     server: ServerConfig,
+    dataEpoch: Long,
     onBack: () -> Unit,
-    onSave: (ServerConfig) -> Unit,
-    onClone: (ServerConfig) -> Unit
+    onSave: (ServerConfig, String, Long) -> Unit,
+    onClone: (ServerConfig, String, Long) -> Unit
 ) {
-    var name by remember { mutableStateOf(server.name) }
-    var address by remember { mutableStateOf(server.address) }
-    var port by remember { mutableStateOf(server.port.toString()) }
-    var uuid by remember { mutableStateOf(server.uuid) }
-    var password by remember { mutableStateOf(server.password) }
-    var method by remember { mutableStateOf(server.method) }
-    var flow by remember { mutableStateOf(server.flow) }
-    var network by remember { mutableStateOf(server.network) }
-    var security by remember { mutableStateOf(server.security) }
-    var sni by remember { mutableStateOf(server.sni) }
-    var host by remember { mutableStateOf(server.host) }
-    var path by remember { mutableStateOf(server.path) }
-    var serviceName by remember { mutableStateOf(server.serviceName) }
-    var publicKey by remember { mutableStateOf(server.publicKey) }
-    var shortId by remember { mutableStateOf(server.shortId) }
-    var fingerprint by remember { mutableStateOf(server.fingerprint) }
-    var alpn by remember { mutableStateOf(server.alpn) }
+    // Keep the opening snapshot even if a subscription refresh recomposes this screen.
+    val original = remember(server.id) { server.copy() }
+    val openedEpoch = remember(server.id) { dataEpoch }
+    var name by remember(server.id) { mutableStateOf(original.name) }
+    var address by remember(server.id) { mutableStateOf(original.address) }
+    var port by remember(server.id) { mutableStateOf(original.port.toString()) }
+    var uuid by remember(server.id) { mutableStateOf(original.uuid) }
+    var password by remember(server.id) { mutableStateOf(original.password) }
+    var method by remember(server.id) { mutableStateOf(original.method) }
+    var flow by remember(server.id) { mutableStateOf(original.flow) }
+    var network by remember(server.id) { mutableStateOf(original.network) }
+    var security by remember(server.id) { mutableStateOf(original.security) }
+    var sni by remember(server.id) { mutableStateOf(original.sni) }
+    var host by remember(server.id) { mutableStateOf(original.host) }
+    var path by remember(server.id) { mutableStateOf(original.path) }
+    var serviceName by remember(server.id) { mutableStateOf(original.serviceName) }
+    var publicKey by remember(server.id) { mutableStateOf(original.publicKey) }
+    var shortId by remember(server.id) { mutableStateOf(original.shortId) }
+    var fingerprint by remember(server.id) { mutableStateOf(original.fingerprint) }
+    var alpn by remember(server.id) { mutableStateOf(original.alpn) }
+    var validationError by remember(server.id) { mutableStateOf("") }
 
-    fun collect(): ServerConfig = server.copy(
-        name = name.trim().ifBlank { server.name },
-        address = address.trim(),
-        port = port.toIntOrNull()?.coerceIn(1, 65535) ?: server.port,
-        uuid = uuid.trim(),
-        password = password.trim(),
-        method = method.trim(),
-        flow = flow.trim(),
-        network = network.trim().ifBlank { "tcp" },
-        security = security.trim(),
-        sni = sni.trim(),
-        host = host.trim(),
-        path = path.trim(),
-        serviceName = serviceName.trim(),
-        publicKey = publicKey.trim(),
-        shortId = shortId.trim(),
-        fingerprint = fingerprint.trim(),
-        alpn = alpn.trim()
-    )
+    fun collect(): ServerConfig? {
+        val result = EditorValidation.validate(address, port, network, security, original.proto)
+        if (result is EditorValidation.Result.Invalid) {
+            validationError = result.message
+            return null
+        }
+        val fields = (result as EditorValidation.Result.Valid).fields
+        validationError = ""
+        return original.copy(
+            name = name.trim().ifBlank { original.name },
+            address = address.trim(),
+            port = fields.port,
+            uuid = uuid.trim(),
+            password = password.trim(),
+            method = method.trim(),
+            flow = flow.trim(),
+            network = fields.network,
+            security = fields.security,
+            sni = sni.trim(),
+            host = host.trim(),
+            path = path.trim(),
+            serviceName = serviceName.trim(),
+            publicKey = publicKey.trim(),
+            shortId = shortId.trim(),
+            fingerprint = fingerprint.trim(),
+            alpn = alpn.trim()
+        )
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -107,7 +121,7 @@ fun ConfigEditorScreen(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text("ویرایش کانفیگ", style = MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
-                    Text(server.proto.name, style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                    Text(original.proto.name, style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
                 }
             }
         }
@@ -118,12 +132,30 @@ fun ConfigEditorScreen(
                     EditField("نام", name) { name = it }
                     EditField("آدرس (IP یا دامنه)", address) { address = it }
                     EditField("پورت", port, KeyboardType.Number) { port = it }
-                    if (server.proto == ir.v2max.app.data.Proto.SS) {
-                        EditField("روش رمزنگاری", method) { method = it }
-                        EditField("رمز", password) { password = it }
-                    } else {
-                        EditField("UUID / شناسه", uuid) { uuid = it }
-                        EditField("Flow (اختیاری)", flow) { flow = it }
+                    when (original.proto) {
+                        ir.v2max.app.data.Proto.SS -> {
+                            EditField("روش رمزنگاری", method) { method = it }
+                            EditField("رمز", password) { password = it }
+                        }
+                        ir.v2max.app.data.Proto.TROJAN -> {
+                            EditField("رمز", password) { password = it }
+                            EditField("Flow (اختیاری)", flow) { flow = it }
+                        }
+                        ir.v2max.app.data.Proto.HYSTERIA2 ->
+                            EditField("رمز یا کلید احراز هویت", password) { password = it }
+                        ir.v2max.app.data.Proto.SOCKS, ir.v2max.app.data.Proto.HTTP -> {
+                            EditField("نام کاربری (اختیاری)", uuid) { uuid = it }
+                            EditField("رمز (اختیاری)", password) { password = it }
+                        }
+                        ir.v2max.app.data.Proto.VLESS -> {
+                            EditField("UUID / شناسه", uuid) { uuid = it }
+                            EditField("Encryption (پیش‌فرض none)", method) { method = it }
+                            EditField("Flow (اختیاری)", flow) { flow = it }
+                        }
+                        ir.v2max.app.data.Proto.VMESS -> {
+                            EditField("UUID / شناسه", uuid) { uuid = it }
+                            EditField("روش رمزنگاری (پیش‌فرض auto)", method) { method = it }
+                        }
                     }
                 }
             }
@@ -133,10 +165,14 @@ fun ConfigEditorScreen(
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("انتقال", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
-                    EditField("شبکه (tcp/ws/grpc/http/h2/quic)", network) { network = it }
-                    EditField("Host", host) { host = it }
-                    EditField("Path", path) { path = it }
-                    EditField("Service Name (gRPC)", serviceName) { serviceName = it }
+                    if (original.proto == ir.v2max.app.data.Proto.HYSTERIA2) {
+                        Text("انتقال Hysteria2 به‌صورت خودکار تنظیم می‌شود", style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                    } else {
+                        EditField("شبکه (tcp/ws/grpc/xhttp/kcp)", network) { network = it }
+                        EditField("Host", host) { host = it }
+                        EditField("Path", path) { path = it }
+                        EditField("Service Name (gRPC)", serviceName) { serviceName = it }
+                    }
                 }
             }
         }
@@ -145,36 +181,37 @@ fun ConfigEditorScreen(
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("امنیت", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
-                    EditField("نوع (tls/reality/none)", security) { security = it }
+                    if (original.proto == ir.v2max.app.data.Proto.HYSTERIA2) {
+                        Text("Hysteria2 از TLS استفاده می‌کند", style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                    } else {
+                        EditField("نوع (tls/reality/none)", security) { security = it }
+                    }
                     EditField("SNI", sni) { sni = it }
                     EditField("ALPN", alpn) { alpn = it }
                     EditField("Fingerprint", fingerprint) { fingerprint = it }
-                    EditField("Public Key (Reality)", publicKey) { publicKey = it }
-                    EditField("Short ID (Reality)", shortId) { shortId = it }
+                    if (original.proto != ir.v2max.app.data.Proto.HYSTERIA2) {
+                        EditField("Public Key (Reality)", publicKey) { publicKey = it }
+                        EditField("Short ID (Reality)", shortId) { shortId = it }
+                    }
                 }
             }
         }
 
         item {
+            if (validationError.isNotBlank()) {
+                Text(validationError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GhostButton(text = "ذخیره", modifier = Modifier.weight(1f)) {
-                    onSave(collect())
+                    collect()?.let { onSave(it, original.fingerprint(), openedEpoch) }
                 }
                 GhostButton(text = "ساخت کپی", modifier = Modifier.weight(1f)) {
-                    onClone(collect().copy(
-                        id = java.util.UUID.randomUUID().toString(),
-                        name = (name.trim().ifBlank { server.name }) + " (کپی)",
-                        tcpPing = -1,
-                        realPing = -1,
-                        googlePing = -1,
-                        instagramPing = -1,
-                        youtubePing = -1,
-                        speedKbps = 0,
-                        successCount = 0,
-                        failCount = 0,
-                        testedAt = 0L,
-                        addedAt = System.currentTimeMillis()
-                    ))
+                    collect()?.let {
+                        onClone(it.copy(
+                            id = java.util.UUID.randomUUID().toString(),
+                            name = (name.trim().ifBlank { original.name }) + " (کپی)"
+                        ), original.fingerprint(), openedEpoch)
+                    }
                 }
             }
         }

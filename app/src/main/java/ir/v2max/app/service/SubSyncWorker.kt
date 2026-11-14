@@ -10,7 +10,8 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.Repo
-import ir.v2max.app.net.SubscriptionFetcher
+import ir.v2max.app.net.SubscriptionPolicy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -28,6 +29,8 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     override suspend fun doWork(): Result = try {
         run()
+    } catch (e: CancellationException) {
+        throw e
     } catch (t: Throwable) {
         ir.v2max.app.util.CrashLog.record(t, "SubSyncWorker")
         Result.success()
@@ -35,41 +38,39 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     private suspend fun run(): Result {
         Repo.init(applicationContext)
+        // WorkManager may still have a request scheduled by an older process or
+        // version. Re-check consent at execution time, including after recovery.
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC) ?: return Result.success()
         val subs = Repo.subs.value
         if (subs.isEmpty()) return Result.success()
 
         val semaphore = Semaphore(4)
-        var updated = 0
+        val updated = java.util.concurrent.atomic.AtomicInteger(0)
 
         Repo.suspendPersist(true)
         try {
             coroutineScope {
                 subs.map { sub ->
                     async(Dispatchers.IO) {
-                        // Looked up through forUrl so the URL is normalised the
-                        // same way everywhere else; a stored built-in source with
-                        // a trailing slash used to fail this check and stop syncing.
+                        // The catalogue accepts trailing slashes; SubscriptionPolicy
+                        // canonicalizes known built-ins before allowing mirrors.
                         if (sub.builtIn && PublicSources.forUrl(sub.url) == null) return@async
-                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url) }
-                        if (result.ok) {
-                            val cap = PublicSources.forUrl(sub.url)?.maxConfigs ?: 400
-                            val trimmed = result.configs.take(cap)
-                            trimmed.forEach { it.subId = sub.id }
-                            Repo.replaceSubscriptionServers(sub.id, trimmed)
-                            Repo.updateSubscription(
-                                sub.copy(
-                                    updatedAt = System.currentTimeMillis(),
-                                    count = trimmed.size,
-                                    upload = result.upload,
-                                    download = result.download,
-                                    total = result.total,
-                                    expireAt = result.expireAt,
-                                    lastError = ""
-                                )
+                        val result = semaphore.withPermit {
+                            if (!Repo.automaticRefreshIsCurrent(permit)) return@async
+                            SubscriptionPolicy.fetch(sub)
+                        }
+                        if (!Repo.automaticRefreshIsCurrent(permit)) return@async
+                        val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
+                        if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(
+                                sub, trimmed, result.upload, result.download, result.total, result.expireAt,
+                                automaticPermit = permit
+                            )) {
+                            updated.incrementAndGet()
+                        } else if (trimmed.isEmpty()) {
+                            Repo.recordSubscriptionRefreshError(
+                                sub, result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" },
+                                automaticPermit = permit
                             )
-                            updated++
-                        } else {
-                            Repo.updateSubscription(sub.copy(lastError = result.error))
                         }
                         // کمی فاصله تا منابع همزمان فشار نیاورند
                         delay(120)
@@ -78,13 +79,15 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             }
         } finally {
             Repo.suspendPersist(false)
+            Repo.persistNow()
         }
 
-        Repo.dedupeAllServers()
-        Repo.trimBuiltInServers()
+        if (!Repo.automaticRefreshIsCurrent(permit)) return Result.success()
+        Repo.dedupeAllServers(automaticPermit = permit)
+        Repo.trimBuiltInServers(automaticPermit = permit)
         Repo.persistNow()
 
-        return if (updated == 0) Result.retry() else Result.success()
+        return if (updated.get() == 0) Result.retry() else Result.success()
     }
 
     companion object {

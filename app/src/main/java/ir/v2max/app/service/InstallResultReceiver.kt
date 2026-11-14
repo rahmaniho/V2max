@@ -5,37 +5,52 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import ir.v2max.app.data.Repo
-import ir.v2max.app.data.TunnelStatus
 
-/**
- * نتیجه‌ی نصب به‌روزرسانی از PackageInstaller را دریافت می‌کند و وضعیت را در مخزن می‌گذارد
- * تا رابط کاربری پیام مناسب نشان دهد.
- */
+/** Receives the outcome of our own PackageInstaller session. */
 class InstallResultReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)
-        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()
-
+        val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
+        val sessionId = intent.getIntExtra(
+            PackageInstaller.EXTRA_SESSION_ID,
+            intent.getIntExtra(EXTRA_LOCAL_SESSION_ID, -1)
+        )
+        val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty().take(160)
+        var showResult = true
         val text = when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                // سیستم از کاربر تأیید می‌خواهد
-                val confirm = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
-                if (confirm != null) {
-                    confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    runCatching { context.startActivity(confirm) }
+                @Suppress("DEPRECATION")
+                val confirmation = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                if (confirmation == null) {
+                    showResult = InstallConfirmation.clear(sessionId)
+                    Notifier.cancelInstallConfirmation(context, sessionId)
+                    "صفحهٔ تأیید نصب دریافت نشد؛ دوباره تلاش کنید"
+                } else {
+                    InstallConfirmation.offer(sessionId, confirmation)
+                    val notified = Notifier.installConfirmation(context, sessionId, confirmation)
+                    if (notified) "برای تکمیل نصب، از برنامه یا اعلان تأیید اندروید را باز کنید"
+                    else "برای تکمیل نصب، برنامه را باز و تأیید اندروید را انجام دهید"
                 }
-                "برای تکمیل به‌روزرسانی، نصب را تأیید کنید"
             }
-            PackageInstaller.STATUS_SUCCESS -> "برنامه با موفقیت به‌روزرسانی شد"
-            PackageInstaller.STATUS_FAILURE_ABORTED -> "نصب لغو شد"
-            else -> "نصب ناموفق بود: $message"
+            else -> {
+                showResult = InstallConfirmation.clear(sessionId)
+                Notifier.cancelInstallConfirmation(context, sessionId)
+                when (status) {
+                    PackageInstaller.STATUS_SUCCESS -> "برنامه با موفقیت به‌روزرسانی شد"
+                    PackageInstaller.STATUS_FAILURE_ABORTED -> "نصب لغو شد"
+                    PackageInstaller.STATUS_FAILURE_BLOCKED -> "نصب مسدود شد؛ اجازهٔ نصب برنامه از این منبع را در تنظیمات اندروید بررسی کنید"
+                    else -> if (message.isBlank()) "نصب ناموفق بود؛ دوباره تلاش کنید" else "نصب ناموفق بود: $message"
+                }
+            }
         }
+        // Do not let an older session's terminal result overwrite the message
+        // for a newer pending confirmation. VPN state is unrelated to either.
+        if (showResult) Repo.installMessage.value = text
+    }
 
-        Repo.tunnel.value = Repo.tunnel.value.copy(
-            status = if (Repo.tunnel.value.status == TunnelStatus.ERROR) TunnelStatus.ERROR else Repo.tunnel.value.status,
-            message = text
-        )
-        Repo.installMessage.value = text
+    companion object {
+        // Preserved in our explicit, mutable callback PendingIntent if the
+        // platform's result omits EXTRA_SESSION_ID.
+        const val EXTRA_LOCAL_SESSION_ID = "ir.v2max.app.extra.INSTALL_SESSION_ID"
     }
 }

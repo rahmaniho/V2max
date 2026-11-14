@@ -43,9 +43,19 @@ object XrayCore {
     @Volatile
     private var initialized = false
 
-    private var controller: CoreController? = null
+    @Volatile private var controller: CoreController? = null
+    // The temporary SOCKS instance is separate from the live VPN controller.
+    // Both startLoop calls are synchronized here because libv2ray sets a
+    // process-global TUN fd before constructing an instance.
+    private var speedController: CoreController? = null
     private var speedLease = 0L
     private var nextLease = 0L
+
+    private val speedCallback = object : CoreCallbackHandler {
+        override fun startup(): Long = 0
+        override fun shutdown(): Long = 0
+        override fun onEmitStatus(code: Long, message: String?): Long = 0
+    }
 
     private val callback = object : CoreCallbackHandler {
         override fun startup(): Long {
@@ -106,16 +116,15 @@ object XrayCore {
     @Synchronized
     @Throws(Exception::class)
     fun start(config: String, tunFd: Int) {
-        check(speedLease == 0L) { "تست سرعت در حال اجراست؛ دوباره تلاش کنید" }
         val c = controller ?: Libv2ray.newCoreController(callback).also { controller = it }
         c.startLoop(config, tunFd)
     }
 
-    /** A temporary speed test must never stop a VPN started by another request. */
+    /** Start a separate no-TUN core; never reuse or stop the live VPN instance. */
     @Synchronized
     fun startSpeedTest(config: String): Long? {
-        if (speedLease != 0L || isRunning) return null
-        val c = controller ?: Libv2ray.newCoreController(callback).also { controller = it }
+        if (speedLease != 0L) return null
+        val c = speedController ?: Libv2ray.newCoreController(speedCallback).also { speedController = it }
         val lease = ++nextLease
         speedLease = lease
         try {
@@ -127,20 +136,30 @@ object XrayCore {
             return lease
         } catch (t: Throwable) {
             speedLease = 0L
+            // A partially started core must not hold the local SOCKS port open.
+            runCatching { if (c.isRunning) c.stopLoop() }
             throw t
         }
     }
 
+    /** Visible to instrumentation: a test lease is not the VPN's running state. */
+    @Synchronized
+    fun isSpeedTestRunning(): Boolean = speedLease != 0L && speedController?.isRunning == true
+
     @Synchronized
     fun stopSpeedTest(lease: Long) {
         if (speedLease != lease) return
-        stop()
+        speedLease = 0L
+        try {
+            speedController?.let { if (it.isRunning) it.stopLoop() }
+        } catch (t: Throwable) {
+            Log.e(TAG, "speed test core stop failed", t)
+        }
     }
 
     @Synchronized
     fun stop() {
         try {
-            speedLease = 0L
             val c = controller ?: return
             if (c.isRunning) c.stopLoop()
         } catch (t: Throwable) {
@@ -154,7 +173,7 @@ object XrayCore {
         return try {
             val c = controller ?: return -1L
             if (!c.isRunning) return -1L
-            c.measureDelay(url)
+            NativeDelay.normalize(c.measureDelay(url))
         } catch (t: Throwable) {
             -1L
         }
@@ -191,7 +210,7 @@ object XrayCore {
     /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل). متن خطاها بدون اطلاعات محرمانه ذخیره می‌شود. */
     fun measureOutboundDelay(config: String, url: String): Long {
         return try {
-            Libv2ray.measureOutboundDelay(config, url)
+            NativeDelay.normalize(Libv2ray.measureOutboundDelay(config, url))
         } catch (t: Throwable) {
             val reason = t.message.orEmpty()
             val safe = when {

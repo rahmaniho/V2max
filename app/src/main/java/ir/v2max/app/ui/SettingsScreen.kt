@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -45,6 +46,7 @@ fun SettingsScreen(
     coreVersion: String,
     appVersion: String,
     onChange: ((AppSettings) -> AppSettings) -> Unit,
+    onSecurityChange: ((AppSettings) -> AppSettings) -> Unit,
     onClearAll: () -> Unit,
     onOpenPerApp: () -> Unit = {},
     onSetFreeSources: (Boolean) -> Unit = {},
@@ -57,9 +59,12 @@ fun SettingsScreen(
     onRestore: () -> Unit = {},
     onCopyCrashLog: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    var showLockSetupDialog by remember { mutableStateOf(false) }
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showAutomationWarning by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -201,9 +206,9 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سنجش سرعت دانلود واقعی",
-                subtitle = "برای چند سرور برتر، سرعت دانلود واقعی اندازه‌گیری و در رتبه‌بندی لحاظ می‌شود",
+                subtitle = "سرعت چند سرور با دانلود نمونه بررسی می‌شود؛ زمان و حجم بیشتری مصرف می‌کند و با فعال‌سازی، حالت کم‌مصرف خاموش می‌شود",
                 checked = settings.speedTest
-            ) { value -> onChange { it.copy(speedTest = value) } }
+            ) { value -> onChange { it.copy(speedTest = value, dataSaver = if (value) false else it.dataSaver) } }
         }
 
         item {
@@ -217,9 +222,9 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "حالت کم‌مصرف",
-                subtitle = "تست سرعت و تست‌های سنگین انجام نمی‌شود؛ مناسب اینترنت محدود",
+                subtitle = "برای محدودکردن مصرف، با فعال‌سازی این حالت سنجش سرعت دانلود خاموش می‌شود",
                 checked = settings.dataSaver
-            ) { value -> onChange { it.copy(dataSaver = value) } }
+            ) { value -> onChange { it.copy(dataSaver = value, speedTest = if (value) false else it.speedTest) } }
         }
 
         item {
@@ -260,7 +265,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "به‌روزرسانی خودکار در شروع",
-                subtitle = "هنگام شروع، اشتراک‌های قدیمی به‌روزرسانی و سرورها بررسی می‌شوند",
+                subtitle = "اشتراک‌ها در شروع و به‌صورت دوره‌ای (حدود هر ۱۲ ساعت) به‌روزرسانی می‌شوند",
                 checked = settings.autoRefreshOnOpen
             ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
         }
@@ -292,7 +297,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سوییچ خودکار سرور",
-                subtitle = "اگر سرور فعلی قطع شد، بلافاصله سرور سالمِ جایگزین انتخاب و متصل می‌شود",
+                subtitle = "پس از قطع یا افت کیفیت، برنامه برای یافتن جایگزینِ آزموده تلاش می‌کند",
                 checked = settings.smartFailover
             ) { value -> onChange { it.copy(smartFailover = value) } }
         }
@@ -372,7 +377,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "بررسی خودکار نسخه‌ی جدید",
-                subtitle = "حداکثر هر ۶ ساعت، نسخه‌ی منتشرشده بررسی و اطلاع داده می‌شود",
+                subtitle = "بررسی هنگام اجرا و به‌صورت دوره‌ای در پس‌زمینه؛ اعلان نیازمند اجازهٔ سیستم است",
                 checked = settings.autoUpdateCheck
             ) { value -> onChange { it.copy(autoUpdateCheck = value) } }
         }
@@ -414,7 +419,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "استخر خودکار سرورها",
-                subtitle = "چند سرور برتر هم‌زمان در تانل قرار می‌گیرند و هسته سریع‌ترین را انتخاب می‌کند؛ قطعی کمتر و سرعت بیشتر",
+                subtitle = "چند سرور آزموده در تانل قرار می‌گیرند و هسته بر اساس تأخیر انتخاب می‌کند؛ نتیجه به شبکه بستگی دارد",
                 checked = settings.balancer
             ) { value -> onChange { it.copy(balancer = value) } }
         }
@@ -455,8 +460,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "Kill Switch (مسدودسازی هنگام قطعی)",
-                subtitle = "اگر تانل ناخواسته قطع شود، اینترنت مسدود می‌ماند تا داده‌ای بیرون از تانل نرود؛ با اعلان یا دکمه‌ی «رفع مسدودی» برمی‌گردد",
+                title = "Kill Switch (حفظ رابط VPN هنگام قطعی)",
+                subtitle = "در توقف هسته، رابط VPN برای برنامه‌های مشمول حفظ می‌شود؛ برنامه‌های مستثنا و توقف سرویس را پوشش نمی‌دهد. برای محافظت بیشتر، VPN همیشه‌روشن و مسدودسازی اتصال بدون VPN را در تنظیمات اندروید بررسی کنید.",
                 checked = settings.killSwitch
             ) { value -> onChange { it.copy(killSwitch = value) } }
         }
@@ -466,7 +471,13 @@ fun SettingsScreen(
                 title = "قفل برنامه",
                 subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
                 checked = settings.appLock
-            ) { value -> onChange { it.copy(appLock = value) } }
+            ) { value ->
+                if (value && !AppLock.isAvailable(context)) {
+                    showLockSetupDialog = true
+                } else {
+                    onSecurityChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
+                }
+            }
         }
 
         item {
@@ -513,11 +524,16 @@ fun SettingsScreen(
         }
 
         item {
-            SettingValue(
-                title = "اتوماسیون با Intent",
-                subtitle = "اتصال/قطع/واردکردن کانفیگ از Tasker یا سایر برنامه‌ها",
-                value = "راهنما"
-            ) { onOpenDiag() }
+            SettingSwitch(
+                title = "اجازهٔ اتوماسیون خارجی",
+                subtitle = if (settings.appLock) "با فعال‌بودن قفل برنامه، فرمان خارجی پذیرفته نمی‌شود"
+                    else "به برنامه‌های دیگر اجازهٔ اتصال، قطع و افزودن کانفیگ می‌دهد؛ فقط در صورت نیاز فعال کنید",
+                checked = settings.allowExternalAutomation && !settings.appLock,
+                enabled = !settings.appLock
+            ) { value ->
+                if (value) showAutomationWarning = true
+                else onSecurityChange { it.copy(allowExternalAutomation = false) }
+            }
         }
 
         item { GroupTitle("درباره") }
@@ -528,7 +544,7 @@ fun SettingsScreen(
                     InfoRow("نسخه برنامه", appVersion)
                     InfoRow("هسته", coreVersion)
                     InfoRow("پروتکل‌ها", "VLESS · VMess · Trojan · SS · Hysteria2")
-                    InfoRow("مجوز", "MIT / متن‌باز")
+                    InfoRow("مجوز پروژه", "نیازمند تعیین توسط مالک")
                 }
             }
         }
@@ -544,9 +560,9 @@ fun SettingsScreen(
                     .padding(16.dp)
             ) {
                 Column {
-                    Text("حذف همه‌ی داده‌ها", color = V2.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("بازنشانی داده‌ها و تنظیمات", color = V2.Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text(
-                        "همه‌ی اشتراک‌ها و سرورها پاک می‌شوند",
+                        "سرورها، اشتراک‌ها و تنظیمات حذف می‌شوند",
                         color = V2.TextMuted,
                         fontSize = 11.5.sp
                     )
@@ -555,6 +571,39 @@ fun SettingsScreen(
         }
 
         item { Spacer(Modifier.height(12.dp)) }
+    }
+
+    if (showLockSetupDialog) {
+        AlertDialog(
+            onDismissRequest = { showLockSetupDialog = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("احراز هویت در دسترس نیست", color = V2.TextPrimary) },
+            text = { Text("برای قفل برنامه به رمز، الگو یا روش احراز هویت فعال و در دسترس نیاز است. تنظیمات امنیت اندروید را بررسی و دوباره تلاش کنید.", color = V2.TextSecondary) },
+            confirmButton = { TextButton(onClick = { showLockSetupDialog = false }) { Text("متوجه شدم") } }
+        )
+    }
+
+    if (showAutomationWarning) {
+        AlertDialog(
+            onDismissRequest = { showAutomationWarning = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("فعال‌کردن اتوماسیون خارجی؟", color = V2.TextPrimary) },
+            text = {
+                Text(
+                    "پس از فعال‌سازی، هر برنامهٔ نصب‌شده می‌تواند بدون تأیید شما VPN را قطع کند یا کانفیگ اضافه کند. این اجازه در پشتیبان منتقل نمی‌شود. فقط در صورت نیاز آن را فعال کنید.",
+                    color = V2.TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onSecurityChange { if (it.appLock) it else it.copy(allowExternalAutomation = true) }
+                    showAutomationWarning = false
+                }) { Text("فعال‌سازی", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutomationWarning = false }) { Text("انصراف", color = V2.TextMuted) }
+            }
+        )
     }
 
     if (showMtuDialog) {
@@ -647,8 +696,8 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showClearDialog = false },
             containerColor = V2.SurfaceHigh,
-            title = { Text("حذف همه‌ی داده‌ها", color = V2.TextPrimary) },
-            text = { Text("مطمئن هستید؟ این کار قابل بازگشت نیست.", color = V2.TextSecondary) },
+            title = { Text("بازنشانی داده‌ها و تنظیمات", color = V2.TextPrimary) },
+            text = { Text("همهٔ سرورها، اشتراک‌ها و تنظیمات، از جمله قفل برنامه، حذف می‌شوند. این کار قابل بازگشت نیست.", color = V2.TextSecondary) },
             confirmButton = {
                 TextButton(onClick = {
                     onClearAll()
@@ -678,6 +727,7 @@ private fun SettingSwitch(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onChange: (Boolean) -> Unit
 ) {
     GlassCard(Modifier.fillMaxWidth()) {
@@ -696,6 +746,7 @@ private fun SettingSwitch(
             Switch(
                 checked = checked,
                 onCheckedChange = onChange,
+                enabled = enabled,
                 colors = SwitchDefaults.colors(
                     checkedThumbColor = V2.Background,
                     checkedTrackColor = V2.Mint,

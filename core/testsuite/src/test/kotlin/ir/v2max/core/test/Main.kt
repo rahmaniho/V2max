@@ -78,6 +78,7 @@ fun runAllSuites(): Int {
     RoundTripTests.run()
     XrayConfigTests.run()
     ServerSelectorTests.run()
+    ScanOrderTests.run()
     ServerListPolicyTests.run()
     SubscriptionMergerTests.run()
     SubscriptionUsageTests.run()

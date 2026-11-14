@@ -1,5 +1,6 @@
 import java.io.File
 import java.net.URI
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -17,28 +18,44 @@ val libV2rayUrl =
     "https://github.com/2dust/AndroidLibXrayLite/releases/download/$libV2rayVersion/libv2ray.aar"
 val libsDirProvider = layout.projectDirectory.dir("libs")
 val libV2rayAar = libsDirProvider.file("libv2ray.aar")
+val libV2raySha256 = "e56ec3b06485fe7b37af26948673951edf719c50d6bbc618b8539045952adde4"
+
+fun matchesLibV2rayDigest(file: File): Boolean = runCatching {
+    val digest = MessageDigest.getInstance("SHA-256")
+    file.inputStream().buffered().use { input ->
+        val buffer = ByteArray(64 * 1024)
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            digest.update(buffer, 0, count)
+        }
+    }
+    digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) } == libV2raySha256
+}.getOrDefault(false)
 
 val downloadLibV2ray by tasks.registering {
     description = "Downloads the Xray-core native library (libv2ray.aar) if it is missing"
     val target = libV2rayAar.asFile
     outputs.file(target)
+    outputs.upToDateWhen { target.isFile && matchesLibV2rayDigest(target) }
     doLast {
-        if (target.exists() && target.length() > 1_000_000L) {
-            logger.lifecycle("libv2ray.aar already present (${target.length()} bytes)")
+        if (target.isFile && matchesLibV2rayDigest(target)) {
+            logger.lifecycle("libv2ray.aar already verified (${target.length()} bytes)")
             return@doLast
         }
+        target.delete()
         target.parentFile?.mkdirs()
         logger.lifecycle("Downloading $libV2rayUrl ...")
         val tmp = File(target.parentFile, "libv2ray.aar.part")
         URI(libV2rayUrl).toURL().openStream().use { input ->
             tmp.outputStream().use { output -> input.copyTo(output) }
         }
-        if (tmp.length() < 1_000_000L) {
+        if (!matchesLibV2rayDigest(tmp)) {
             tmp.delete()
-            throw GradleException("Download of libv2ray.aar failed (file too small)")
+            throw GradleException("Downloaded libv2ray.aar SHA-256 did not match the pinned release")
         }
-        tmp.renameTo(target)
-        logger.lifecycle("libv2ray.aar ready (${target.length()} bytes)")
+        if (!tmp.renameTo(target)) throw GradleException("Could not move verified libv2ray.aar into place")
+        logger.lifecycle("libv2ray.aar verified (${target.length()} bytes)")
     }
 }
 
@@ -50,6 +67,20 @@ val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
+// Local developers may use an ignored keystore.properties file or environment
+// variables. CI builds with a disposable debug key; approved releases are
+// re-signed after tests, in a separate job that does not execute Gradle.
+fun signingValue(environment: String, property: String): String? =
+    System.getenv(environment)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(property)
+val signingStoreFile = signingValue("V2MAX_RELEASE_KEYSTORE", "storeFile")
+
+// Optional, debug-only version bump for the disposable emulator update test.
+// It never changes release variants or the package installed on real users' devices.
+val appVersionCode = 23
+val emulatorUpgradeCode = providers.gradleProperty("v2maxEmulatorUpgradeCode").orNull?.let { raw ->
+    raw.toIntOrNull()?.takeIf { it > appVersionCode && it <= 2_100_000_000 }
+        ?: throw GradleException("v2maxEmulatorUpgradeCode must be greater than $appVersionCode")
+}
 
 android {
     namespace = "ir.v2max.app"
@@ -60,8 +91,8 @@ android {
         minSdk = 24
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 22
-        versionName = "2.3.1"
+        versionCode = appVersionCode
+        versionName = "2.4.0"
         resourceConfigurations += listOf("fa", "en")
     }
 
@@ -75,12 +106,12 @@ android {
     }
 
     signingConfigs {
-        if (keystoreProps.getProperty("storeFile") != null) {
+        if (signingStoreFile != null) {
             create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+                storeFile = rootProject.file(signingStoreFile)
+                storePassword = signingValue("V2MAX_RELEASE_STORE_PASSWORD", "storePassword")
+                keyAlias = signingValue("V2MAX_RELEASE_KEY_ALIAS", "keyAlias")
+                keyPassword = signingValue("V2MAX_RELEASE_KEY_PASSWORD", "keyPassword")
             }
         }
     }
@@ -95,6 +126,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            if (emulatorUpgradeCode != null) versionNameSuffix = "-emulator-upgrade"
         }
     }
 
@@ -121,6 +153,12 @@ android {
     lint {
         abortOnError = false
         checkReleaseBuilds = false
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        emulatorUpgradeCode?.let { code -> variant.outputs.forEach { it.versionCode.set(code) } }
     }
 }
 

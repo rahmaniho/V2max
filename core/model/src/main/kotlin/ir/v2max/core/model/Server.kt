@@ -102,41 +102,43 @@ data class Server(
     fun dedupeKey(): String {
         val t = transport
         val s = security
-        return listOf(
-            proto.name,
-            endpoint.address, endpoint.port.toString(),
-            credentialKey(),
-            t::class.simpleName.orEmpty(),
+        return identityParts(
+            proto.name, endpoint.address, endpoint.port.toString(), credentialKey(), t.wire,
             when (t) {
-                is Transport.Tcp -> "${t.headerType}|${t.host}|${t.path}"
-                is Transport.WebSocket -> "${t.host}|${t.path}"
-                is Transport.Grpc -> "${t.serviceName}|${t.authority}|${t.mode}"
-                is Transport.HttpUpgrade -> "${t.host}|${t.path}"
-                is Transport.XHttp -> "${t.host}|${t.path}|${t.mode}|${t.extra}"
-                is Transport.Kcp -> "${t.headerType}|${t.seed}|${t.mtu}|${t.tti}"
-                is Transport.Hysteria -> t.host
+                is Transport.Tcp -> identityParts(t.headerType, t.host, t.path)
+                is Transport.WebSocket -> identityParts(t.host, t.path)
+                is Transport.Grpc -> identityParts(t.serviceName, t.authority, t.mode)
+                is Transport.HttpUpgrade -> identityParts(t.host, t.path)
+                is Transport.XHttp -> identityParts(t.host, t.path, t.mode, t.extra)
+                is Transport.Kcp -> identityParts(t.headerType, t.seed, t.mtu.toString(), t.tti.toString())
+                is Transport.Hysteria -> identityParts(t.host)
             },
             // Stream-level: applies to every transport, so it lives here rather
             // than inside one transport variant.
             finalMask,
             when (s) {
-                Security.None -> "none"
-                is Security.Tls -> "tls|${s.sni}|${s.alpn}|${s.fingerprint}|${s.echConfigList}|" +
-                    "${s.verifyPeerCertByName}|${s.pinnedPeerCertSha256}|${s.mldsa65Verify}"
-                is Security.Reality -> "reality|${s.sni}|${s.fingerprint}|${s.publicKey}|" +
-                    "${s.shortId}|${s.spiderX}"
+                Security.None -> identityParts("none")
+                is Security.Tls -> identityParts(
+                    "tls", s.sni, s.alpn, s.fingerprint, s.echConfigList,
+                    s.verifyPeerCertByName, s.pinnedPeerCertSha256, s.mldsa65Verify, s.allowInsecure.toString()
+                )
+                is Security.Reality -> identityParts("reality", s.sni, s.fingerprint, s.publicKey, s.shortId, s.spiderX)
             },
-            "${obfuscation.type}|${obfuscation.password}",
-        ).joinToString("|")
+            identityParts(obfuscation.type, obfuscation.password),
+        )
     }
+
+    /** Length-prefix every component, including nested groups, to avoid delimiter collisions. */
+    private fun identityParts(vararg values: String): String =
+        values.joinToString(separator = "") { "${it.length}:$it" }
 
     private fun credentialKey(): String = when (val c = credential) {
         // flow is included: two REALITY servers differing only by XTLS flow are
         // genuinely different endpoints, not duplicates.
-        is Credential.Uuid -> "uuid|${c.uuid}|${c.method}|${c.flow}"
-        is Credential.Password -> "pass|${c.password}|${c.flow}"
-        is Credential.UserPass -> "userpass|${c.user}|${c.password}"
-        is Credential.Cipher -> "cipher|${c.method}|${c.password}"
+        is Credential.Uuid -> identityParts("uuid", c.uuid, c.method, c.flow)
+        is Credential.Password -> identityParts("pass", c.password, c.flow)
+        is Credential.UserPass -> identityParts("userpass", c.user, c.password)
+        is Credential.Cipher -> identityParts("cipher", c.method, c.password)
     }
 
     /** Stable identity across subscription refreshes (independent of [id]). */

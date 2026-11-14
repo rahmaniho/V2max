@@ -3,6 +3,7 @@ package ir.v2max.app.service
 import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -24,20 +25,26 @@ class V2maxWidget : AppWidgetProvider() {
     }
 
     override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
-        if (intent.action == ACTION_TOGGLE) {
+        if (intent.action == ACTION_TOGGLE || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+            // Old widget PendingIntents can still target this exported provider
+            // after an upgrade. Refresh them, but never trust this public action.
             Repo.init(context)
-            if (Repo.tunnel.value.isActive) {
-                TunnelController.stop(context)
-            } else {
-                TunnelController.start(context)
-            }
             refresh(context)
+            return
         }
+        super.onReceive(context, intent)
     }
 
     companion object {
         const val ACTION_TOGGLE = "ir.v2max.app.widget.TOGGLE"
+
+        /** Launcher invokes this immutable PendingIntent with the app's identity. */
+        internal fun toggleIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
+            context,
+            100,
+            Intent(context, WidgetActionReceiver::class.java).setAction(ACTION_TOGGLE),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
         /** فراخوانی از رابط کاربری/سرویس برای تازه‌سازی ویجت‌ها */
         fun refresh(context: Context) {
@@ -71,13 +78,7 @@ class V2maxWidget : AppWidgetProvider() {
             )
             views.setTextViewText(R.id.widget_action, if (active) "قطع" else "اتصال")
 
-            val toggle = PendingIntent.getBroadcast(
-                context,
-                100,
-                Intent(context, V2maxWidget::class.java).setAction(ACTION_TOGGLE),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            views.setOnClickPendingIntent(R.id.widget_action, toggle)
+            views.setOnClickPendingIntent(R.id.widget_action, toggleIntent(context))
 
             val open = PendingIntent.getActivity(
                 context,
@@ -90,5 +91,15 @@ class V2maxWidget : AppWidgetProvider() {
 
             manager.updateAppWidget(id, views)
         }
+    }
+}
+
+/** The exported widget provider accepts Android's updates, not VPN commands. */
+class WidgetActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action != V2maxWidget.ACTION_TOGGLE) return
+        Repo.init(context)
+        if (Repo.tunnel.value.isActive) TunnelController.stop(context) else TunnelController.start(context)
+        V2maxWidget.refresh(context)
     }
 }

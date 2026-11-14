@@ -36,7 +36,7 @@ object ProbePlanner {
 
     fun testUrls(settings: AppSettings): List<String> = CoreProbePlanner.testUrls(settings.delayTestUrl)
 
-    /** Match v2rayNG first; try fragmentation only when enabled and the plain test failed. */
+    /** Plain and, only when enabled and applicable, fragmented protocol variants. */
     fun variants(server: ServerConfig, settings: AppSettings): List<AppSettings> {
         val plain = settings.copy(fragment = false, balancer = false)
         val canFragment = CoreProbePlanner.canFragment(
@@ -54,8 +54,23 @@ object ProbePlanner {
         settings: AppSettings,
         measure: suspend (ServerConfig, AppSettings, String) -> Int
     ): ProbeResult? {
-        for (variant in variants(server, settings)) {
-            for (url in testUrls(settings)) {
+        val variants = variants(server, settings)
+        val urls = testUrls(settings)
+        // A recent success only changes the order of NEW tests. It is never reused as
+        // proof. Respect current fragment settings and never use an old arbitrary URL.
+        val recent = server.testedAt > 0 &&
+            System.currentTimeMillis() - server.testedAt in 0..(10 * 60 * 1000L) &&
+            server.realPing > 0 && server.testedUrl in urls
+        val previousVariant = if (recent) variants.firstOrNull {
+            it.fragment == server.testedFragment &&
+                (!it.fragment || it.fragmentProfile == server.testedFragmentProfile)
+        } else null
+        val orderedVariants = if (previousVariant != null) {
+            listOf(previousVariant) + variants.filter { it != previousVariant }
+        } else variants
+        val orderedUrls = if (recent) listOf(server.testedUrl) + urls.filter { it != server.testedUrl } else urls
+        for (variant in orderedVariants) {
+            for (url in orderedUrls) {
                 coroutineContext.ensureActive()
                 val delay = measure(server, variant, url)
                 coroutineContext.ensureActive()
@@ -65,14 +80,30 @@ object ProbePlanner {
         return null
     }
 
-    /** Only fresh protocol successes can be candidates, never TCP-only or stale results. */
-    fun choose(verified: Collection<ServerConfig>, preferredId: String? = null): ServerConfig? =
-        CoreProbePlanner.choose(
+    /** Ignore persisted download measurements when ranking a NEW scan by latency. */
+    fun latencyScore(server: ServerConfig): Int = server.copy(speedKbps = 0).score()
+
+    /** Use only current speed samples, never the persisted speed in ServerConfig. */
+    fun rank(verified: Collection<ServerConfig>, speeds: Map<String, Int> = emptyMap()): List<ServerConfig> =
+        CoreProbePlanner.rank(
             candidates = verified,
-            preferredId = preferredId,
-            idOf = { it.id },
             realPingOf = { it.realPing },
             testedUrlOf = { it.testedUrl },
-            scoreOf = { it.score() },
+            scoreOf = ::latencyScore,
+            speedOf = { speeds[it.id] ?: 0 },
         )
+
+    fun choose(
+        verified: Collection<ServerConfig>,
+        preferredId: String? = null,
+        speeds: Map<String, Int> = emptyMap()
+    ): ServerConfig? = CoreProbePlanner.choose(
+        candidates = verified,
+        preferredId = preferredId,
+        idOf = { it.id },
+        realPingOf = { it.realPing },
+        testedUrlOf = { it.testedUrl },
+        scoreOf = ::latencyScore,
+        speedOf = { speeds[it.id] ?: 0 },
+    )
 }

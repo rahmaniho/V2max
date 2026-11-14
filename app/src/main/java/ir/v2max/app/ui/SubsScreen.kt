@@ -64,6 +64,7 @@ fun SubsScreen(
     onDelete: (String) -> Unit,
     onSmartScan: (String) -> Unit,
     onImportText: (String) -> Unit,
+    onAddFreeSource: (String) -> Unit = {},
     onAddFreeSources: () -> Unit = {},
     onScanQr: () -> Unit = {},
     onQrContent: (String) -> Unit = {}
@@ -276,7 +277,7 @@ fun SubsScreen(
             item {
                 EmptyState(
                     title = "اشتراکی ثبت نشده",
-                    description = "لینک اشتراک (Subscription) خود را وارد کنید تا V2max کانفیگ‌ها را دریافت، تست و بهترین را انتخاب کند."
+                    description = "لینک اشتراک خود را وارد کنید تا کانفیگ‌ها دریافت شوند؛ سپس سرور دلخواه را انتخاب و وصل شوید."
                 )
             }
         }
@@ -288,7 +289,7 @@ fun SubsScreen(
         SourcePickerDialog(
             onDismiss = { showSources = false },
             onPick = { source ->
-                onAdd(source.name, source.url)
+                onAddFreeSource(source.url)
                 showSources = false
             },
             onAddAll = {
@@ -503,7 +504,7 @@ private fun SourcePickerDialog(
         text = {
             Column {
                 Text(
-                    "منابع عمومی و رایگان کانفیگ که روزانه به‌روزرسانی می‌شوند. هر منبع را جداگانه یا همه را یک‌جا اضافه کنید.",
+                    "منابع عمومی ممکن است نامطمئن یا از دسترس خارج شوند. ارائه‌دهندهٔ منبع و آینه‌های جایگزین می‌توانند نشانی IP شما را ببینند؛ برای اطلاعات حساس به آن‌ها اعتماد نکنید.",
                     style = MaterialTheme.typography.bodySmall,
                     color = V2.TextMuted
                 )

@@ -6,6 +6,8 @@ import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PingTargets
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.core.domain.ScanHint
+import ir.v2max.core.domain.ScanOrder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -21,22 +23,40 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import kotlin.coroutines.coroutineContext
 
-/** TCP is only a preliminary check; a server is healthy only after a real Xray request succeeds. */
+/** TCP is only a scheduling hint; a server is healthy only after a real Xray request succeeds. */
 object HealthScanner {
     private const val TCP_TIMEOUT_MS = 2200
-    private const val TCP_CONCURRENCY = 24
-    private const val REAL_CONCURRENCY = 6
-    private const val REAL_BATCH_SIZE = 24
+    internal const val PRECHECK_WINDOW = 24
+    internal const val REAL_BATCH_SIZE = 6
     private const val MULTI_CONCURRENCY = 4
+    // UI tests and service failover may otherwise publish conflicting results or
+    // run multiple temporary speed cores concurrently.
+    private val scanMutex = Mutex()
 
     data class Outcome(
         val best: ServerConfig? = null,
         val aliveCount: Int = 0,
-        /** Number of actual protocol tests, not just TCP checks. */
+        /** Number of configurations subjected to real protocol tests. */
         val testedCount: Int = 0,
+        /** Configurations prechecked, including UDP profiles for which TCP is not applicable. */
         val precheckedCount: Int = 0,
+        /** Actual TCP handshakes; profiles with the same endpoint share a precheck. */
+        val tcpConnections: Int = 0,
+        val elapsedMs: Long = 0,
+        val speedCompared: Boolean = false,
+        /** IDs for which a download was actually attempted, including failures. */
+        val speedTestedIds: Set<String> = emptySet(),
         val qualified: List<ServerConfig> = emptyList(),
         val message: String = ""
+    )
+
+    /** I/O boundary injectable in unit tests; the production path always uses Xray. */
+    internal data class Operations(
+        val tcp: suspend (ServerConfig) -> Int,
+        val real: suspend (ServerConfig, AppSettings, String) -> Int,
+        // Null means setup failed, not an attempted download with a zero result.
+        val speed: suspend (ServerConfig, AppSettings) -> Int?,
+        val problem: () -> String = { "" }
     )
 
     suspend fun scan(
@@ -44,6 +64,9 @@ object HealthScanner {
         servers: List<ServerConfig>,
         settings: AppSettings,
         preferredId: String? = null,
+        rememberedId: String? = null,
+        limit: Int = 0,
+        exhaustive: Boolean = false,
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
@@ -52,90 +75,188 @@ object HealthScanner {
         onAlive: suspend (Int) -> Unit = {}
     ): Outcome = withContext(Dispatchers.IO) {
         if (servers.isEmpty()) return@withContext Outcome(message = "کانفیگی برای تست وجود ندارد")
-        XrayCore.init(context)
-        XrayCore.clearProbeProblem()
-        val usable = servers.filter { it.hasUsableEndpoint() }
-        if (usable.isEmpty()) return@withContext Outcome(message = "آدرس یا پورت کانفیگ‌ها معتبر نیست")
+        scanMutex.withLock {
+            XrayCore.init(context)
+            XrayCore.clearProbeProblem()
+            scanPrepared(
+                servers = servers,
+                settings = settings,
+                operations = Operations(
+                    tcp = ::tcpPing,
+                    real = ::realDelay,
+                    speed = { cfg, variant -> SpeedTester.measure(cfg, variant) },
+                    problem = XrayCore::probeProblem
+                ),
+                preferredId = preferredId,
+                rememberedId = rememberedId,
+                limit = limit,
+                exhaustive = exhaustive,
+                onTcp = onTcp,
+                onReal = onReal,
+                onMulti = onMulti,
+                onSpeed = onSpeed,
+                onPhase = onPhase,
+                onAlive = onAlive
+            )
+        }
+    }
 
+    /**
+     * Scan a small window at a time. Complete every started test in a batch and all
+     * requested additional tests before returning. TCP failures are deferred, not
+     * discarded; UDP and an explicitly selected profile are always tested for real.
+     */
+    internal suspend fun scanPrepared(
+        servers: List<ServerConfig>,
+        settings: AppSettings,
+        operations: Operations,
+        preferredId: String? = null,
+        rememberedId: String? = null,
+        limit: Int = 0,
+        exhaustive: Boolean = false,
+        onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
+        onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
+        onMulti: suspend (ServerConfig) -> Unit = { _ -> },
+        onSpeed: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
+        onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> },
+        onAlive: suspend (Int) -> Unit = {}
+    ): Outcome {
+        val start = System.nanoTime()
+        fun elapsed(): Long = (System.nanoTime() - start) / 1_000_000L
+        // ServerConfig is mutable. Work with snapshots while a subscription or editor can update Repo.
+        val usable = servers.map { it.copy() }.filter { it.hasUsableEndpoint() }
+        if (usable.isEmpty()) return Outcome(message = "آدرس یا پورت کانفیگ‌ها معتبر نیست")
+        val prioritized = ScanOrder.prioritize(
+            items = usable,
+            hint = {
+                ScanHint(it.id, it.subId, it.favorite, it.testedAt, it.realPing, it.testedUrl.isNotBlank())
+            },
+            nowMs = System.currentTimeMillis(),
+            preferredId = preferredId,
+            rememberedId = rememberedId
+        )
+        val ordered = if (limit > 0) prioritized.take(limit) else prioritized
         val lock = Mutex()
         val tcpResults = HashMap<String, Int>()
-        val tcpSemaphore = Semaphore(TCP_CONCURRENCY)
+        val endpointResults = HashMap<Pair<String, Int>, Int>()
+        val deferred = ArrayList<ServerConfig>()
+        val tested = ArrayList<ServerConfig>()
+        val pendingReal = ArrayList<Pair<ServerConfig, ProbeResult?>>()
+        val pendingMulti = ArrayList<ServerConfig>()
+        val pendingSpeed = ArrayList<Pair<ServerConfig, Int>>()
         var prechecked = 0
-        onPhase("پیش‌بررسی آدرس‌ها (TCP و UDP)", 0, usable.size)
-        coroutineScope {
-            usable.map { cfg ->
-                async {
-                    coroutineContext.ensureActive()
-                    // UDP protocols cannot be declared dead from a TCP failure.
-                    val ping = if (ProbePlanner.usesUdp(cfg)) -1 else tcpSemaphore.withPermit { tcpPing(cfg) }
-                    onTcp(cfg, ping)
-                    lock.withLock {
-                        tcpResults[cfg.id] = ping
-                        prechecked++
-                        if (prechecked % 4 == 0 || prechecked == usable.size) {
-                            onPhase("پیش‌بررسی آدرس‌ها (TCP و UDP)", prechecked, usable.size)
-                        }
-                    }
+        var tcpConnections = 0
+        var realDone = 0
+
+        fun key(cfg: ServerConfig) = cfg.address.trim().lowercase() to cfg.port
+
+        suspend fun precheck(window: List<ServerConfig>): List<ServerConfig> {
+            onPhase("پیش‌بررسی مرحله‌ای آدرس‌ها", prechecked, ordered.size)
+            val missing = linkedMapOf<Pair<String, Int>, ServerConfig>()
+            for (cfg in window) {
+                if (!ProbePlanner.usesUdp(cfg) && key(cfg) !in endpointResults) {
+                    missing.putIfAbsent(key(cfg), cfg)
                 }
-            }.awaitAll()
+            }
+            val results = coroutineScope {
+                missing.map { (endpoint, cfg) ->
+                    async { endpoint to operations.tcp(cfg) }
+                }.awaitAll()
+            }
+            results.forEach { (endpoint, ping) -> endpointResults[endpoint] = ping }
+            tcpConnections += results.size
+            val ready = ArrayList<ServerConfig>()
+            for (cfg in window) {
+                coroutineContext.ensureActive()
+                val udp = ProbePlanner.usesUdp(cfg)
+                val ping = if (udp) -1 else endpointResults[key(cfg)] ?: -1
+                tcpResults[cfg.id] = ping
+                onTcp(cfg, ping)
+                prechecked++
+                // An explicit selection must get its real test even when TCP fails.
+                if (udp || ping > 0 || cfg.id == preferredId) ready.add(cfg) else deferred.add(cfg)
+            }
+            onPhase("پیش‌بررسی مرحله‌ای آدرس‌ها", prechecked, ordered.size)
+            return ready
         }
 
-        // TCP errors are lower-priority, not proof of death. Explicit choices are tested first.
-        val ordered = usable.sortedWith(
-            compareByDescending<ServerConfig> { it.id == preferredId }
-                .thenByDescending { it.favorite }
-                .thenBy { if (ProbePlanner.usesUdp(it) || (tcpResults[it.id] ?: -1) > 0) 0 else 1 }
-                .thenBy { tcpResults[it.id]?.takeIf { ping -> ping > 0 } ?: Int.MAX_VALUE }
-        )
-        val tested = ArrayList<ServerConfig>()
-        val realSemaphore = Semaphore(REAL_CONCURRENCY)
-        var realDone = 0
-        onPhase("تست واقعی اتصال با Xray", 0, ordered.size)
-
-        // Work in bounded batches. If one batch yields no real success, try the next;
-        // never discard a whole subscription because its first 24 nodes were down.
-        for (batch in ordered.chunked(REAL_BATCH_SIZE)) {
-            val results = coroutineScope {
+        suspend fun verifyBatch(batch: List<ServerConfig>) {
+            onPhase("تست واقعی اتصال با Xray", realDone, ordered.size)
+            val batchResults = coroutineScope {
                 batch.map { cfg ->
                     async {
-                        val result = realSemaphore.withPermit {
-                            ProbePlanner.verify(cfg, settings, ::realDelay)
-                        }
-                        onReal(cfg, result)
+                        val result = ProbePlanner.verify(cfg, settings, operations.real)
                         lock.withLock {
                             realDone++
                             onPhase("تست واقعی اتصال با Xray", realDone, ordered.size)
                         }
-                        result?.let {
-                            cfg.copy(
-                                tcpPing = tcpResults[cfg.id] ?: -1,
-                                realPing = it.delayMs,
-                                googlePing = if (it.url == PingTargets.GOOGLE.url) it.delayMs else -1,
-                                instagramPing = -1,
-                                youtubePing = -1,
-                                testedAt = System.currentTimeMillis(),
-                                testedFragment = it.fragment,
-                                testedFragmentProfile = it.profile,
-                                testedUrl = it.url
-                            )
-                        }
+                        cfg to result
                     }
-                }.awaitAll().filterNotNull()
+                }.awaitAll()
             }
-            tested.addAll(results)
+            pendingReal.addAll(batchResults)
+            batchResults.forEach { (cfg, result) ->
+                if (result != null) tested.add(
+                    cfg.copy(
+                        tcpPing = tcpResults[cfg.id] ?: -1,
+                        realPing = result.delayMs,
+                        googlePing = if (result.url == PingTargets.GOOGLE.url) result.delayMs else -1,
+                        instagramPing = -1,
+                        youtubePing = -1,
+                        testedAt = System.currentTimeMillis(),
+                        testedFragment = result.fragment,
+                        testedFragmentProfile = result.profile,
+                        testedUrl = result.url
+                    )
+                )
+            }
             onAlive(tested.size)
-            if (tested.isNotEmpty()) break
         }
-        if (tested.isEmpty()) return@withContext Outcome(
-            testedCount = realDone,
-            precheckedCount = prechecked,
-            message = buildString {
-                append("هیچ کانفیگی تست واقعی را نگذرانْد؛ کانفیگ‌ها حذف نشدند.")
-                val problem = XrayCore.probeProblem()
-                if (problem.isNotBlank()) append(" $problem")
-                else append(" شبکه، آدرس تست و تنظیمات سرور را بررسی کنید.")
+
+        // Publish verified results only after all tests requested for this scan finish.
+        suspend fun publishResults() {
+            coroutineContext.ensureActive()
+            pendingReal.forEach { (cfg, result) -> onReal(cfg, result) }
+            pendingMulti.forEach { onMulti(it) }
+            pendingSpeed.forEach { (cfg, kbps) -> onSpeed(cfg, kbps) }
+        }
+
+        var found = false
+        for (window in ordered.chunked(PRECHECK_WINDOW)) {
+            val ready = precheck(window)
+            for (batch in ready.chunked(REAL_BATCH_SIZE)) {
+                verifyBatch(batch)
+                if (tested.isNotEmpty() && !exhaustive) {
+                    found = true
+                    break
+                }
             }
-        )
+            if (found) break
+        }
+        // A failed TCP check is not proof of failure. Reach these profiles if no
+        // ready candidate succeeds, or always in an explicit full-list scan.
+        if (exhaustive || tested.isEmpty()) {
+            for (batch in deferred.chunked(REAL_BATCH_SIZE)) {
+                verifyBatch(batch)
+                if (tested.isNotEmpty() && !exhaustive) break
+            }
+        }
+        coroutineContext.ensureActive()
+        if (tested.isEmpty()) {
+            publishResults()
+            return Outcome(
+                testedCount = realDone,
+                precheckedCount = prechecked,
+                tcpConnections = tcpConnections,
+                elapsedMs = elapsed(),
+                message = buildString {
+                    append("هیچ کانفیگی تست واقعی را نگذرانْد؛ کانفیگ‌ها حذف نشدند.")
+                    val problem = operations.problem()
+                    if (problem.isNotBlank()) append(" $problem")
+                    else append(" شبکه، آدرس تست و تنظیمات سرور را بررسی کنید.")
+                }
+            )
+        }
 
         val results = tested.toMutableList()
         if (settings.multiPing) {
@@ -146,10 +267,11 @@ object HealthScanner {
                 results.map { cfg ->
                     async {
                         val variant = settings.copy(fragment = cfg.testedFragment, fragmentProfile = cfg.testedFragmentProfile)
-                        val ig = multiSemaphore.withPermit { realDelay(cfg, variant, PingTargets.INSTAGRAM.url) }
-                        val yt = multiSemaphore.withPermit { realDelay(cfg, variant, PingTargets.YOUTUBE.url) }
-                        val updated = cfg.copy(instagramPing = ig, youtubePing = yt)
-                        onMulti(updated)
+                        val google = if (cfg.testedUrl == PingTargets.GOOGLE.url) cfg.realPing else
+                            multiSemaphore.withPermit { operations.real(cfg, variant, PingTargets.GOOGLE.url) }
+                        val ig = multiSemaphore.withPermit { operations.real(cfg, variant, PingTargets.INSTAGRAM.url) }
+                        val yt = multiSemaphore.withPermit { operations.real(cfg, variant, PingTargets.YOUTUBE.url) }
+                        val updated = cfg.copy(googlePing = google, instagramPing = ig, youtubePing = yt)
                         lock.withLock { done++; onPhase("بررسی مقصدهای بیشتر", done, results.size) }
                         updated
                     }
@@ -157,31 +279,63 @@ object HealthScanner {
             }
             results.clear()
             results.addAll(multi)
+            pendingMulti.addAll(multi)
         }
 
-        if (settings.speedTest && !settings.dataSaver && !XrayCore.isRunning) {
-            val ranked = results.sortedBy { it.score() }.take(settings.speedTestCount.coerceIn(1, 5))
+        val speeds = mutableMapOf<String, Int>()
+        val speedTestedIds = mutableSetOf<String>()
+        // An explicitly enabled test always runs, even for older settings where
+        // dataSaver and speedTest were both true. Never silently bypass it.
+        if (settings.speedTest) {
+            val ranked = results.sortedWith(
+                compareByDescending<ServerConfig> { it.id == preferredId }
+                    .thenBy { ProbePlanner.latencyScore(it) }
+            ).take(settings.speedTestCount.coerceIn(1, 5))
             onPhase("سنجش سرعت دانلود", 0, ranked.size)
-            ranked.forEachIndexed { index, cfg ->
+            for ((index, cfg) in ranked.withIndex()) {
                 coroutineContext.ensureActive()
                 val variant = settings.copy(fragment = cfg.testedFragment, fragmentProfile = cfg.testedFragmentProfile)
-                val kbps = SpeedTester.measure(cfg, variant)
+                val kbps = operations.speed(cfg, variant)
+                if (kbps == null) {
+                    // A setup failure is not a completed download test. Preserve a
+                    // running tunnel and do not make any candidate connectable.
+                    return Outcome(
+                        testedCount = realDone, precheckedCount = prechecked,
+                        tcpConnections = tcpConnections, elapsedMs = elapsed(),
+                        message = "آماده‌سازی سنجش سرعت ممکن نشد؛ اتصال جدید آغاز نشد. دوباره تلاش کنید."
+                    )
+                }
+                speedTestedIds.add(cfg.id)
+                if (kbps > 0) speeds[cfg.id] = kbps
                 val position = results.indexOfFirst { it.id == cfg.id }
                 if (position >= 0) results[position] = results[position].copy(speedKbps = kbps)
-                onSpeed(cfg, kbps)
+                pendingSpeed.add(cfg to kbps)
                 onPhase("سنجش سرعت دانلود", index + 1, ranked.size)
             }
         }
-
-        val qualified = results.sortedBy { it.score() }
-        val best = ProbePlanner.choose(qualified, preferredId)
-        Outcome(
+        coroutineContext.ensureActive()
+        publishResults()
+        // When speed testing is enabled, only profiles whose download test was
+        // actually attempted may be selected or added to the connection pool.
+        val connectable = if (settings.speedTest) results.filter { it.id in speedTestedIds } else results
+        val qualified = ProbePlanner.rank(connectable, speeds)
+        val best = ProbePlanner.choose(qualified, preferredId, speeds)
+        val speedNote = when {
+            settings.speedTest && speeds.isEmpty() -> "سنجش دانلود ناموفق بود؛ انتخاب بر اساس تأخیر انجام شد"
+            speeds.isNotEmpty() -> "سرعت دانلود ${speeds.size} سرور سنجیده شد"
+            else -> "انتخاب بر اساس تأخیر است، نه سرعت دانلود"
+        }
+        return Outcome(
             best = best,
             aliveCount = qualified.size,
             testedCount = realDone,
             precheckedCount = prechecked,
+            tcpConnections = tcpConnections,
+            elapsedMs = elapsed(),
+            speedCompared = speeds.isNotEmpty(),
+            speedTestedIds = speedTestedIds,
             qualified = qualified,
-            message = "${qualified.size} کانفیگ تست واقعی را گذراند"
+            message = speedNote
         )
     }
 

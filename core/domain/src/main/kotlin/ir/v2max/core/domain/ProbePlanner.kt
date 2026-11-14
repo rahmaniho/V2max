@@ -72,16 +72,37 @@ object ProbePlanner {
         (security == "tls" || security == "reality" || (protoIsTrojan && security.isBlank()))
 
     /**
-     * Picks the server to connect to from a set of freshly probed candidates.
-     *
-     * Only *protocol-level* successes qualify: a positive real ping **and** a
-     * recorded test URL. A TCP-only result is not enough, because it proves the
-     * port is open, not that the proxy works. The preferred server wins when it
-     * qualified — the user's last working choice is worth keeping — otherwise
-     * the lowest score, same ranking the rest of the app uses.
-     *
-     * Returns null when nothing qualified, which callers must treat as "no
-     * route" rather than falling back to an untested server.
+     * Rank only fresh protocol successes. When current download samples are
+     * supplied, candidates within 80% of the fastest sample form the first
+     * group; latency/stability score breaks ties. Persisted speeds must not be
+     * passed as current samples. With no samples, this is ordinary score order.
+     */
+    fun <T> rank(
+        candidates: Collection<T>,
+        realPingOf: (T) -> Int,
+        testedUrlOf: (T) -> String,
+        scoreOf: (T) -> Int,
+        speedOf: (T) -> Int = { 0 },
+    ): List<T> {
+        val successful = candidates.filter { realPingOf(it) > 0 && testedUrlOf(it).isNotBlank() }
+        val fastest = successful.mapNotNull { speedOf(it).takeIf { speed -> speed > 0 } }.maxOrNull() ?: 0
+        return successful.sortedWith(
+            compareBy<T> { candidate ->
+                val speed = speedOf(candidate)
+                when {
+                    fastest <= 0 -> 0
+                    speed > 0 && speed.toLong() * 10 >= fastest.toLong() * 8 -> 0
+                    speed > 0 -> 1
+                    else -> 2
+                }
+            }.thenBy(scoreOf).thenByDescending(speedOf)
+        )
+    }
+
+    /**
+     * The preferred candidate wins if it qualified; otherwise use the ranking.
+     * A TCP-only result is not proof that a proxy works. Null means no route,
+     * never permission to fall back to an untested profile.
      */
     fun <T> choose(
         candidates: Collection<T>,
@@ -90,9 +111,9 @@ object ProbePlanner {
         realPingOf: (T) -> Int,
         testedUrlOf: (T) -> String,
         scoreOf: (T) -> Int,
+        speedOf: (T) -> Int = { 0 },
     ): T? {
-        val successful = candidates.filter { realPingOf(it) > 0 && testedUrlOf(it).isNotBlank() }
-        return successful.firstOrNull { idOf(it) == preferredId }
-            ?: successful.minByOrNull { scoreOf(it) }
+        val ranked = rank(candidates, realPingOf, testedUrlOf, scoreOf, speedOf)
+        return ranked.firstOrNull { idOf(it) == preferredId } ?: ranked.firstOrNull()
     }
 }

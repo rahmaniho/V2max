@@ -65,7 +65,7 @@ mkdir -p "$OUT/classes" "$OUT/test-classes"
 
 echo "== kotlinc: ${#SOURCES[@]} main source file(s) =="
 "$KOTLINC" -nowarn -jvm-target 17 -d "$OUT/classes" "${SOURCES[@]}" 2>&1 |
-  grep -vE '^warning: ' || true
+  sed '/^warning: /d'
 
 if [[ "${1:-}" == "--compile" ]]; then
   echo "== compiled to $OUT/classes =="
@@ -80,7 +80,7 @@ fi
 
 echo "== kotlinc: ${#TESTS[@]} test source file(s) =="
 "$KOTLINC" -nowarn -jvm-target 17 -cp "$OUT/classes" -d "$OUT/test-classes" "${TESTS[@]}" 2>&1 |
-  grep -vE '^warning: ' || true
+  sed '/^warning: /d'
 
 echo "== running tests =="
 # The stdlib must be on the runtime classpath: kotlinc does not bundle it into

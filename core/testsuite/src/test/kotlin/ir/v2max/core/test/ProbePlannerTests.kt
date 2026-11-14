@@ -174,5 +174,21 @@ object ProbePlannerTests {
         T.eq("an unknown preferred id is ignored", "fast", choose(listOf(fast, slow), "ghost")?.id)
         T.eq("no preferred id falls back to score", "fast", choose(listOf(slow, fast), null)?.id)
         T.eq("nothing qualified yields nothing", null, choose(listOf(tcpOnly, tcpOnly.copy(id = "b")))?.id)
+
+        // Current download samples influence ranking, but only after a real
+        // protocol success and without overriding the user's manual choice.
+        fun chooseWithSpeed(speeds: Map<String, Int>, preferred: String? = null) = ProbePlanner.choose(
+            candidates = listOf(tcpOnly, fast, slow), preferredId = preferred,
+            idOf = { it.id }, realPingOf = { it.realPing }, testedUrlOf = { it.testedUrl },
+            scoreOf = { it.score }, speedOf = { speeds[it.id] ?: 0 },
+        )?.id
+        T.eq("fresh fastest download wins", "slow", chooseWithSpeed(mapOf("fast" to 1000, "slow" to 10000)))
+        T.eq("80 percent near-tie uses latency score", "fast", chooseWithSpeed(mapOf("fast" to 8000, "slow" to 10000)))
+        T.eq("below 80 percent is not a near-tie", "slow", chooseWithSpeed(mapOf("fast" to 7999, "slow" to 10000)))
+        T.eq("unmeasured speed does not outrank a sample", "slow", chooseWithSpeed(mapOf("slow" to 10000)))
+        T.eq("failed samples use latency score", "fast", chooseWithSpeed(mapOf("fast" to 0, "slow" to -1)))
+        T.eq("manual selection still wins", "fast", chooseWithSpeed(mapOf("slow" to 10000), "fast"))
+        T.eq("unverified high speed is ignored", "fast", chooseWithSpeed(mapOf("tcp" to Int.MAX_VALUE, "fast" to 8000, "slow" to 10000)))
+        T.eq("speed comparison does not overflow", "fast", chooseWithSpeed(mapOf("fast" to 1_800_000_000, "slow" to Int.MAX_VALUE)))
     }
 }

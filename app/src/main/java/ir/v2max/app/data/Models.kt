@@ -83,6 +83,10 @@ data class ServerConfig(
     // مخفی‌سازی اختیاری
     var obfsType: String = "",
     var obfsPassword: String = "",
+    /** Optional Hysteria2 Gecko bounds and UDP hopping ports from share links. */
+    var obfsMinPacketSize: String = "",
+    var obfsMaxPacketSize: String = "",
+    var hoppingPorts: String = "",
 
     var subId: String = "",
     var favorite: Boolean = false,
@@ -157,14 +161,18 @@ data class ServerConfig(
         transportHost.ifBlank { address }
     }
 
-    /** پارامترهای مؤثر در اتصال نباید هنگام حذف تکراری‌ها از بین بروند. */
+    /**
+     * پارامترهای مؤثر در اتصال؛ طول هر جزء مانع برخورد داده‌های حاوی جداکننده می‌شود.
+     * نام نمایشی، شناسه و نتیجه‌ی تست عمداً بخشی از هویت اتصال نیستند.
+     */
     fun dedupeKey(): String = listOf(
         proto.name, address, port.toString(), uuid, password, method, flow, network,
         headerType, host, path, serviceName, mode, authority, xhttpExtra, finalMask,
         kcpSeed, kcpMtu.toString(), kcpTti.toString(), security, sni, alpn, fingerprint,
         publicKey, shortId, spiderX, allowInsecure.toString(), echConfigList,
-        verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword
-    ).joinToString("|")
+        verifyPeerCertByName, pinnedPeerCertSha256, mldsa65Verify, obfsType, obfsPassword,
+        obfsMinPacketSize, obfsMaxPacketSize, hoppingPorts
+    ).joinToString(separator = "") { "${it.length}:$it" }
 
     /** شناسه پایداری که مستقل از id است (برای تطبیق با کانفیگ قبلی پس از به‌روزرسانی اشتراک) */
     fun fingerprint(): String = dedupeKey()
@@ -204,7 +212,7 @@ enum class PerAppMode {
 
 /** بسته‌ی پشتیبان */
 data class BackupPayload(
-    val version: Int = 2,
+    val version: Int = 3,
     val createdAt: Long = System.currentTimeMillis(),
     val servers: List<ServerConfig> = emptyList(),
     val subs: List<Subscription> = emptyList(),
@@ -257,7 +265,7 @@ data class AppSettings(
     /** استفاده از حافظه‌ی شبکه‌های آشنا برای انتخاب خودکار */
     var rememberNetworks: Boolean = true,
 
-    /** حالت کم‌مصرف: تست‌های سنگین‌تر و دانلود تست سرعت انجام نمی‌شود */
+    /** UI turns off the optional download test when this is enabled. */
     var dataSaver: Boolean = false,
 
     /** اتصال خودکار فقط روی وای‌فای */
@@ -284,14 +292,15 @@ data class AppSettings(
     /** سقف مصرف روزانه (مگابایت) — صفر یعنی بی‌نهایت */
     var dailyLimitMb: Int = 0,
 
-    /**
-     * Kill Switch: اگر تانل به‌طور غیرمنتظره قطع شود، اینترنت دستگاه مسدود می‌ماند
-     * تا داده‌ای بیرون از تانل نرود. با دکمه‌ی «رفع مسدودی» یا قطع دستی، اینترنت برمی‌گردد.
-     */
+    /** Keep the VPN interface open if the core fails; excluded apps and a stopped
+     * service are not protected by this setting. Android lockdown is separate. */
     var killSwitch: Boolean = false,
 
     /** قفل برنامه با اثر انگشت/رمز دستگاه */
     var appLock: Boolean = false,
+
+    /** Device-local consent, never serialized into portable settings or backups. */
+    @Transient var allowExternalAutomation: Boolean = false,
 
     /** پنهان‌کردن جزئیات اتصال در اعلان (نام سرور و سرعت) */
     var hideNotificationContent: Boolean = false,
@@ -364,7 +373,9 @@ data class TunnelUiState(
     val upSpeed: Long = 0L,
     val totalDown: Long = 0L,
     val totalUp: Long = 0L,
-    val message: String = ""
+    val message: String = "",
+    /** The service retained a TUN after the core stopped; not a leak-proof guarantee. */
+    val killSwitchRetained: Boolean = false
 ) {
     val isActive: Boolean get() = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
 }
@@ -420,7 +431,7 @@ data class NetworkAssessment(
     val assessedAt: Long = 0L
 ) {
     val fresh: Boolean
-        get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt < 10 * 60 * 1000L
+        get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt in 0..(10 * 60 * 1000L)
 }
 
 /**

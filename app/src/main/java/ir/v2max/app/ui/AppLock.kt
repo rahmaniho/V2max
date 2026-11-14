@@ -8,7 +8,7 @@ import androidx.fragment.app.FragmentActivity
 
 /**
  * قفل برنامه با اثر انگشت / چهره / رمز دستگاه.
- * اگر دستگاه هیچ روش احراز هویتی نداشته باشد، قفل غیرفعال می‌شود (بدون قفل‌شدن کاربر در برنامه).
+ * نبودن روش احراز هویت، مجوز ورود محسوب نمی‌شود؛ کاربر می‌تواند قفل دستگاه را تنظیم کند.
  */
 object AppLock {
 
@@ -16,8 +16,9 @@ object AppLock {
         BiometricManager.Authenticators.DEVICE_CREDENTIAL
 
     fun isAvailable(context: Context): Boolean {
-        val manager = BiometricManager.from(context)
-        return manager.canAuthenticate(AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
+        return runCatching {
+            BiometricManager.from(context).canAuthenticate(AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
+        }.getOrDefault(false)
     }
 
     /** درخواست باز کردن قفل؛ نتیجه در callback برگردانده می‌شود */
@@ -27,31 +28,31 @@ object AppLock {
         onFailure: (String) -> Unit
     ) {
         if (!isAvailable(activity)) {
-            // روش احراز هویت تنظیم نشده — قفل دور زده میشود تا کاربر قفل نشود
-            onSuccess()
+            onFailure("روش احراز هویت در دسترس نیست. تنظیمات قفل دستگاه را در اندروید بررسی کنید و دوباره تلاش کنید.")
             return
         }
-        val executor = ContextCompat.getMainExecutor(activity)
-        val prompt = BiometricPrompt(
-            activity,
-            executor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    onSuccess()
-                }
+        runCatching {
+            val executor = ContextCompat.getMainExecutor(activity)
+            val prompt = BiometricPrompt(
+                activity,
+                executor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        onSuccess()
+                    }
 
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    onFailure(errString.toString())
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        onFailure(errString.toString())
+                    }
                 }
-            }
-        )
-        val info = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("باز کردن V2max")
-            .setSubtitle("برای دسترسی به برنامه احراز هویت کنید")
-            .setAllowedAuthenticators(AUTHENTICATORS)
-            .setConfirmationRequired(false)
-            .build()
-        runCatching { prompt.authenticate(info) }
-            .onFailure { onFailure(it.message ?: "احراز هویت ممکن نشد") }
+            )
+            val info = BiometricPrompt.PromptInfo.Builder()
+                .setTitle("باز کردن V2max")
+                .setSubtitle("برای دسترسی به برنامه احراز هویت کنید")
+                .setAllowedAuthenticators(AUTHENTICATORS)
+                .setConfirmationRequired(false)
+                .build()
+            prompt.authenticate(info)
+        }.onFailure { onFailure("نمایش احراز هویت ممکن نشد؛ دوباره تلاش کنید.") }
     }
 }

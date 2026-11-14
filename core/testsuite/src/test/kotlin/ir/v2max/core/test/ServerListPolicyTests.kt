@@ -4,7 +4,9 @@ import ir.v2max.core.domain.ServerListPolicy
 import ir.v2max.core.model.Endpoint
 import ir.v2max.core.model.Measurement
 import ir.v2max.core.model.Proto
+import ir.v2max.core.model.Security
 import ir.v2max.core.model.Server
+import ir.v2max.core.model.Transport
 
 /**
  * Tests for server-list maintenance rules.
@@ -84,6 +86,17 @@ object ServerListPolicyTests {
         val keptSel = ServerListPolicy.capBuiltIn(selWorst, builtIn, selectedId = "selected", limit = 2)
         T.ok("selected survives", keptSel.any { it.id == "selected" })
 
+        // A live profile may differ from the current manual selection during refresh.
+        val liveAndSelected = listOf(
+            server("fast", "public", realPing = 50),
+            server("live", "public", realPing = 9000),
+            server("chosen", "public", realPing = 8000),
+        )
+        val protectedPair = ServerListPolicy.capBuiltIn(
+            liveAndSelected, builtIn, selectedId = "chosen", limit = 1, protectedIds = setOf("live")
+        )
+        T.eq("live and selected both survive the cap", setOf("live", "chosen"), protectedPair.map { it.id }.toSet())
+
         // ---- capBuiltIn: protecting more than the limit is allowed
         val allProtected = (1..5).map { server("f$it", "public", favorite = true, realPing = 9000) } +
             listOf(server("plain", "public", realPing = 50))
@@ -119,6 +132,16 @@ object ServerListPolicyTests {
         T.eq("dupes: one removed", 1, dDupes.removed)
         T.ok("dupes: changed", dDupes.changed)
         T.eq("dupes: first kept", "a", dDupes.servers.single().id)
+
+        // Separators inside fields must not make two different transports identical.
+        val pipeA = server("pipe", address = "same.example.com")
+            .copy(transport = Transport.WebSocket(host = "cdn|edge", path = "/ws"))
+        val pipeB = pipeA.copy(id = "pipe2", transport = Transport.WebSocket(host = "cdn", path = "edge|/ws"))
+        T.ok("transport fields cannot collide across separators", pipeA.fingerprint() != pipeB.fingerprint())
+        val tlsA = pipeA.copy(security = Security.Tls(sni = "example.com", allowInsecure = false))
+        val tlsB = tlsA.copy(id = "tls2", security = Security.Tls(sni = "example.com", allowInsecure = true))
+        T.ok("certificate validation setting is part of identity", tlsA.fingerprint() != tlsB.fingerprint())
+        T.eq("different connection identities both survive", 2, ServerListPolicy.dedupe(listOf(pipeA, pipeB)).servers.size)
 
         // ---- dedupe: a measured record beats an unmeasured one
         val measured = listOf(

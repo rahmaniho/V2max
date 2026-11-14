@@ -1,13 +1,24 @@
 package ir.v2max.app.net
 
 import android.util.Base64
+import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.core.model.SubscriptionUsage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 /**
  * دریافت و تحلیل اشتراک از طریق HTTP.
@@ -36,14 +47,13 @@ object SubscriptionFetcher {
     }
 
     /**
-     * آدرس‌های جایگزین برای منابع گیت‌هابی.
-     * چون raw.githubusercontent.com در ایران معمولاً مسدود/کند است،
-     * اگر اتصال مستقیم شکست بخورد از آینه‌ی jsDelivr استفاده می‌شود.
+     * Public-feed fallbacks only. A personal URL can contain credentials in
+     * either its path or query and must never be disclosed to third parties.
      */
-    fun mirrorsFor(url: String): List<String> {
-        val out = ArrayList<String>()
-        out.add(url)
+    fun mirrorsFor(url: String, allowPublicMirrors: Boolean = false): List<String> {
         val clean = url.trim()
+        val out = arrayListOf(clean)
+        if (!allowPublicMirrors || PublicSources.forUrl(clean)?.url != clean) return out
         val prefix = "https://raw.githubusercontent.com/"
         if (clean.startsWith(prefix)) {
             val rest = clean.removePrefix(prefix).split('/')
@@ -59,14 +69,18 @@ object SubscriptionFetcher {
         return out
     }
 
-    suspend fun fetch(url: String): Result = withContext(Dispatchers.IO) {
+    suspend fun fetch(
+        url: String,
+        maxConfigs: Int = 0,
+        allowPublicMirrors: Boolean = false
+    ): Result = withContext(Dispatchers.IO) {
         val cleaned = url.trim()
         if (cleaned.isEmpty()) return@withContext Result(error = "آدرس اشتراک خالی است")
 
         var last = Result(error = "دریافت اشتراک ناموفق بود")
-        val candidates = mirrorsFor(cleaned)
+        val candidates = mirrorsFor(cleaned, allowPublicMirrors)
         for ((index, candidate) in candidates.withIndex()) {
-            val result = fetchOnce(candidate)
+            val result = fetchOnce(candidate, maxConfigs)
             if (result.ok) return@withContext result
             last = result
             if (index < candidates.size - 1) {
@@ -76,7 +90,7 @@ object SubscriptionFetcher {
         last
     }
 
-    private suspend fun fetchOnce(url: String): Result = withContext(Dispatchers.IO) {
+    private suspend fun fetchOnce(url: String, maxConfigs: Int): Result = withContext(Dispatchers.IO) {
         val cleaned = url.trim()
         try {
             val request = Request.Builder()
@@ -86,32 +100,76 @@ object SubscriptionFetcher {
                 .get()
                 .build()
 
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result(error = "خطای سرور: ${response.code}")
-                }
-                val body = response.body?.string().orEmpty()
-                if (body.isBlank()) {
-                    return@withContext Result(error = "پاسخ اشتراک خالی بود")
-                }
-                val configs = LinkParser.parseAll(body)
-                if (configs.isEmpty()) {
-                    return@withContext Result(error = "هیچ کانفیگ معتبری در اشتراک یافت نشد")
-                }
-                val usage = SubscriptionUsage.parseHeader(response.header("subscription-userinfo"))
-                val title = response.header("profile-title")?.let { decodeTitle(it) }.orEmpty()
-                Result(
-                    configs = configs,
-                    upload = usage.upload,
-                    download = usage.download,
-                    total = usage.total,
-                    expireAt = usage.expireAt,
-                    title = title
-                )
-            }
-        } catch (t: Throwable) {
-            Result(error = "اتصال به سرور اشتراک ناموفق بود: ${t.message ?: "خطای شبکه"}")
+            val response = awaitResponse(request)
+            currentCoroutineContext().ensureActive()
+            if (response.error.isNotEmpty()) return@withContext Result(error = response.error)
+            if (response.body.isBlank()) return@withContext Result(error = "پاسخ اشتراک خالی بود")
+            val configs = LinkParser.parseAll(response.body, maxConfigs = maxConfigs)
+            currentCoroutineContext().ensureActive()
+            if (configs.isEmpty()) return@withContext Result(error = "هیچ کانفیگ معتبری در اشتراک یافت نشد")
+            val usage = SubscriptionUsage.parseHeader(response.userInfo)
+            val title = response.title?.let { decodeTitle(it) }.orEmpty()
+            Result(
+                configs = configs,
+                upload = usage.upload,
+                download = usage.download,
+                total = usage.total,
+                expireAt = usage.expireAt,
+                title = title
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            Result(error = "اتصال به سرور اشتراک ناموفق بود")
         }
+    }
+
+    private data class ResponseData(
+        val body: String = "",
+        val userInfo: String? = null,
+        val title: String? = null,
+        val error: String = ""
+    )
+
+    /** Cancelling a bootstrap/refresh also closes a slow in-flight HTTP call. */
+    private suspend fun awaitResponse(request: Request): ResponseData = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resume(ResponseData(error = "اتصال به سرور اشتراک ناموفق بود"))
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!continuation.isActive) {
+                    response.close()
+                    return
+                }
+                val data = try {
+                    response.use {
+                        if (!it.isSuccessful) ResponseData(error = "خطای سرور: ${it.code}")
+                        else {
+                            val body = it.body
+                            val text = if (body == null) "" else {
+                                val bytes = SubscriptionBody.read(body.byteStream(), body.contentLength())
+                                // Preserve OkHttp's BOM and declared-charset handling.
+                                bytes.toResponseBody(body.contentType()).string()
+                            }
+                            ResponseData(
+                                body = text,
+                                userInfo = it.header("subscription-userinfo"),
+                                title = it.header("profile-title")
+                            )
+                        }
+                    }
+                } catch (_: SubscriptionBody.TooLarge) {
+                    ResponseData(error = "اندازهٔ پاسخ اشتراک بیش از ۸ مگابایت است")
+                } catch (_: Exception) {
+                    ResponseData(error = "خواندن پاسخ اشتراک ناموفق بود")
+                }
+                if (continuation.isActive) continuation.resume(data)
+            }
+        })
     }
 
     private fun decodeTitle(value: String): String {
@@ -128,8 +186,12 @@ object SubscriptionFetcher {
     suspend fun fetchText(url: String): String? = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder().url(url).header("User-Agent", "V2max/1.0").build()
-            client.newCall(request).execute().use { if (it.isSuccessful) it.body?.string() else null }
-        } catch (t: Throwable) {
+            val response = awaitResponse(request)
+            currentCoroutineContext().ensureActive()
+            response.body.takeIf { response.error.isEmpty() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
             null
         }
     }

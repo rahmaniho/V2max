@@ -3,12 +3,15 @@ package ir.v2max.app
 import com.google.gson.JsonParser
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.data.AppSettings
+import ir.v2max.app.data.Proto
+import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.toCoreServer
 import ir.v2max.app.data.toCoreSettings
 import ir.v2max.app.net.LinkParser
 import ir.v2max.core.config.XrayConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /**
@@ -52,6 +55,25 @@ class ConfigGeneratorTest {
                 JsonParser.parseString(app),
                 JsonParser.parseString(core),
             )
+        }
+    }
+
+    @Test
+    fun `comparison adapter refuses unsupported fields instead of silently changing a config`() {
+        val notRepresentable = listOf(
+            ServerConfig(network = "quic"),
+            ServerConfig(network = "h2"),
+            ServerConfig(network = "unknown"),
+            ServerConfig(network = "WS"),
+            ServerConfig(security = "xtls"),
+            ServerConfig(proto = Proto.HYSTERIA2, network = "hysteria"),
+            ServerConfig(obfsMinPacketSize = "512"),
+            ServerConfig(obfsMaxPacketSize = "1200"),
+            ServerConfig(hoppingPorts = "8443,9000-9002"),
+            ServerConfig(security = "reality", mldsa65Verify = "key")
+        )
+        notRepresentable.forEach { server ->
+            assertThrows(IllegalArgumentException::class.java) { server.toCoreServer() }
         }
     }
 

@@ -569,6 +569,17 @@ object ConfigBuilder {
 
     // ------------------------------------------------------------ transport
 
+    private fun validPortRanges(value: String): Boolean = value.split(',').all { item ->
+        val endpoints = item.split('-')
+        if (endpoints.size !in 1..2 || endpoints.any { it.isEmpty() || it.any { char -> !char.isDigit() } }) {
+            false
+        } else {
+            val first = endpoints.first().toIntOrNull()
+            val last = endpoints.last().toIntOrNull()
+            first != null && last != null && first in 1..65535 && last in first..65535
+        }
+    }
+
     private fun streamSettings(server: ServerConfig, settings: AppSettings): JsonObject {
         val ss = JsonObject()
         var network = server.network.ifBlank { "tcp" }
@@ -724,25 +735,44 @@ object ConfigBuilder {
                         addProperty("auth", server.password)
                     }
                 )
-                server.obfsPassword.takeIf { it.isNotBlank() }?.let { pass ->
-                    ss.add(
-                        "finalmask", JsonObject().apply {
-                            add(
-                                "udp", JsonArray().apply {
-                                    add(
-                                        JsonObject().apply {
-                                            addProperty("type", "salamander")
-                                            add(
-                                                "settings", JsonObject().apply {
-                                                    addProperty("password", pass)
-                                                }
-                                            )
-                                        }
-                                    )
+                // Do not silently convert Gecko into Salamander: the peers need
+                // the same packet mask. An explicit finalmask remains authoritative.
+                if (server.finalMask.isBlank()) {
+                    val kind = server.obfsType.trim().lowercase()
+                    require(kind in setOf("", "none", "salamander", "gecko")) { "نوع پوشش Hysteria2 پشتیبانی نمی‌شود" }
+                    if (kind == "gecko" || kind == "salamander") {
+                        require(server.obfsPassword.isNotBlank()) { "رمز پوشش Hysteria2 خالی است" }
+                    }
+                    val masks = JsonArray()
+                    if (kind != "none" && server.obfsPassword.isNotBlank()) {
+                        masks.add(JsonObject().apply {
+                            addProperty("type", "salamander")
+                            add("settings", JsonObject().apply {
+                                addProperty("password", server.obfsPassword)
+                                if (kind == "gecko") {
+                                    val min = server.obfsMinPacketSize.ifBlank { "512" }.toIntOrNull()
+                                    val max = server.obfsMaxPacketSize.ifBlank { "1200" }.toIntOrNull()
+                                    require(min != null && max != null && min > 0 && min <= max && max <= 2048) {
+                                        "اندازه‌ی بسته‌های Gecko معتبر نیست"
+                                    }
+                                    addProperty("packetSize", "$min-$max")
                                 }
-                            )
-                        }
-                    )
+                            })
+                        })
+                    }
+                    val ports = server.hoppingPorts.filterNot { it.isWhitespace() }
+                    if (ports.isNotEmpty()) {
+                        require(validPortRanges(ports)) { "محدوده‌ی پورت Hysteria2 معتبر نیست" }
+                        masks.add(JsonObject().apply {
+                            addProperty("type", "udphop")
+                            add("settings", JsonObject().apply {
+                                addProperty("mode", "intervallocal,intervalremote")
+                                addProperty("interval", "30")
+                                addProperty("remotePorts", ports)
+                            })
+                        })
+                    }
+                    if (masks.size() > 0) ss.add("finalmask", JsonObject().apply { add("udp", masks) })
                 }
             }
         }

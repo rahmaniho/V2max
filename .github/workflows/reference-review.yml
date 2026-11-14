@@ -1,0 +1,21 @@
+name: Inspect reference APK metadata
+
+on:
+  push:
+    branches:
+      - "arena/**"
+    paths:
+      - ".github/workflows/reference-review.yml"
+      - "scripts/inspect-reference-apks.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and inspect public APKs without installing them
+        run: bash scripts/inspect-reference-apks.sh

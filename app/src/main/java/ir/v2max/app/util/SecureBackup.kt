@@ -1,6 +1,7 @@
 package ir.v2max.app.util
 
 import android.util.Base64
+import java.security.NoSuchAlgorithmException
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -45,9 +46,12 @@ object SecureBackup {
     }.getOrNull()
 
     fun decrypt(text: String, password: String): String? = runCatching {
-        val body = text.trimStart().removePrefix(PREFIX)
+        val trimmed = text.trimStart()
+        if (!trimmed.startsWith(PREFIX)) return@runCatching null
+        val body = trimmed.removePrefix(PREFIX)
         val payload = Base64.decode(body, Base64.DEFAULT)
-        if (payload.size <= SALT_LEN + IV_LEN) return@runCatching null
+        // Reject malformed input before performing the expensive password derivation.
+        if (payload.size < SALT_LEN + IV_LEN + TAG_BITS / 8) return@runCatching null
 
         val salt = payload.copyOfRange(0, SALT_LEN)
         val iv = payload.copyOfRange(SALT_LEN, SALT_LEN + IV_LEN)
@@ -60,10 +64,30 @@ object SecureBackup {
     }.getOrNull()
 
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val key = factory.generateSecret(spec).encoded
-        spec.clearPassword()
-        return SecretKeySpec(key, "AES")
+        val factory = try {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        } catch (_: NoSuchAlgorithmException) {
+            null // Android 7 may expose HmacSHA256 but not the PBKDF2 factory.
+        }
+        val key = if (factory == null) {
+            Pbkdf2Compat.derive256(password, salt, ITERATIONS)
+        } else {
+            val chars = password.toCharArray()
+            val spec = try {
+                PBEKeySpec(chars, salt, ITERATIONS, KEY_BITS)
+            } finally {
+                chars.fill('\u0000')
+            }
+            try {
+                factory.generateSecret(spec).encoded
+            } finally {
+                spec.clearPassword()
+            }
+        }
+        return try {
+            SecretKeySpec(key, "AES")
+        } finally {
+            key.fill(0)
+        }
     }
 }

@@ -312,7 +312,7 @@ fun ScanBanner(scan: ScanState) {
                         scan.message,
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                         color = V2.TextSecondary,
-                        maxLines = 2,
+                        maxLines = 4,
                         overflow = TextOverflow.Ellipsis
                     )
                 }

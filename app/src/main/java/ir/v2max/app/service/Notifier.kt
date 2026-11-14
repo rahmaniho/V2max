@@ -1,13 +1,18 @@
 package ir.v2max.app.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import ir.v2max.app.MainActivity
 import ir.v2max.app.R
 import ir.v2max.app.data.TunnelUiState
@@ -20,8 +25,23 @@ object Notifier {
 
     const val CHANNEL_ID = "v2max_tunnel"
     const val NOTIFICATION_ID = 1001
+    private const val UPDATE_CHANNEL_ID = "v2max_updates"
+    private const val UPDATE_NOTIFICATION_ID = 1003
+    internal const val INSTALL_NOTIFICATION_ID = 1004
+    internal fun installNotificationTag(sessionId: Int) = "v2max-install-$sessionId"
 
-    private const val ACTION_STOP = "ir.v2max.app.notify.STOP"
+    /** Distinct PendingIntent identity per generation keeps queued old actions stale. */
+    private fun serviceAction(context: Context, action: String, requestCode: Int, generation: Int): PendingIntent =
+        PendingIntent.getService(
+            context,
+            requestCode,
+            Intent(context, V2maxVpnService::class.java).apply {
+                this.action = action
+                data = Uri.parse("v2max-action://service/$requestCode/$generation")
+                putExtra(V2maxVpnService.EXTRA_ACTION_GENERATION, generation)
+            },
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -59,32 +79,10 @@ object Notifier {
             flags
         )
 
-        val stopIntent = PendingIntent.getService(
-            context,
-            1,
-            Intent(context, V2maxVpnService::class.java).apply {
-                action = V2maxVpnService.ACTION_STOP
-            },
-            flags
-        )
-
-        val nextIntent = PendingIntent.getService(
-            context,
-            2,
-            Intent(context, V2maxVpnService::class.java).apply {
-                action = V2maxVpnService.ACTION_NEXT
-            },
-            flags
-        )
-
-        val retestIntent = PendingIntent.getService(
-            context,
-            3,
-            Intent(context, V2maxVpnService::class.java).apply {
-                action = V2maxVpnService.ACTION_RETEST
-            },
-            flags
-        )
+        val generation = V2maxVpnService.currentActionGeneration()
+        val stopIntent = serviceAction(context, V2maxVpnService.ACTION_STOP, 1, generation)
+        val nextIntent = serviceAction(context, V2maxVpnService.ACTION_NEXT, 2, generation)
+        val retestIntent = serviceAction(context, V2maxVpnService.ACTION_RETEST, 3, generation)
 
         val title = if (hideDetails) {
             "V2max"
@@ -99,7 +97,7 @@ object Notifier {
         val text = if (hideDetails) {
             when (state.status) {
                 ir.v2max.app.data.TunnelStatus.CONNECTED -> "اتصال برقرار است"
-                ir.v2max.app.data.TunnelStatus.CONNECTING -> "در حال اتصال…"
+                ir.v2max.app.data.TunnelStatus.CONNECTING -> "در حال اتصال؛ VPN هنوز برقرار نیست"
                 ir.v2max.app.data.TunnelStatus.ERROR -> "اتصال ناموفق بود"
                 else -> "اتصال قطع است"
             }
@@ -107,7 +105,7 @@ object Notifier {
             ir.v2max.app.data.TunnelStatus.CONNECTED ->
                 if (showSpeed) "↓ ${Format.speed(state.downSpeed)}   ↑ ${Format.speed(state.upSpeed)}" else "اتصال برقرار است"
 
-            ir.v2max.app.data.TunnelStatus.CONNECTING -> "لطفاً کمی صبر کنید…"
+            ir.v2max.app.data.TunnelStatus.CONNECTING -> state.message.ifBlank { "VPN هنوز برقرار نیست؛ لطفاً صبر کنید" }
             ir.v2max.app.data.TunnelStatus.ERROR -> state.message.ifBlank { "اتصال ناموفق بود" }
             else -> "اتصال قطع است"
         }
@@ -123,9 +121,13 @@ object Notifier {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(openIntent)
-            .addAction(0, "سرور بعدی", nextIntent)
-            .addAction(0, "تست مجدد", retestIntent)
-            .addAction(0, "قطع", stopIntent)
+            .apply {
+                if (state.status == ir.v2max.app.data.TunnelStatus.CONNECTED) {
+                    addAction(0, "سرور بعدی", nextIntent)
+                    addAction(0, "تست مجدد", retestIntent)
+                }
+                addAction(0, "قطع", stopIntent)
+            }
             .build()
     }
 
@@ -164,7 +166,7 @@ object Notifier {
         }
     }
 
-    /** اعلان حالت Kill Switch: ترافیک مسدود است و دکمه‌ی رفع مسدودی دارد */
+    /** The VPN interface was retained after the core stopped. */
     fun blocked(context: Context, reason: String) {
         ensureChannel(context)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -174,29 +176,89 @@ object Notifier {
             Intent(context, MainActivity::class.java),
             flags
         )
-        val unblock = PendingIntent.getService(
-            context,
-            21,
-            Intent(context, V2maxVpnService::class.java).apply {
-                action = V2maxVpnService.ACTION_UNBLOCK
-            },
-            flags
-        )
+        val unblock = serviceAction(context, V2maxVpnService.ACTION_UNBLOCK, 21, V2maxVpnService.currentActionGeneration())
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("ترافیک مسدود است (Kill Switch)")
-            .setContentText(reason.ifBlank { "تانل قطع شد؛ برای بازگشت اینترنت، مسدودی را بردارید" })
+            .setContentTitle("رابط VPN حفظ شد (Kill Switch)")
+            .setContentText(reason.ifBlank { "هسته متوقف شد؛ برنامه‌های مستثنا ممکن است مستقیم وصل شوند" })
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(open)
-            .addAction(0, "رفع مسدودی", unblock)
+            .addAction(0, "قطع VPN", unblock)
             .build()
         runCatching {
             context.getSystemService(NotificationManager::class.java)
                 ?.notify(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun updateManager(context: Context): NotificationManager? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) return null
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(NotificationChannel(
+                UPDATE_CHANNEL_ID, "به‌روزرسانی برنامه", NotificationManager.IMPORTANCE_DEFAULT
+            ).apply { description = "اطلاع از انتشار نسخه و تأیید نصب V2max" })
+            if (manager.getNotificationChannel(UPDATE_CHANNEL_ID)?.importance == NotificationManager.IMPORTANCE_NONE) return null
+        }
+        return manager
+    }
+
+    /** Best-effort system notification; opening it shows the in-app installer. */
+    fun updateAvailable(context: Context, version: String): Boolean = runCatching {
+        val manager = updateManager(context) ?: return false
+        val open = PendingIntent.getActivity(context, 50,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("نسخهٔ جدید V2max")
+            .setContentText("نسخهٔ $version منتشر شده است؛ برای بررسی و نصب باز کنید")
+            .setAutoCancel(true)
+            .setContentIntent(open)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        manager.notify(UPDATE_NOTIFICATION_ID, notification)
+        true
+    }.getOrDefault(false)
+
+    /**
+     * A user-tapped notification can open Android's confirmation even if the
+     * app process has since died. Never launch an activity from the receiver.
+     */
+    fun installConfirmation(context: Context, sessionId: Int, confirmation: Intent): Boolean = runCatching {
+        val manager = updateManager(context) ?: return false
+        val action = PendingIntent.getActivity(
+            context, sessionId, Intent(confirmation).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(context, UPDATE_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat)
+            .setContentTitle("تأیید نصب V2max")
+            .setContentText("برای ادامه، تأیید نصب اندروید را باز کنید")
+            .setAutoCancel(true)
+            .setContentIntent(action)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+        manager.notify(installNotificationTag(sessionId), INSTALL_NOTIFICATION_ID, notification)
+        true
+    }.getOrDefault(false)
+
+    fun cancelInstallConfirmation(context: Context, sessionId: Int) {
+        runCatching {
+            context.getSystemService(NotificationManager::class.java)
+                ?.cancel(installNotificationTag(sessionId), INSTALL_NOTIFICATION_ID)
+        }
+    }
+
+    fun cancelUpdate(context: Context) {
+        runCatching { context.getSystemService(NotificationManager::class.java)?.cancel(UPDATE_NOTIFICATION_ID) }
     }
 
     fun cancel(context: Context) {

@@ -242,7 +242,7 @@ object LinkParserTests {
         // the user a server that appears in the list, passes a TCP ping, and
         // then never carries traffic. There is deliberately no Transport variant
         // for them, so adding one would reintroduce that silent failure.
-        for (net in listOf("quic", "h2", "http")) {
+        for (net in listOf("quic", "h2", "h3", "http")) {
             val removed = P.parseLine("vless://u@$net.example.com:443?type=$net")
             T.ok("vless type=$net is reported unsupported", removed is ir.v2max.core.protocol.ParseResult.Skipped) {
                 "got $removed"
@@ -252,6 +252,14 @@ object LinkParserTests {
                 ir.v2max.core.protocol.ParseResult.Reason.UNSUPPORTED,
                 (removed as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason,
             )
+            val ss = P.parseLine("ss://aes-256-gcm:pass@example.com:443?type=$net")
+            T.eq("ss type=$net is not coerced to TCP", ir.v2max.core.protocol.ParseResult.Reason.UNSUPPORTED,
+                (ss as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason)
+            val vmessJson = """{"add":"example.com","port":"443","id":"u","net":"$net"}"""
+            val encoded = java.util.Base64.getEncoder().encodeToString(vmessJson.toByteArray())
+            val vmess = P.parseLine("vmess://$encoded")
+            T.eq("vmess net=$net is not coerced to TCP", ir.v2max.core.protocol.ParseResult.Reason.UNSUPPORTED,
+                (vmess as? ir.v2max.core.protocol.ParseResult.Skipped)?.reason)
         }
         // The same guard covers every protocol parseStandard handles, not just VLESS.
         // The reason is asserted too, so a malformed fixture could not make this
@@ -274,6 +282,15 @@ object LinkParserTests {
             "type=ws control still parses",
             P.parseLine("vless://u@w.example.com:443?type=ws&path=%2Fw") is ir.v2max.core.protocol.ParseResult.Ok,
         )
+        val wsAlias = (P.parseLine("vless://u@w.example.com:443?type=websocket&path=%2Fw")
+            as? ir.v2max.core.protocol.ParseResult.Ok)?.server?.transport
+        T.eq("websocket alias preserves its path", "/w", (wsAlias as? Transport.WebSocket)?.path)
+        val ssPlugin = P.parseLine("ss://aes-256-gcm:pass@example.com:443?type=quic&plugin=" +
+            P.encodeComponent("simple-obfs;obfs=http;path=/ok"))
+        T.ok("simple-obfs replaces the incidental removed type", ssPlugin is ir.v2max.core.protocol.ParseResult.Ok)
+        val hy = (P.parseLine("hysteria2://pass@example.com:443?type=quic")
+            as? ir.v2max.core.protocol.ParseResult.Ok)?.server
+        T.ok("Hysteria2 retains its own UDP transport", hy?.transport is Transport.Hysteria)
 
         // ---- SOCKS user:pass with a colon inside the password
         val socks = (P.parseLine("socks://user:p%3Ass%3Aword@s.example.com:1080#Socks")

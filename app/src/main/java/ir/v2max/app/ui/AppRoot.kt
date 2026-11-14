@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -33,11 +34,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ir.v2max.app.BuildConfig
 import ir.v2max.app.data.Repo
+import ir.v2max.app.service.InstallConfirmation
 
 @Composable
 fun AppRoot(vm: AppViewModel) {
@@ -52,10 +56,12 @@ fun AppRoot(vm: AppViewModel) {
     val update by vm.update.collectAsStateWithLifecycle()
     val updateProgress by Repo.updateProgress.collectAsStateWithLifecycle()
     val installMessage by Repo.installMessage.collectAsStateWithLifecycle()
+    val pendingInstall by InstallConfirmation.pending.collectAsStateWithLifecycle()
     val latencySamples by Repo.latencyHistory.collectAsStateWithLifecycle()
     val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
+    val recoveryWarning by Repo.recoveryWarning.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
     var tab by rememberSaveable { mutableStateOf(Tab.HOME) }
@@ -69,22 +75,38 @@ fun AppRoot(vm: AppViewModel) {
     var showBackupDialog by remember { mutableStateOf(false) }
     var pendingRestoreText by remember { mutableStateOf("") }
     var showRestoreDialog by remember { mutableStateOf(false) }
+    var showPlainRestoreDialog by remember { mutableStateOf(false) }
     var restoreError by remember { mutableStateOf("") }
+    var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    if (recoveryWarning.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { Repo.recoveryWarning.value = "" },
+            title = { Text("بررسی داده‌های ذخیره‌شده") },
+            text = { Text(recoveryWarning) },
+            confirmButton = {
+                TextButton(onClick = { Repo.recoveryWarning.value = "" }) { Text("متوجه شدم") }
+            }
+        )
+    }
+
+    fun beginOrContinueInstall() {
+        if (pendingInstall != null) deferredInstall = null else vm.downloadAndInstallUpdate()
+    }
 
     fun handleDiagAction(action: String) {
         when (action) {
             ir.v2max.core.domain.ConnectionAdvice.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
             ir.v2max.core.domain.ConnectionAdvice.Action.AGGRESSIVE_FRAGMENT -> {
-                vm.updateSettings {
+                if (vm.updateSettings {
                     it.copy(
                         fragmentProfile = ir.v2max.app.data.FragmentProfile.AGGRESSIVE,
                         autoTuneFragment = false,
                         fragment = true
                     )
-                }
-                vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
+                }) vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
             }
             ir.v2max.core.domain.ConnectionAdvice.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
             ir.v2max.core.domain.ConnectionAdvice.Action.SYNC_GEO -> {
@@ -98,8 +120,7 @@ fun AppRoot(vm: AppViewModel) {
             }
             ir.v2max.core.domain.ConnectionAdvice.Action.UNBLOCK -> vm.disconnectTunnel()
             ir.v2max.core.domain.ConnectionAdvice.Action.DISABLE_BALANCER -> {
-                vm.updateSettings { it.copy(balancer = false) }
-                vm.showMessage("استخر خودکار خاموش شد")
+                if (vm.updateSettings { it.copy(balancer = false) }) vm.showMessage("استخر خودکار خاموش شد")
             }
         }
     }
@@ -107,40 +128,48 @@ fun AppRoot(vm: AppViewModel) {
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        if (uri != null) {
-            runCatching {
-                val payload = if (backupPassword.isBlank()) {
-                    vm.exportBackup()
-                } else {
-                    vm.exportEncryptedBackup(backupPassword) ?: vm.exportBackup()
-                }
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    output.write(payload.toByteArray())
-                }
+        val password = backupPassword
+        backupPassword = ""
+        if (uri != null) scope.launch {
+            val saved = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    val payload = if (password.isBlank()) vm.exportBackup()
+                    // Never silently export credentials in plaintext when encryption fails.
+                    else vm.exportEncryptedBackup(password) ?: error("encryption failed")
+                    val stream = context.contentResolver.openOutputStream(uri) ?: error("cannot open backup")
+                    stream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+                }.isSuccess
             }
-            vm.showMessage(
-                if (backupPassword.isBlank()) "فایل پشتیبان ساده ذخیره شد"
-                else "فایل پشتیبان رمزدار ذخیره شد"
-            )
-            backupPassword = ""
+            vm.showMessage(when {
+                !saved -> "ذخیرهٔ پشتیبان انجام نشد؛ دوباره تلاش کنید"
+                password.isBlank() -> "فایل پشتیبان ساده ذخیره شد"
+                else -> "فایل پشتیبان رمزدار ذخیره شد"
+            })
         }
     }
 
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) {
-            val text = runCatching {
-                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-            }.getOrNull()
+        if (uri != null) scope.launch {
+            val text = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use {
+                        ir.v2max.app.util.BackupFiles.read(it)
+                    }
+                }.getOrNull()
+            }
             when {
-                text.isNullOrBlank() -> vm.showMessage("خواندن فایل ناموفق بود")
+                text.isNullOrBlank() -> vm.showMessage("خواندن فایل ناموفق بود یا اندازهٔ آن بیش از حد مجاز است")
                 ir.v2max.app.util.SecureBackup.isEncrypted(text) -> {
                     pendingRestoreText = text
                     restoreError = ""
                     showRestoreDialog = true
                 }
-                else -> vm.importBackup(text)
+                else -> {
+                    pendingRestoreText = text
+                    showPlainRestoreDialog = true
+                }
             }
         }
     }
@@ -161,6 +190,35 @@ fun AppRoot(vm: AppViewModel) {
         if (message.isNotBlank()) {
             snackbarHostState.showSnackbar(message)
             vm.clearMessage()
+        }
+    }
+
+    pendingInstall?.let { request ->
+        if (request !== deferredInstall) {
+            var installError by remember(request) { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = { deferredInstall = request },
+                containerColor = V2.SurfaceHigh,
+                title = { Text("تأیید نصب به‌روزرسانی", color = V2.TextPrimary) },
+                text = {
+                    Column {
+                        Text("اندروید برای نصب به‌روزرسانی به تأیید شما نیاز دارد. در مرحلهٔ بعد جزئیات نصب را بررسی کنید.", color = V2.TextPrimary)
+                        if (installError.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            Text(installError, color = V2.Amber)
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        if (InstallConfirmation.open(context, request)) deferredInstall = request
+                        else installError = "باز کردن تأیید نصب ممکن نشد؛ دوباره تلاش کنید."
+                    }) { Text("ادامه نصب") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deferredInstall = request }) { Text("بعداً") }
+                }
+            )
         }
     }
 
@@ -192,12 +250,19 @@ fun AppRoot(vm: AppViewModel) {
                         fontSize = 11.sp,
                         color = V2.TextMuted
                     )
+                    if (Repo.isStorageReadOnly()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("داده‌های آسیب‌دیده در این فایل نیستند؛ این پشتیبان فقط شامل موارد قابل‌خواندن است.",
+                            fontSize = 11.sp, color = V2.Amber)
+                    }
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
                         singleLine = true,
                         label = { Text("رمز (اختیاری)", fontSize = 11.sp) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = V2.Mint,
@@ -220,21 +285,48 @@ fun AppRoot(vm: AppViewModel) {
         )
     }
 
+    if (showPlainRestoreDialog) {
+        AlertDialog(
+            onDismissRequest = { showPlainRestoreDialog = false; pendingRestoreText = "" },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("بازیابی پشتیبان", color = V2.TextPrimary) },
+            text = { Text("سرورها، اشتراک‌ها و تنظیمات فعلی با محتوای پشتیبان جایگزین می‌شوند. " +
+                "در صورت آسیب‌دیدگی، سند فعلی نیز جایگزین خواهد شد.", color = V2.TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val text = pendingRestoreText
+                    showPlainRestoreDialog = false
+                    pendingRestoreText = ""
+                    vm.importBackup(text)
+                }) { Text("بازیابی", color = V2.Mint) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPlainRestoreDialog = false; pendingRestoreText = "" }) {
+                    Text("انصراف", color = V2.TextMuted)
+                }
+            }
+        )
+    }
+
     if (showRestoreDialog) {
         var password by remember { mutableStateOf("") }
+        var restoring by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { showRestoreDialog = false; pendingRestoreText = "" },
+            onDismissRequest = { if (!restoring) { showRestoreDialog = false; pendingRestoreText = "" } },
             containerColor = V2.SurfaceHigh,
             title = { Text("بازیابی پشتیبان رمزدار", color = V2.TextPrimary) },
             text = {
                 Column {
-                    Text("رمز فایل پشتیبان را وارد کنید.", fontSize = 11.sp, color = V2.TextMuted)
+                    Text("رمز فایل را وارد کنید. سرورها، اشتراک‌ها و تنظیمات فعلی، از جمله سند آسیب‌دیده، " +
+                        "با محتوای پشتیبان جایگزین می‌شوند.", fontSize = 11.sp, color = V2.TextMuted)
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = password,
                         onValueChange = { password = it },
                         singleLine = true,
                         label = { Text("رمز", fontSize = 11.sp) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = V2.Mint,
@@ -249,18 +341,28 @@ fun AppRoot(vm: AppViewModel) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    if (vm.importEncryptedBackup(pendingRestoreText, password)) {
-                        showRestoreDialog = false
-                        pendingRestoreText = ""
-                        vm.showMessage("پشتیبان بازیابی شد")
-                    } else {
-                        restoreError = "رمز اشتباه است یا فایل خراب است"
+                TextButton(enabled = !restoring, onClick = {
+                    val encrypted = pendingRestoreText
+                    val enteredPassword = password
+                    restoring = true
+                    restoreError = ""
+                    scope.launch {
+                        try {
+                            if (vm.importEncryptedBackup(encrypted, enteredPassword)) {
+                                showRestoreDialog = false
+                                pendingRestoreText = ""
+                                vm.showMessage(vm.restoreSuccessMessage())
+                            } else {
+                                restoreError = "رمز، فایل یا فضای ذخیره‌سازی را بررسی کنید"
+                            }
+                        } finally {
+                            restoring = false
+                        }
                     }
-                }) { Text("بازیابی", color = V2.Mint) }
+                }) { Text(if (restoring) "در حال بازیابی…" else "بازیابی", color = V2.Mint) }
             },
             dismissButton = {
-                TextButton(onClick = { showRestoreDialog = false; pendingRestoreText = "" }) {
+                TextButton(enabled = !restoring, onClick = { showRestoreDialog = false; pendingRestoreText = "" }) {
                     Text("انصراف", color = V2.TextMuted)
                 }
             }
@@ -302,11 +404,13 @@ fun AppRoot(vm: AppViewModel) {
                     } else {
                         ConfigEditorScreen(
                             server = server,
+                            dataEpoch = Repo.currentDataEpoch(),
                             onBack = { editingId = "" },
-                            onSave = { vm.saveEditedServer(it); editingId = "" },
-                            onClone = { copy ->
-                                vm.cloneServer(copy)
-                                editingId = ""
+                            onSave = { edited, fingerprint, epoch ->
+                                if (vm.saveEditedServer(edited, fingerprint, epoch)) editingId = ""
+                            },
+                            onClone = { copy, fingerprint, epoch ->
+                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) editingId = ""
                             }
                         )
                     }
@@ -355,10 +459,9 @@ fun AppRoot(vm: AppViewModel) {
                         onRestart = { vm.restartScan() },
                         onRefreshNetwork = { vm.refreshNetworkAssessment() },
                         onOpenUpdate = { vm.openUpdatePage() },
-                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
+                        onInstallUpdate = { beginOrContinueInstall() },
                         updateProgress = updateProgress,
-                        killSwitchBlocked = settings.killSwitch &&
-                            tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
+                        killSwitchBlocked = tunnel.killSwitchRetained,
                         onUnblock = { vm.disconnectTunnel() },
                         latencySamples = latencySamples,
                         poolSize = poolSize,
@@ -406,6 +509,7 @@ fun AppRoot(vm: AppViewModel) {
                         onDelete = { vm.removeSubscription(it) },
                         onSmartScan = { vm.requestSmartConnect(it) },
                         onImportText = { vm.importText(it) },
+                        onAddFreeSource = { vm.addFreeSource(it) },
                         onAddFreeSources = { vm.addFreeSources() },
                         onScanQr = { showQr = true },
                         onQrContent = { qrDialogContent = it }
@@ -416,6 +520,7 @@ fun AppRoot(vm: AppViewModel) {
                         coreVersion = remember { vm.coreVersion() },
                         appVersion = BuildConfig.VERSION_NAME,
                         onChange = { block -> vm.updateSettings(block) },
+                        onSecurityChange = { block -> vm.updateSecuritySettings(block) },
                         onClearAll = { vm.resetData() },
                         onOpenPerApp = { showPerApp = true },
                         onSetFreeSources = { vm.setFreeSourcesEnabled(it) },
@@ -425,7 +530,7 @@ fun AppRoot(vm: AppViewModel) {
                         },
                         onRestore = { importLauncher.launch(arrayOf("application/json", "text/plain", "*/*")) },
                         onCheckUpdate = { vm.checkUpdates(manual = true) },
-                        onInstallUpdate = { vm.downloadAndInstallUpdate() },
+                        onInstallUpdate = { beginOrContinueInstall() },
                         onScanQr = { showQr = true },
                         onOpenRouting = { showRouting = true },
                         onOpenDiag = { showDiag = true },

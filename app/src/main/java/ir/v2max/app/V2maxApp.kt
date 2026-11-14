@@ -5,6 +5,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.util.CrashLog
 import ir.v2max.app.core.GeoAssets
 import ir.v2max.app.service.SubSyncWorker
+import ir.v2max.app.service.UpdateCheckWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,9 +23,15 @@ class V2maxApp : Application() {
             .onFailure { CrashLog.record(it, "Repo.init") }
 
         val settings = runCatching { Repo.settings.value }.getOrNull()
-        if (settings != null && settings.autoRefreshOnOpen) {
-            runCatching { SubSyncWorker.schedule(this) }
-                .onFailure { CrashLog.record(it, "SubSyncWorker.schedule") }
+        if (settings != null) {
+            runCatching {
+                if (settings.autoRefreshOnOpen) SubSyncWorker.schedule(this) else SubSyncWorker.cancel(this)
+            }.onFailure { CrashLog.record(it, "SubSyncWorker.schedule") }
+        }
+        if (settings != null) {
+            runCatching {
+                if (settings.autoUpdateCheck) UpdateCheckWorker.schedule(this) else UpdateCheckWorker.cancel(this)
+            }.onFailure { CrashLog.record(it, "UpdateCheckWorker.schedule") }
         }
 
         // دانلود/به‌روزرسانی فایل‌های geoip/geosite در پس‌زمینه (بدون بلاک کردن شروع برنامه)

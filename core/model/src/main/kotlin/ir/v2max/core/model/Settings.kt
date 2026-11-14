@@ -48,7 +48,7 @@ data class AppSettings(
     /** Remember which server worked on which carrier/network generation. */
     val rememberNetworks: Boolean = true,
 
-    /** Skip the expensive tests and the speed test. */
+    /** The UI disables the optional download test when enabling data saver. */
     val dataSaver: Boolean = false,
 
     val wifiOnly: Boolean = false,
