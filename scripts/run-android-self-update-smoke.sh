@@ -105,4 +105,5 @@ for _ in {1..60}; do
 done
 [[ "$changed" == true ]] || fail 'The debug package was not replaced after confirmation.'
 run_instrumentation verify verifyAfterReplacement verifySelfUpdateFixture
-echo 'The emulator replaced its own signed debug APK, preserved fixture data, and reopened the installer from a notification after process death.'
+api="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
+echo "::notice title=Android self-update::API $api replaced the same-signed debug APK after opening its notification with the app process stopped; fixture data and signature were preserved."
