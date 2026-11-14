@@ -11,6 +11,8 @@ import sys
 
 CONDITION = ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
              "inputs.publish_release && !inputs.security_only && vars.V2MAX_RELEASE_APPROVED == 'true'")
+PREVIEW_CONDITION = ("github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && "
+                     "inputs.publish_test_release && !inputs.security_only && !inputs.publish_release")
 
 
 def section(source, name):
@@ -45,7 +47,36 @@ def verify(source):
         raise ValueError("Signing job must not have repository write access")
     if re.search(r"secrets\.V2MAX_RELEASE_", publication):
         raise ValueError("Publication job must not receive the private signing key")
-    print("Explicit release dispatch, approval and job separation verified.")
+
+    preview_input = re.search(r"(?ms)^      publish_test_release:\n(.*?)(?=^      [a-z_]+:\n|^env:\n)", source)
+    if not preview_input or not re.search(r"(?m)^        default: false\s*$", preview_input.group(1)):
+        raise ValueError("Preview publication must default to false")
+    preview = section(source, "publish-preview")
+    condition = re.search(r"(?m)^    if: (.+)$", preview)
+    if not condition or " ".join(condition.group(1).split()) != PREVIEW_CONDITION:
+        raise ValueError("Preview publication must require a separate explicit branch dispatch")
+    if not re.search(r"(?m)^    needs: \[build, security-smoke\]\s*$", preview):
+        raise ValueError("Preview publication must require the build and security matrix")
+    if "inputs.publish_test_release" not in security:
+        raise ValueError("Preview dispatch must run the security matrix")
+    if re.search(r"secrets\.V2MAX_RELEASE_", preview):
+        raise ValueError("Preview publication must not receive production signing secrets")
+    if preview.count("--prerelease --latest=false") < 2 or "scripts/verify-preview-release.py" not in preview:
+        raise ValueError("Preview must be verified, marked prerelease and never marked latest")
+    build = section(source, "build")
+    for name in ("Build isolated preview and its instrumentation APK",
+                 "Stage the exact preview APK that passed the TUN test",
+                 "Upload isolated tested preview APK"):
+        step = re.search(rf"(?ms)^      - name: {re.escape(name)}\n(.*?)(?=^      - name: |\Z)", build)
+        condition = re.search(r"(?m)^        if: (.+)$", step.group(1)) if step else None
+        if not condition or " ".join(condition.group(1).split()) != PREVIEW_CONDITION:
+            raise ValueError(f"{name} must require the explicit preview dispatch")
+    preview_env = "V2MAX_PREVIEW_SMOKE: ${{ " + PREVIEW_CONDITION + " && 'true' || 'false' }}"
+    if preview_env not in build or 'sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"' not in build:
+        raise ValueError("The preview must pass the emulator TUN test before staging")
+    if "v2max-preview-tested-apk" not in build or "v2max-preview-tested-apk" not in preview:
+        raise ValueError("Preview publication must use the tested preview artifact")
+    print("Explicit stable/preview dispatch, approval and job separation verified.")
 
 
 if __name__ == "__main__":

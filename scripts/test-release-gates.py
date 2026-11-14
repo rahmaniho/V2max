@@ -24,6 +24,11 @@ class GatesTest(unittest.TestCase):
             ("    needs: sign-release", "    needs: build"),
             ("      publish_release:\n", "      publish_release_missing:\n"),
             ("  build:\n", "  build:\n    env:\n      TEST: ${{ secrets.V2MAX_RELEASE_KEY_PASSWORD }}\n"),
+            (gates.PREVIEW_CONDITION, gates.PREVIEW_CONDITION.replace("workflow_dispatch", "push")),
+            ("      publish_test_release:\n", "      publish_test_release_missing:\n"),
+            ("v2max-preview-tested-apk", "untested-preview-apk"),
+            ('sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"', "echo 'skip checksum'"),
+            ("--prerelease --latest=false", "--latest"),
         )
         for before, after in changes:
             with self.subTest(before=before, after=after):

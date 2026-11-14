@@ -173,6 +173,13 @@ PY
   exit 1
 fi
 
+# Only a manually requested preview run installs and tests the separate preview
+# APK. The same local fixtures remain alive, and the exact tested APK is later
+# checksum-verified before it can be uploaded for a prerelease.
+if [[ "${V2MAX_PREVIEW_SMOKE:-false}" == true ]]; then
+  bash scripts/run-android-preview-smoke.sh
+fi
+
 # Optional manual visual inspection. The emulator and its fixture data are
 # disposable; no screenshot is captured during ordinary CI runs.
 if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
