@@ -1,6 +1,7 @@
 package ir.v2max.app.util
 
 import android.util.Base64
+import java.security.NoSuchAlgorithmException
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.SecretKeyFactory
@@ -63,22 +64,30 @@ object SecureBackup {
     }.getOrNull()
 
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val chars = password.toCharArray()
-        val spec = try {
-            PBEKeySpec(chars, salt, ITERATIONS, KEY_BITS)
-        } finally {
-            chars.fill('\u0000')
+        val factory = try {
+            SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        } catch (_: NoSuchAlgorithmException) {
+            null // Android 7 may expose HmacSHA256 but not the PBKDF2 factory.
+        }
+        val key = if (factory == null) {
+            Pbkdf2Compat.derive256(password, salt, ITERATIONS)
+        } else {
+            val chars = password.toCharArray()
+            val spec = try {
+                PBEKeySpec(chars, salt, ITERATIONS, KEY_BITS)
+            } finally {
+                chars.fill('\u0000')
+            }
+            try {
+                factory.generateSecret(spec).encoded
+            } finally {
+                spec.clearPassword()
+            }
         }
         return try {
-            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-            val key = factory.generateSecret(spec).encoded
-            try {
-                SecretKeySpec(key, "AES")
-            } finally {
-                key.fill(0)
-            }
+            SecretKeySpec(key, "AES")
         } finally {
-            spec.clearPassword()
+            key.fill(0)
         }
     }
 }
