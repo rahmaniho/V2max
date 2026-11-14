@@ -7,7 +7,17 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 pkg=ir.v2max.app.debug
 component="$pkg/ir.v2max.app.MainActivity"
-adb shell am force-stop "$pkg"
+if [[ "${V2MAX_CAPTURE_UI:-false}" != true ]] || [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+  echo '::error title=UI capture::Requires explicit opt-in and a disposable Android emulator.'
+  exit 1
+fi
+# Instrumentation may leave an app lock or other fixture settings on disk.
+# Reset only this disposable debug package so the preview is a fresh launch.
+adb shell pm clear "$pkg" > "$work/clear.txt"
+if ! grep -Fq 'Success' "$work/clear.txt"; then
+  echo '::error title=UI capture::Could not reset the disposable debug package.'
+  exit 1
+fi
 adb logcat -c
 adb shell am start -W -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
   -n "$component" > "$work/start.txt" 2>&1 || true
