@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      publish_release:
+        description: "After owner security review: test and publish the approved main commit"
+        required: false
+        type: boolean
+        default: false
 
 env:
   LIBV2RAY_VERSION: v26.10.21
@@ -41,6 +46,7 @@ jobs:
           python3 scripts/test-apk-payload.py
           python3 scripts/test-release-metadata.py
           python3 scripts/test-release-draft.py
+          python3 scripts/test-release-gates.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -264,8 +270,10 @@ jobs:
           if-no-files-found: error
 
   security-smoke:
-    # On main this also gates release signing; dispatch runs remain diagnostic only.
-    if: (github.event_name == 'workflow_dispatch' && inputs.security_only) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # Run on main pushes, diagnostics, and the explicit release dispatch.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (inputs.security_only || (github.ref == 'refs/heads/main' && inputs.publish_release))) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Security emulator API ${{ matrix.api }} (no release APK)
     strategy:
       fail-fast: false
@@ -320,9 +328,10 @@ jobs:
           script: bash scripts/run-android-security-smoke.sh
 
   sign-release:
-    # Signing uses only the already-tested payload, after both emulator suites.
+    # A main push or merge can never sign or publish by itself. After owner
+    # review, a separate manual dispatch must run both emulator suites first.
     # This job has no repository write access and never runs Gradle with the key.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: [build, security-smoke]
     runs-on: ubuntu-latest
     permissions:
@@ -379,7 +388,7 @@ jobs:
 
   publish:
     # Write access is isolated from Gradle, emulators and the private signing key.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: sign-release
     runs-on: ubuntu-latest
     permissions:

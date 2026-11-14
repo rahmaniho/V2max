@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+import importlib.util
+import pathlib
+import unittest
+
+spec = importlib.util.spec_from_file_location("gates", pathlib.Path(__file__).with_name("verify-release-gates.py"))
+gates = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gates)
+
+
+class GatesTest(unittest.TestCase):
+    def setUp(self):
+        self.source = pathlib.Path(".github/workflows/build.yml").read_text(encoding="utf-8")
+
+    def test_current_workflow_has_explicit_gates(self):
+        gates.verify(self.source)
+
+    def test_weakening_any_gate_is_rejected(self):
+        changes = (
+            (gates.CONDITION, gates.CONDITION.replace("workflow_dispatch", "push")),
+            (gates.CONDITION, gates.CONDITION.replace(" && inputs.publish_release", "")),
+            (gates.CONDITION, gates.CONDITION + " || true"),
+            ("    needs: [build, security-smoke]", "    needs: [build]"),
+            ("    needs: sign-release", "    needs: build"),
+            ("      publish_release:\n", "      publish_release_missing:\n"),
+            ("  build:\n", "  build:\n    env:\n      TEST: ${{ secrets.V2MAX_RELEASE_KEY_PASSWORD }}\n"),
+        )
+        for before, after in changes:
+            with self.subTest(before=before, after=after):
+                self.assertIn(before, self.source)
+                with self.assertRaises(ValueError):
+                    gates.verify(self.source.replace(before, after, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()
