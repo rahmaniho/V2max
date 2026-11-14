@@ -136,8 +136,13 @@ class AndroidInstallFlowTest {
         }
         assertFalse(InstallConfirmation.open(rejectingContext, requireNotNull(request)))
         assertSame("A failed launch discarded the confirmation", request, InstallConfirmation.pending.value)
+        val pendingMessage = Repo.installMessage.value
         receiver.onReceive(context, result(PackageInstaller.STATUS_FAILURE_ABORTED, older))
         assertSame("An older session cleared the current confirmation", request, InstallConfirmation.pending.value)
+        assertEquals("An older result overwrote the pending message", pendingMessage, Repo.installMessage.value)
+        receiver.onReceive(context, result(PackageInstaller.STATUS_PENDING_USER_ACTION, older))
+        assertSame("An old invalid confirmation cleared the current one", request, InstallConfirmation.pending.value)
+        assertEquals("An old invalid confirmation overwrote the pending message", pendingMessage, Repo.installMessage.value)
         receiver.onReceive(context, result(PackageInstaller.STATUS_FAILURE_ABORTED, id))
         assertNull(InstallConfirmation.pending.value)
         awaitNotification(id, false)

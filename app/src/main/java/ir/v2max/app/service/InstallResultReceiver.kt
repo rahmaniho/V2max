@@ -16,12 +16,13 @@ class InstallResultReceiver : BroadcastReceiver() {
             intent.getIntExtra(EXTRA_LOCAL_SESSION_ID, -1)
         )
         val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty().take(160)
+        var showResult = true
         val text = when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 @Suppress("DEPRECATION")
                 val confirmation = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                 if (confirmation == null) {
-                    InstallConfirmation.clear(sessionId)
+                    showResult = InstallConfirmation.clear(sessionId)
                     Notifier.cancelInstallConfirmation(context, sessionId)
                     "صفحهٔ تأیید نصب دریافت نشد؛ دوباره تلاش کنید"
                 } else {
@@ -32,7 +33,7 @@ class InstallResultReceiver : BroadcastReceiver() {
                 }
             }
             else -> {
-                InstallConfirmation.clear(sessionId)
+                showResult = InstallConfirmation.clear(sessionId)
                 Notifier.cancelInstallConfirmation(context, sessionId)
                 when (status) {
                     PackageInstaller.STATUS_SUCCESS -> "برنامه با موفقیت به‌روزرسانی شد"
@@ -42,8 +43,9 @@ class InstallResultReceiver : BroadcastReceiver() {
                 }
             }
         }
-        // Installation is unrelated to VPN state: never replace its status text.
-        Repo.installMessage.value = text
+        // Do not let an older session's terminal result overwrite the message
+        // for a newer pending confirmation. VPN state is unrelated to either.
+        if (showResult) Repo.installMessage.value = text
     }
 
     companion object {

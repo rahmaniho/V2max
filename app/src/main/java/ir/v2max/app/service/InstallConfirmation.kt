@@ -22,9 +22,13 @@ internal object InstallConfirmation {
         state.value = Request(sessionId, Intent(confirmation))
     }
 
+    /** Clear the matching request, and say whether its result may be shown. */
     @Synchronized
-    fun clear(sessionId: Int) {
-        if (state.value?.sessionId == sessionId) state.value = null
+    fun clear(sessionId: Int): Boolean {
+        val active = state.value ?: return true
+        if (active.sessionId != sessionId) return false
+        state.value = null
+        return true
     }
 
     /** False also covers stale requests and Android rejecting the activity. */
