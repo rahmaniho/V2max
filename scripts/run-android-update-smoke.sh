@@ -53,7 +53,7 @@ run_instrumentation backup 'ir.v2max.app.AndroidSecureBackupTest' 4
 run_instrumentation external 'ir.v2max.app.AndroidExternalControlTest' 4 \
   -e expectNoDeviceCredential true
 
-# Only the disposable emulator's same-signed debug package is replaced.
+# Only the disposable emulator's same-signed debug package is upgraded.
 V2MAX_SELF_UPDATE_TEST=true bash scripts/run-android-self-update-smoke.sh
 
 echo 'Android 13+ update, backup, app-lock and external-control checks passed.'

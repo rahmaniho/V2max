@@ -73,6 +73,14 @@ fun signingValue(environment: String, property: String): String? =
     System.getenv(environment)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(property)
 val signingStoreFile = signingValue("V2MAX_RELEASE_KEYSTORE", "storeFile")
 
+// Optional, debug-only version bump for the disposable emulator update test.
+// It never changes release variants or the package installed on real users' devices.
+val appVersionCode = 23
+val emulatorUpgradeCode = providers.gradleProperty("v2maxEmulatorUpgradeCode").orNull?.let { raw ->
+    raw.toIntOrNull()?.takeIf { it > appVersionCode && it <= 2_100_000_000 }
+        ?: throw GradleException("v2maxEmulatorUpgradeCode must be greater than $appVersionCode")
+}
+
 android {
     namespace = "ir.v2max.app"
     compileSdk = 35
@@ -82,7 +90,7 @@ android {
         minSdk = 24
         targetSdk = 35
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = 23
+        versionCode = appVersionCode
         versionName = "2.4.0"
         resourceConfigurations += listOf("fa", "en")
     }
@@ -117,6 +125,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            if (emulatorUpgradeCode != null) versionNameSuffix = "-emulator-upgrade"
         }
     }
 
@@ -143,6 +152,12 @@ android {
     lint {
         abortOnError = false
         checkReleaseBuilds = false
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        emulatorUpgradeCode?.let { code -> variant.outputs.forEach { it.versionCode.set(code) } }
     }
 }
 

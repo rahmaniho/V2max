@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# This deliberately replaces the disposable emulator's debug APK with the same
-# signed APK. Never run it against a user's phone or a non-debug installation.
+# This deliberately upgrades the disposable emulator's debug APK with a newer
+# same-signed debug fixture. Never run it against a phone or non-debug package.
 if [[ "${V2MAX_SELF_UPDATE_TEST:-false}" != true ]] || [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
   echo '::error title=Self-update smoke::Requires explicit opt-in and a disposable emulator.'
   exit 1
 fi
 pkg=ir.v2max.app.debug
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
+device_apk="/sdcard/Android/data/$pkg/files/v2max-ci-upgrade.apk"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+cleanup() {
+  adb shell rm -f "$device_apk" >/dev/null 2>&1 || true
+  rm -rf "$work"
+}
+trap cleanup EXIT
 
 fail() {
   local reason="$1"
@@ -48,6 +53,19 @@ install_time() {
 }
 before="$(install_time)"
 [[ -n "$before" ]] || fail 'The initial package update time was unavailable.'
+installed_code="$(adb shell dumpsys package "$pkg" | tr -d '\r' | python3 -c \
+  'import re,sys; m=re.search(r"\bversionCode=(\d+)",sys.stdin.read()); print(m.group(1) if m else "")')"
+[[ "$installed_code" =~ ^[0-9]+$ ]] && (( installed_code < 2100000000 )) || fail 'Invalid installed debug version code.'
+next_code=$((installed_code + 1))
+# Only the debug variant is overridden; the release APK and release version
+# remain unchanged. Both builds use the same temporary CI debug keystore.
+if ! gradle --no-daemon :app:assembleDebug -Pv2maxEmulatorUpgradeCode="$next_code" 2>&1 | tee "$work/upgrade-build.log"; then
+  fail "Could not build debug upgrade fixture: $(tail -c 900 "$work/upgrade-build.log")"
+fi
+mapfile -t fixtures < <(find app/build/outputs/apk/debug -maxdepth 1 -name '*universal*debug.apk' -type f)
+[[ "${#fixtures[@]}" == 1 ]] || fail 'Expected exactly one universal debug upgrade fixture.'
+adb shell mkdir -p "/sdcard/Android/data/$pkg/files"
+adb push "${fixtures[0]}" "$device_apk" > /dev/null
 run_instrumentation stage stageForExternalConfirmation stageSelfUpdateFixture
 
 # A normal background process kill does not remove notifications. Avoid force
@@ -106,4 +124,4 @@ done
 [[ "$changed" == true ]] || fail 'The debug package was not replaced after confirmation.'
 run_instrumentation verify verifyAfterReplacement verifySelfUpdateFixture
 api="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
-echo "::notice title=Android self-update::API $api replaced the same-signed debug APK after opening its notification with the app process stopped; fixture data and signature were preserved."
+echo "::notice title=Android self-update::API $api upgraded debug version $installed_code to $next_code after opening its notification with the app process stopped; signing, server, subscription, selection and settings were preserved."
