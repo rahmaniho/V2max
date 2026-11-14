@@ -140,7 +140,7 @@ fun DiagScreen(
                 ConnectionAdvice.advise(
                     connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
                     connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
-                    killSwitchBlocked = settings.killSwitch && tunnel.status == ir.v2max.app.data.TunnelStatus.ERROR,
+                    killSwitchBlocked = tunnel.killSwitchRetained,
                     exitOk = exit.ok,
                     dnsDohOk = dns.dohOk,
                     dnsConsistent = dns.consistent,

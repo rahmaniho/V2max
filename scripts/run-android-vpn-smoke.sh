@@ -17,13 +17,28 @@ trap 'status=$?; echo "::error title=Android VPN smoke::Command failed at script
 # no-TUN Xray instance is serving a download, and again after cancellation.
 cat > "$work/http-fixture.py" <<'PY'
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 import time
+
+hold_started = threading.Event()
+hold_release = threading.Event()
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/probe', '/tun-check', '/slow-probe'):
+        if self.path in ('/hold-status', '/hold-release'):
+            if self.path == '/hold-release':
+                hold_release.set()
+            body = b'started' if hold_started.is_set() else b'waiting'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path in ('/probe', '/tun-check', '/slow-probe', '/hold-probe'):
             if self.path == '/slow-probe':
                 time.sleep(2)  # leave a native post-start probe in flight during cancellation
+            if self.path == '/hold-probe':
+                hold_started.set()
+                hold_release.wait(15)  # the test releases this only after canceling the scan
             body = b'v2max-tun-ok'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -89,17 +104,33 @@ status=$?
 printf '\nNC_EXIT=%s\n' "$status"
 SH
 adb push "$work/tun-probe.sh" /data/local/tmp/v2max-tun-probe.sh
+# Unlike the synthetic TUN-only address above, this host fixture is reachable
+# directly without a VPN. It lets the test detect leakage while a stopped core
+# retains the TUN, and confirm normal access resumes when that TUN is closed.
+cat > "$work/direct-probe.sh" <<'SH'
+#!/system/bin/sh
+printf 'PROBE_UID=%s\n' "$(id -u)"
+printf 'GET /tun-check HTTP/1.1\r\nHost: 10.0.2.2:18081\r\nConnection: close\r\n\r\n' | \
+  toybox timeout 3 toybox nc -w 2 -W 2 10.0.2.2 18081 2>&1
+status=$?
+printf '\nNC_EXIT=%s\n' "$status"
+SH
+adb push "$work/direct-probe.sh" /data/local/tmp/v2max-direct-probe.sh
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
-  # Report, rather than conceal, any TUN handover retry after a new interface.
-  while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    if [[ "$line" =~ attempts=([2-9]|[1-9][0-9]+) ]]; then
-      echo "::warning title=VPN TUN handover::$line"
-    else
-      echo "::notice title=VPN TUN handover::$line"
-    fi
-  done < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)
+  # Report all handovers together: GitHub limits annotations per step. Any
+  # retry is still surfaced as a warning rather than concealed by eventual success.
+  mapfile -t handovers < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)
+  if ((${#handovers[@]})); then
+    handover_summary=""
+    handover_level=notice
+    for line in "${handovers[@]}"; do
+      printf '%s\n' "$line"
+      handover_summary+="${line}%0A"
+      if [[ "$line" =~ attempts=([2-9]|[1-9][0-9]+)([^0-9]|$) ]]; then handover_level=warning; fi
+    done
+    echo "::${handover_level} title=VPN TUN handover::$handover_summary"
+  fi
 else
   echo '::group::Android VPN diagnostics'
   adb logcat -d -s V2maxVpn:V V2maxCore:V GoLog:V AndroidRuntime:E > "$work/logcat.txt" || true
@@ -137,31 +168,19 @@ if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
   adb shell am start -W -n ir.v2max.app.debug/ir.v2max.app.MainActivity
   python3 -c 'import time; time.sleep(5)'
   adb exec-out screencap -p > "$work/home.png"
-  preview="$work/home.png"
-  if command -v convert >/dev/null 2>&1; then
-    convert "$work/home.png" -resize 480x -quality 65 "$work/home.jpg"
-    preview="$work/home.jpg"
-  elif python3 -c 'import PIL' >/dev/null 2>&1; then
-    python3 - "$work/home.png" "$work/home.jpg" <<'PY'
-from PIL import Image
-import sys
-with Image.open(sys.argv[1]) as image:
-    image = image.convert('RGB')
-    image.thumbnail((480, 960))
-    image.save(sys.argv[2], format='JPEG', quality=65, optimize=True)
-PY
-    preview="$work/home.jpg"
-  fi
+  # Use the JDK already installed in CI rather than assuming ImageMagick or
+  # Pillow is installed. The adaptive JPEG fits GitHub's per-step notice cap.
+  java -Djava.awt.headless=true scripts/UiPreview.java "$work/home.png" "$work/home.jpg"
   # Small notices can be read through the GitHub check API if artifact storage
   # is inaccessible from a developer's environment. No real user data is used.
-  python3 - "$preview" <<'PY'
+  python3 - "$work/home.jpg" <<'PY'
 import base64, hashlib, pathlib, sys
 image = pathlib.Path(sys.argv[1]).read_bytes()
 encoded = base64.b64encode(image).decode('ascii')
 # GitHub truncates individual annotation messages at 4096 characters.
 chunks = [encoded[i:i + 3800] for i in range(0, len(encoded), 3800)]
-if len(chunks) > 45:
-    print(f'::error title=UI capture::Preview is too large ({len(image)} bytes)')
+if len(chunks) > 8:
+    print(f'::error title=UI capture::Preview exceeds the annotation budget ({len(image)} bytes)')
     raise SystemExit(1)
 print(f'::notice title=V2MAX_UI_SHA256::{hashlib.sha256(image).hexdigest()}')
 for number, chunk in enumerate(chunks):

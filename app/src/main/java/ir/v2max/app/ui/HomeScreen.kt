@@ -160,18 +160,18 @@ fun HomeScreen(
                 GlassCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp)) {
                         Text(
-                            "اینترنت مسدود است (Kill Switch)",
+                            "رابط VPN حفظ شده است (Kill Switch)",
                             style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
                             color = V2.Red
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "تانل قطع شده و برای محافظت از حریم خصوصی، ترافیک مسدود مانده است.",
+                            "هسته متوقف شده است. برنامه‌های مستثنا ممکن است مستقیم وصل شوند؛ با توقف سرویس، این حفاظت نیز پایان می‌یابد.",
                             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                             color = V2.TextMuted
                         )
                         Spacer(Modifier.height(10.dp))
-                        GhostButton(text = "رفع مسدودی و بازگشت اینترنت", modifier = Modifier.fillMaxWidth()) {
+                        GhostButton(text = "قطع VPN و بازگشت اینترنت", modifier = Modifier.fillMaxWidth()) {
                             onUnblock()
                         }
                     }

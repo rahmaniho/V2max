@@ -80,11 +80,11 @@ object ConnectionAdvice {
 
         if (killSwitchBlocked) {
             out += Finding(
-                title = "ترافیک مسدود است (Kill Switch)",
-                detail = "تانل قطع شده و برای محافظت از حریم خصوصی، اینترنت مسدود مانده است.",
+                title = "رابط VPN حفظ شده است (Kill Switch)",
+                detail = "هسته متوقف شده است؛ برنامه‌های مستثنا ممکن است مستقیم وصل شوند و این حفاظت با توقف سرویس پایان می‌یابد.",
                 severity = Severity.CRITICAL,
                 actionId = Action.UNBLOCK,
-                actionLabel = "رفع مسدودی",
+                actionLabel = "قطع VPN",
             )
         }
 

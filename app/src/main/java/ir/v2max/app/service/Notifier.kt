@@ -164,7 +164,7 @@ object Notifier {
         }
     }
 
-    /** اعلان حالت Kill Switch: ترافیک مسدود است و دکمه‌ی رفع مسدودی دارد */
+    /** The VPN interface was retained after the core stopped. */
     fun blocked(context: Context, reason: String) {
         ensureChannel(context)
         val flags = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -177,14 +177,14 @@ object Notifier {
         val unblock = serviceAction(context, V2maxVpnService.ACTION_UNBLOCK, 21, V2maxVpnService.currentActionGeneration())
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat)
-            .setContentTitle("ترافیک مسدود است (Kill Switch)")
-            .setContentText(reason.ifBlank { "تانل قطع شد؛ برای بازگشت اینترنت، مسدودی را بردارید" })
+            .setContentTitle("رابط VPN حفظ شد (Kill Switch)")
+            .setContentText(reason.ifBlank { "هسته متوقف شد؛ برنامه‌های مستثنا ممکن است مستقیم وصل شوند" })
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setContentIntent(open)
-            .addAction(0, "رفع مسدودی", unblock)
+            .addAction(0, "قطع VPN", unblock)
             .build()
         runCatching {
             context.getSystemService(NotificationManager::class.java)

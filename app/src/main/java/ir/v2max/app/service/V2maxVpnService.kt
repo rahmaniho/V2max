@@ -459,8 +459,16 @@ class V2maxVpnService : VpnService() {
                 closeTun()
                 running = false
                 activeIdentity = null
-                val status = Repo.tunnel.value.status
-                if (status != TunnelStatus.DISCONNECTED && status != TunnelStatus.ERROR) {
+                val state = Repo.tunnel.value
+                if (state.killSwitchRetained) {
+                    // Once the service is destroyed its retained descriptor is
+                    // gone; do not keep advertising an active Kill Switch.
+                    Repo.tunnel.value = state.copy(
+                        status = if (state.status == TunnelStatus.ERROR) TunnelStatus.ERROR else TunnelStatus.DISCONNECTED,
+                        killSwitchRetained = false,
+                        message = "سرویس VPN متوقف شد؛ اینترنت ممکن است مستقیم باشد"
+                    )
+                } else if (state.status != TunnelStatus.DISCONNECTED && state.status != TunnelStatus.ERROR) {
                     Repo.tunnel.value = TunnelUiState(status = TunnelStatus.DISCONNECTED)
                 }
             } else {
@@ -831,6 +839,25 @@ class V2maxVpnService : VpnService() {
                 // every monitor tick instead of waiting up to the battery-saver
                 // probe interval before starting recovery.
                 if (withContext(Dispatchers.IO) { !coreRunning() }) {
+                    // Replacement scans can take a long time. Stop reporting a
+                    // dead core as CONNECTED before starting any of that work,
+                    // while retaining the current interface until a decision.
+                    val stopped = synchronized(coreStartStopLock) {
+                        if (!ownsGeneration(monitorGeneration)) return@launch
+                        if (coreRunning()) false else {
+                            running = false
+                            activeIdentity = null
+                            publish(Repo.tunnel.value.copy(
+                                status = TunnelStatus.CONNECTING,
+                                downSpeed = 0,
+                                upSpeed = 0,
+                                killSwitchRetained = Repo.settings.value.killSwitch && tun != null,
+                                message = "هسته متوقف شد؛ در حال بررسی بازیابی…"
+                            ))
+                            true
+                        }
+                    }
+                    if (!stopped) continue
                     Log.w(TAG, "core stopped unexpectedly")
                     if (Repo.settings.value.smartFailover) {
                         if (rotate("بازسازی هسته", monitorGeneration, monitorStartId)) return@launch
@@ -959,7 +986,8 @@ class V2maxVpnService : VpnService() {
             status = TunnelStatus.CONNECTING,
             downSpeed = 0,
             upSpeed = 0,
-            message = if (blocked) "$message؛ ترافیک مسدود است و اتصال دوباره بررسی می‌شود"
+            killSwitchRetained = blocked,
+            message = if (blocked) "$message؛ رابط VPN حفظ شد و اتصال دوباره بررسی می‌شود"
                 else "$message؛ VPN قطع است و اینترنت ممکن است مستقیم باشد. در حال تلاش دوباره…"
         ))
         val startingAttempt = recoveryAttempt
@@ -1091,12 +1119,14 @@ class V2maxVpnService : VpnService() {
         resourceOwner.clear()
         XrayCore.stop()
 
-        // Kill Switch: رابط TUN باز می‌ماند تا هیچ بسته‌ای بیرون از تانل نرود
+        // Keep the VPN interface only for included applications. This is not
+        // Android's system-wide always-on/lockdown mode and ends with the service.
         val killSwitch = Repo.settings.value.killSwitch && tun != null
         if (killSwitch) {
             Repo.tunnel.value = Repo.tunnel.value.copy(
                 status = TunnelStatus.ERROR,
-                message = "ترافیک مسدود شد (Kill Switch) — $message",
+                killSwitchRetained = true,
+                message = "رابط VPN حفظ شد (Kill Switch) — $message",
                 downSpeed = 0,
                 upSpeed = 0
             )
@@ -1107,6 +1137,7 @@ class V2maxVpnService : VpnService() {
         closeTun()
         Repo.tunnel.value = Repo.tunnel.value.copy(
             status = TunnelStatus.ERROR,
+            killSwitchRetained = false,
             message = message,
             downSpeed = 0,
             upSpeed = 0

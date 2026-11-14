@@ -313,10 +313,8 @@ data class AppSettings(
     /** سقف مصرف روزانه (مگابایت) — صفر یعنی بی‌نهایت */
     var dailyLimitMb: Int = 0,
 
-    /**
-     * Kill Switch: اگر تانل به‌طور غیرمنتظره قطع شود، اینترنت دستگاه مسدود می‌ماند
-     * تا داده‌ای بیرون از تانل نرود. با دکمه‌ی «رفع مسدودی» یا قطع دستی، اینترنت برمی‌گردد.
-     */
+    /** Keep the VPN interface open if the core fails; excluded apps and a stopped
+     * service are not protected by this setting. Android lockdown is separate. */
     var killSwitch: Boolean = false,
 
     /** قفل برنامه با اثر انگشت/رمز دستگاه */
@@ -393,7 +391,9 @@ data class TunnelUiState(
     val upSpeed: Long = 0L,
     val totalDown: Long = 0L,
     val totalUp: Long = 0L,
-    val message: String = ""
+    val message: String = "",
+    /** The service retained a TUN after the core stopped; not a leak-proof guarantee. */
+    val killSwitchRetained: Boolean = false
 ) {
     val isActive: Boolean get() = status == TunnelStatus.CONNECTED || status == TunnelStatus.CONNECTING
 }

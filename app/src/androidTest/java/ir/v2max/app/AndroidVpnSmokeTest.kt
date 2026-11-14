@@ -254,6 +254,7 @@ class AndroidVpnSmokeTest {
                 autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false,
                 useFreeSources = false, deepProbe = false, fragment = false, balancer = false,
                 geoAssets = false, multiPing = false, speedTest = false, smartFailover = false,
+                killSwitch = false, perAppMode = ir.v2max.app.data.PerAppMode.OFF,
                 routingMode = RoutingMode.GLOBAL,
                 delayTestUrl = "http://198.51.100.1:18081/probe"
             )
@@ -270,6 +271,7 @@ class AndroidVpnSmokeTest {
         assertNull("CI must grant ACTIVATE_VPN app-op before this test", VpnService.prepare(context))
         val networkBeforeVpn = CarrierProbe.networkHandle(context)
         assertNotNull("No active network before starting the VPN", networkBeforeVpn)
+        assertDirectFixtureReachable(instrumentation)
 
         try {
             assertTrue("Pre-connect protocol test failed: ${Repo.scan.value.message}\n${XrayCore.logs().joinToString("\n")}",
@@ -414,25 +416,39 @@ class AndroidVpnSmokeTest {
             assertTrue("VPN did not recover: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
             assertTunTrafficEventually(instrumentation, "automatic-recovery")
 
-            // A user stop while recovery is waiting must cancel retries, including
-            // when the existing TUN is being retained for Kill Switch.
-            Repo.updateSettings { it.copy(killSwitch = true) }
+            // Hold an actual alternate-server probe in flight. A stopped core
+            // must be reported as reconnecting immediately, not CONNECTED for
+            // the duration of a slow replacement scan.
+            val heldReplacement = server.copy(id = "held-replacement", name = "held replacement")
+            Repo.updateServer(heldReplacement)
+            Repo.updateSettings { it.copy(killSwitch = true, delayTestUrl = "http://198.51.100.1:18081/hold-probe") }
             XrayCore.stop()
             val blockedDeadline = SystemClock.elapsedRealtime() + 30_000
             while (SystemClock.elapsedRealtime() < blockedDeadline &&
                 Repo.tunnel.value.status != TunnelStatus.CONNECTING) SystemClock.sleep(50)
             assertEquals("Second core stop was not detected", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
-            assertTrue("Recovery did not report the retained Kill Switch",
-                Repo.tunnel.value.message.contains("ترافیک مسدود"))
+            awaitHeldProbe()
+            assertEquals("Stopped core was still shown as connected during replacement scanning", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            assertTrue("Stopped core still reported running", !V2maxVpnService.running && !XrayCore.isRunning)
+            assertTrue("Recovery did not report the retained VPN interface", Repo.tunnel.value.killSwitchRetained)
+            assertDirectFixtureBlocked(instrumentation)
+            assertEquals("Recovery restarted the core during the blocking probe", TunnelStatus.CONNECTING, Repo.tunnel.value.status)
+            // A user stop must win even when a slow native probe finishes later.
             TunnelController.stop(context)
+            fixtureControl("hold-release")
+            Repo.removeServer(heldReplacement.id)
             val recoveryStopDeadline = SystemClock.elapsedRealtime() + 10_000
             while (SystemClock.elapsedRealtime() < recoveryStopDeadline &&
                 Repo.tunnel.value.status != TunnelStatus.DISCONNECTED) SystemClock.sleep(50)
             SystemClock.sleep(21_000) // beyond the first and second recovery backoffs
             assertEquals("Recovery reconnected after the user stopped it", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
             assertTrue("Core restarted after the user stopped it", !XrayCore.isRunning && !V2maxVpnService.running)
+            assertTrue("The retained-interface indicator survived stop", !Repo.tunnel.value.killSwitchRetained)
+            assertDirectFixtureReachable(instrumentation)
 
-            Repo.updateSettings { it.copy(smartFailover = false, killSwitch = false) }
+            Repo.updateSettings {
+                it.copy(smartFailover = false, killSwitch = false, delayTestUrl = "http://198.51.100.1:18081/probe")
+            }
             assertTrue("Preflight after recovery stop failed: ${Repo.scan.value.message}",
                 runBlocking { SmartConnect.connectVerified(context, edited.id) })
             val restartDeadline = SystemClock.elapsedRealtime() + 60_000
@@ -442,6 +458,33 @@ class AndroidVpnSmokeTest {
             }
             assertTrue("Manual reconnect did not start: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
             assertTunTrafficEventually(instrumentation, "manual-restart")
+
+            // A retained interface also occurs after a terminal error. If the
+            // service is later destroyed, the UI must stop claiming it is held.
+            Repo.updateSettings { it.copy(killSwitch = true, smartFailover = false) }
+            XrayCore.stop()
+            val terminalDeadline = SystemClock.elapsedRealtime() + 30_000
+            while (SystemClock.elapsedRealtime() < terminalDeadline &&
+                Repo.tunnel.value.status != TunnelStatus.ERROR) SystemClock.sleep(50)
+            assertEquals("Core failure did not enter terminal error", TunnelStatus.ERROR, Repo.tunnel.value.status)
+            assertTrue("Terminal failure did not retain the interface", Repo.tunnel.value.killSwitchRetained)
+            assertDirectFixtureBlocked(instrumentation)
+            assertTrue("Service was not running for teardown", context.stopService(Intent(context, V2maxVpnService::class.java)))
+            val destroyedDeadline = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < destroyedDeadline && Repo.tunnel.value.killSwitchRetained) SystemClock.sleep(50)
+            assertTrue("Destroyed service still claims a retained interface", !Repo.tunnel.value.killSwitchRetained)
+            assertTrue("Destroyed service did not warn about direct internet", Repo.tunnel.value.message.contains("ممکن است مستقیم"))
+            assertDirectFixtureReachable(instrumentation)
+            Repo.updateSettings { it.copy(killSwitch = false) }
+            assertTrue("Preflight after service teardown failed: ${Repo.scan.value.message}",
+                runBlocking { SmartConnect.connectVerified(context, edited.id) })
+            val teardownRestartDeadline = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < teardownRestartDeadline &&
+                !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(edited))) {
+                SystemClock.sleep(100)
+            }
+            assertTrue("VPN did not restart after service teardown: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            assertTunTrafficEventually(instrumentation, "service-restart")
 
             // Start a slow automatic replacement, then supersede it. Even if its
             // native probe returns later, it must not override the current tunnel.
@@ -493,6 +536,8 @@ class AndroidVpnSmokeTest {
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
+            runCatching { fixtureControl("hold-release") }
+            Repo.removeServer("held-replacement")
         }
     }
 
@@ -517,6 +562,55 @@ class AndroidVpnSmokeTest {
             if (SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(250)
         } while (SystemClock.elapsedRealtime() < deadline)
         throw AssertionError("Android TUN did not pass within the handover window ($phase, $attempts attempts)", lastFailure)
+    }
+
+    private fun fixtureControl(path: String): String {
+        // This process is excluded from its own VPN and can control the isolated
+        // emulator-host fixture even while the external UID's traffic is held.
+        val connection = java.net.URL("http://10.0.2.2:18081/$path").openConnection() as java.net.HttpURLConnection
+        connection.connectTimeout = 1_000
+        connection.readTimeout = 1_000
+        return try {
+            connection.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun awaitHeldProbe() {
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (runCatching { fixtureControl("hold-status") }.getOrDefault("") == "started") return
+            SystemClock.sleep(100)
+        }
+        throw AssertionError("Replacement never reached the held HTTP fixture")
+    }
+
+    private fun directFixtureProbe(instrumentation: Instrumentation): String {
+        val descriptor = instrumentation.uiAutomation.executeShellCommand("sh /data/local/tmp/v2max-direct-probe.sh")
+        val output = descriptor.use { FileInputStream(it.fileDescriptor).bufferedReader().readText() }.trim()
+        val uid = output.lineSequence().firstOrNull { it.startsWith("PROBE_UID=") }
+            ?.substringAfter('=')?.trim()?.toIntOrNull()
+        assertTrue("Direct probe must run outside the VPN app UID: $output", uid != null && uid != android.os.Process.myUid())
+        assertTrue("Direct probe did not finish: $output", output.contains("NC_EXIT="))
+        return output
+    }
+
+    private fun assertDirectFixtureReachable(instrumentation: Instrumentation) {
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        var output: String
+        do {
+            output = directFixtureProbe(instrumentation)
+            if (output.contains(" 200 ") && output.contains("v2max-tun-ok") && output.contains("NC_EXIT=0")) return
+            if (SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(250)
+        } while (SystemClock.elapsedRealtime() < deadline)
+        throw AssertionError("Direct fixture was not reachable outside the VPN: $output")
+    }
+
+    private fun assertDirectFixtureBlocked(instrumentation: Instrumentation) {
+        val output = directFixtureProbe(instrumentation)
+        assertTrue("Traffic escaped the retained VPN interface: $output",
+            !output.contains(" 200 ") && !output.contains("v2max-tun-ok") && !output.contains("NC_EXIT=0"))
     }
 
     private fun assertTunTraffic(instrumentation: Instrumentation) {

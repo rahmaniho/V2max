@@ -455,8 +455,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "Kill Switch (مسدودسازی هنگام قطعی)",
-                subtitle = "اگر تانل ناخواسته قطع شود، اینترنت مسدود می‌ماند تا داده‌ای بیرون از تانل نرود؛ با اعلان یا دکمه‌ی «رفع مسدودی» برمی‌گردد",
+                title = "Kill Switch (حفظ رابط VPN هنگام قطعی)",
+                subtitle = "در توقف هسته، رابط VPN برای برنامه‌های مشمول حفظ می‌شود؛ برنامه‌های مستثنا و توقف سرویس را پوشش نمی‌دهد. برای محافظت بیشتر، VPN همیشه‌روشن و مسدودسازی اتصال بدون VPN را در تنظیمات اندروید بررسی کنید.",
                 checked = settings.killSwitch
             ) { value -> onChange { it.copy(killSwitch = value) } }
         }
