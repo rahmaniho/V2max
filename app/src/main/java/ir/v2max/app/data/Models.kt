@@ -441,7 +441,7 @@ data class NetworkAssessment(
     val assessedAt: Long = 0L
 ) {
     val fresh: Boolean
-        get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt < 10 * 60 * 1000L
+        get() = assessedAt > 0 && System.currentTimeMillis() - assessedAt in 0..(10 * 60 * 1000L)
 }
 
 /**

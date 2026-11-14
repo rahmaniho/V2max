@@ -24,8 +24,8 @@ object SubscriptionMerger {
      *    which parts of the old record survive — this is what keeps a user's
      *    favourite flag and measured latency across a refresh;
      *  - a record with no match is taken as-is;
-     *  - [liveId], when set, is preserved even if the refreshed subscription no
-     *    longer lists it, so the active connection is never cut by a sync.
+     *  - [liveId] and [protectedIds] are preserved even if the refreshed subscription
+     *    no longer lists them, so active or selected profiles survive an in-flight sync.
      *
      * [existing] must already be narrowed to the subscription being refreshed;
      * merging across subscriptions would match records that should stay apart.
@@ -34,6 +34,7 @@ object SubscriptionMerger {
         existing: List<T>,
         incoming: List<T>,
         liveId: String? = null,
+        protectedIds: Set<String> = emptySet(),
         fingerprintOf: (T) -> String,
         isUsable: (T) -> Boolean,
         idOf: (T) -> String,
@@ -53,10 +54,13 @@ object SubscriptionMerger {
             merged.add(if (old != null) carryOver(old, candidate) else candidate)
         }
 
-        // Keep the live server until disconnect even if an updated subscription
-        // no longer lists it.
-        if (liveId != null && merged.none { idOf(it) == liveId }) {
-            existing.firstOrNull { idOf(it) == liveId }?.let { merged.add(it) }
+        // Preserve the live and selected/in-flight records until the caller can
+        // safely switch, even if the new subscription no longer lists them.
+        val protected = if (liveId != null) protectedIds + liveId else protectedIds
+        val mergedIds = merged.mapTo(HashSet()) { idOf(it) }
+        for (old in existing) {
+            val id = idOf(old)
+            if (id in protected && mergedIds.add(id)) merged.add(old)
         }
 
         return merged

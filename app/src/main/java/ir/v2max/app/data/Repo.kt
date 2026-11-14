@@ -107,31 +107,33 @@ object Repo {
     }.getOrDefault(emptyList())
 
     @Volatile
-    private var persistSuspended = false
+    private var persistSuspensions = 0
 
-    /** در زمان به‌روزرسانی انبوه، نوشتن روی دیسک را موقتاً متوقف می‌کند */
+    /** Batch server/subscription writes; overlapping refreshes each own a suspension. */
+    @Synchronized
     fun suspendPersist(suspended: Boolean) {
-        persistSuspended = suspended
+        persistSuspensions = if (suspended) persistSuspensions + 1 else (persistSuspensions - 1).coerceAtLeast(0)
     }
 
     /** ذخیره‌ی فوری روی دیسک */
+    @Synchronized
     fun persistNow() {
         persistServers()
         persistSubs()
     }
 
     private fun persistServers() {
-        if (persistSuspended) return
+        if (persistSuspensions > 0) return
         prefs?.edit()?.putString(KEY_SERVERS, gson.toJson(_servers.value))?.apply()
     }
 
     private fun persistSubs() {
-        if (persistSuspended) return
+        if (persistSuspensions > 0) return
         prefs?.edit()?.putString(KEY_SUBS, gson.toJson(_subs.value))?.apply()
     }
 
     private fun persistSettings() {
-        if (persistSuspended) return
+        // Settings changed during a long subscription sync must not be lost.
         prefs?.edit()?.putString(KEY_SETTINGS, gson.toJson(_settings.value))?.apply()
     }
 
@@ -192,11 +194,14 @@ object Repo {
      */
     @Synchronized
     fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>) {
+        // A delayed HTTP response must not resurrect a subscription removed by the user.
+        if (_subs.value.none { it.id == subId }) return
         val existing = _servers.value.filter { it.subId == subId }
         val merged = SubscriptionMerger.merge(
             existing = existing,
             incoming = incoming,
             liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive },
+            protectedIds = setOf(_selectedId.value).filter { it.isNotBlank() }.toSet(),
             fingerprintOf = { it.fingerprint() },
             isUsable = { it.hasUsableEndpoint() },
             idOf = { it.id },
@@ -277,20 +282,27 @@ object Repo {
 
     /** TCP is only a preliminary result and must not erase an older real test. */
     @Synchronized
-    fun setPretest(id: String, tcpPing: Int) {
+    fun setPretest(id: String, tcpPing: Int, expectedFingerprint: String? = null) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
-        if (idx < 0) return
+        if (idx < 0 || (expectedFingerprint != null && list[idx].fingerprint() != expectedFingerprint)) return
         list[idx] = list[idx].copy(tcpPing = tcpPing)
         _servers.value = list
     }
 
     @Synchronized
-    fun setVerifiedResult(id: String, result: ir.v2max.app.net.ProbeResult?, clearOtherTargets: Boolean = true) {
+    fun setVerifiedResult(
+        id: String,
+        result: ir.v2max.app.net.ProbeResult?,
+        clearOtherTargets: Boolean = true,
+        expectedFingerprint: String? = null
+    ) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
         if (idx < 0) return
         val old = list[idx]
+        // A result for an old snapshot must never certify an edited config with the same ID.
+        if (expectedFingerprint != null && old.fingerprint() != expectedFingerprint) return
         list[idx] = old.copy(
             realPing = result?.delayMs ?: -1,
             googlePing = if (result?.url == PingTargets.GOOGLE.url) result.delayMs else -1,
@@ -311,11 +323,12 @@ object Repo {
         google: Int,
         instagram: Int,
         youtube: Int,
-        persist: Boolean = false
+        persist: Boolean = false,
+        expectedFingerprint: String? = null
     ) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
-        if (idx < 0) return
+        if (idx < 0 || (expectedFingerprint != null && list[idx].fingerprint() != expectedFingerprint)) return
         list[idx] = list[idx].copy(
             googlePing = google,
             instagramPing = instagram,
@@ -382,7 +395,8 @@ object Repo {
     fun updateSubscription(sub: Subscription) {
         val list = _subs.value.toMutableList()
         val idx = list.indexOfFirst { it.id == sub.id }
-        if (idx >= 0) list[idx] = sub else list.add(sub)
+        if (idx < 0) return
+        list[idx] = sub
         _subs.value = list
         persistSubs()
     }
@@ -436,6 +450,8 @@ object Repo {
         val all = _servers.value
         if (all.size < 2) return 0
         val keep = LinkedHashMap<String, ServerConfig>()
+        val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
+        val selected = _selectedId.value
         all.forEach { cfg ->
             val key = cfg.fingerprint()
             val current = keep[key]
@@ -443,6 +459,10 @@ object Repo {
                 keep[key] = cfg
             } else {
                 val better = when {
+                    liveId != null && cfg.id == liveId -> cfg
+                    liveId != null && current.id == liveId -> current
+                    selected.isNotBlank() && cfg.id == selected -> cfg
+                    selected.isNotBlank() && current.id == selected -> current
                     cfg.favorite != current.favorite -> if (cfg.favorite) cfg else current
                     else -> {
                         val a = cfg.bestPing()
@@ -469,10 +489,10 @@ object Repo {
 
     /** ثبت نتیجه‌ی سنجش سرعت */
     @Synchronized
-    fun setSpeed(id: String, kbps: Int, persist: Boolean = false) {
+    fun setSpeed(id: String, kbps: Int, persist: Boolean = false, expectedFingerprint: String? = null) {
         val list = _servers.value.toMutableList()
         val idx = list.indexOfFirst { it.id == id }
-        if (idx < 0) return
+        if (idx < 0 || (expectedFingerprint != null && list[idx].fingerprint() != expectedFingerprint)) return
         list[idx] = list[idx].copy(speedKbps = kbps)
         _servers.value = list
         if (persist) persistServers()
@@ -545,7 +565,6 @@ object Repo {
     }
 
     private fun persistProfiles() {
-        if (persistSuspended) return
         prefs?.edit()?.putString(KEY_PROFILES, gson.toJson(_profiles.value))?.apply()
     }
 

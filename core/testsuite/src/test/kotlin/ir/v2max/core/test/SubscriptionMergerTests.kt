@@ -106,6 +106,14 @@ object SubscriptionMergerTests {
         T.eq("live server preserved", listOf("live"), liveKept.map { it.id })
         T.eq("live server is the old record", "old", liveKept.single().gen)
 
+        val protected = SubscriptionMerger.merge(
+            existing = listOf(Node("live", "l.example"), Node("selected", "s.example"), Node("old", "o.example")),
+            incoming = emptyList(), liveId = "live", protectedIds = setOf("selected", "missing"),
+            fingerprintOf = { it.host }, isUsable = { it.usable }, idOf = { it.id },
+            carryOver = { old, _ -> old },
+        )
+        T.eq("live and selected profiles survive a refresh", listOf("live", "selected"), protected.map { it.id })
+
         // ---- but it is not duplicated when the refresh still lists it
         val liveListed = merge(
             listOf(Node("live", "live.example.com", gen = "old")),

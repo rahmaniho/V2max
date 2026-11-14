@@ -11,6 +11,8 @@ import androidx.work.WorkerParameters
 import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.SubscriptionFetcher
+import ir.v2max.app.net.SubscriptionPolicy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -28,6 +30,8 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     override suspend fun doWork(): Result = try {
         run()
+    } catch (e: CancellationException) {
+        throw e
     } catch (t: Throwable) {
         ir.v2max.app.util.CrashLog.record(t, "SubSyncWorker")
         Result.success()
@@ -39,7 +43,7 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         if (subs.isEmpty()) return Result.success()
 
         val semaphore = Semaphore(4)
-        var updated = 0
+        val updated = java.util.concurrent.atomic.AtomicInteger(0)
 
         Repo.suspendPersist(true)
         try {
@@ -47,26 +51,22 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 subs.map { sub ->
                     async(Dispatchers.IO) {
                         if (sub.builtIn && !PublicSources.ALL.any { it.url.trim() == sub.url.trim() }) return@async
-                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url) }
-                        if (result.ok) {
-                            val cap = PublicSources.forUrl(sub.url)?.maxConfigs ?: 400
-                            val trimmed = result.configs.take(cap)
-                            trimmed.forEach { it.subId = sub.id }
-                            Repo.replaceSubscriptionServers(sub.id, trimmed)
+                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
+                        val current = Repo.subById(sub.id) ?: return@async
+                        val trimmed = if (result.ok) SubscriptionPolicy.candidates(current, result.configs) else emptyList()
+                        if (trimmed.isNotEmpty()) {
+                            trimmed.forEach { it.subId = current.id }
+                            Repo.replaceSubscriptionServers(current.id, trimmed)
                             Repo.updateSubscription(
-                                sub.copy(
-                                    updatedAt = System.currentTimeMillis(),
-                                    count = trimmed.size,
-                                    upload = result.upload,
-                                    download = result.download,
-                                    total = result.total,
-                                    expireAt = result.expireAt,
-                                    lastError = ""
+                                current.copy(
+                                    updatedAt = System.currentTimeMillis(), count = trimmed.size,
+                                    upload = result.upload, download = result.download,
+                                    total = result.total, expireAt = result.expireAt, lastError = ""
                                 )
                             )
-                            updated++
+                            updated.incrementAndGet()
                         } else {
-                            Repo.updateSubscription(sub.copy(lastError = result.error))
+                            Repo.updateSubscription(current.copy(lastError = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }))
                         }
                         // کمی فاصله تا منابع همزمان فشار نیاورند
                         delay(120)
@@ -75,13 +75,14 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             }
         } finally {
             Repo.suspendPersist(false)
+            Repo.persistNow()
         }
 
         Repo.dedupeAllServers()
         Repo.trimBuiltInServers()
         Repo.persistNow()
 
-        return if (updated == 0) Result.retry() else Result.success()
+        return if (updated.get() == 0) Result.retry() else Result.success()
     }
 
     companion object {

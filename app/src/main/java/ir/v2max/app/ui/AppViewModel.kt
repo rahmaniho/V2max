@@ -7,7 +7,6 @@ import androidx.lifecycle.viewModelScope
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.data.AppSettings
-import ir.v2max.app.data.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.Subscription
@@ -15,14 +14,17 @@ import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.SubscriptionFetcher
+import ir.v2max.app.net.SubscriptionBootstrap
+import ir.v2max.app.net.SubscriptionPolicy
 import ir.v2max.core.format.Format
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,7 +59,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private var pendingSmartScan = false
     private var pendingRestart = false
     private var pendingQuickConnect = false
+    private var startupJob: Job? = null
     private val syncMutex = kotlinx.coroutines.sync.Mutex()
+
+    private fun cancelStartupForUserAction() {
+        startupJob?.cancel()
+        startupJob = null
+    }
 
     /**
      * هیچ خطای پیش‌بینی‌نشده‌ای در کارهای پس‌زمینه نباید برنامه را ببندد.
@@ -71,52 +79,70 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     init {
-        viewModelScope.launch(errorHandler) { startup() }
+        startupJob = viewModelScope.launch(errorHandler) { startup() }
     }
 
-    /** آماده‌سازی منابع و بررسی نسخه، سپس تست واقعی پیش از اتصال خودکار. */
+    /** Use cached profiles immediately; network refresh never certifies a profile. */
     private suspend fun startup() {
         val app = getApplication<Application>()
         val settings = Repo.settings.value
-
-        // اگر دفعه‌ی قبل برنامه بسته شده باشد، علت را نشان بده (به‌جای سکوت)
         val crash = runCatching { ir.v2max.app.util.CrashLog.lastSummary() }.getOrDefault("")
-        if (crash.isNotBlank()) {
-            showMessage("دفعه‌ی قبل برنامه بسته شد: $crash")
-        }
-
+        if (crash.isNotBlank()) showMessage("دفعه‌ی قبل برنامه بسته شد: $crash")
         if (settings.useFreeSources) runCatching { Repo.ensureBuiltInSources() }
-
-        // ۱) بررسی عمیق شبکه‌ی اپراتور (DNS/DPI/تأخیر) پیش از هر کاری
-        if (settings.deepProbe) SmartConnect.assessNetwork(app, force = true)
-
-        // به‌روزرسانی خودکار فقط اگر داده‌ها کهنه باشند (پیش‌فرض ۳ ساعت) — شروع سریع‌تر
-        val newest = Repo.subs.value.maxOfOrNull { it.updatedAt } ?: 0L
-        val stale = System.currentTimeMillis() - newest > 3 * 60 * 60 * 1000L
-        if (settings.autoRefreshOnOpen && stale) {
-            delay(200)
-            syncAll(announce = false)
-        }
-
-        // بررسی نسخه‌ی جدید (حداکثر یک‌بار در ۶ ساعت)
         if (settings.autoUpdateCheck) checkUpdates(manual = false)
 
-        if (Repo.servers.value.isEmpty()) return
-
-        if (!autoConnectAllowed(app)) return
-        val needsPermission = VpnService.prepare(app) != null
-        if (needsPermission) {
-            if (settings.autoConnectOnOpen) requestSmartConnect()
-            return
+        val now = System.currentTimeMillis()
+        val refresh = settings.autoRefreshOnOpen && Repo.subs.value.any {
+            now - it.updatedAt > 3 * 60 * 60 * 1000L
         }
+        var syncFinished = false
+        try {
+            if (refresh && Repo.servers.value.isEmpty()) {
+                // First install: race sources, but still test the obtained configs with Xray.
+                val sources = Repo.subs.value.sortedBy { it.builtIn }
+                Repo.sync.value = ir.v2max.app.data.SyncState(
+                    running = true, total = sources.size, message = "دریافت نخستین منبع قابل استفاده…"
+                )
+                val first = try {
+                    SubscriptionBootstrap.firstUsable(sources) { done, total ->
+                        Repo.sync.value = Repo.sync.value.copy(done = done, total = total)
+                    }
+                } finally {
+                    Repo.sync.value = Repo.sync.value.copy(running = false)
+                }
+                if (first != null) {
+                    withContext(Dispatchers.IO) { applyFetchedSubscription(first.subscription, first.result) }
+                } else {
+                    syncFinished = true // all sources were already attempted
+                    Repo.sync.value = Repo.sync.value.copy(message = "دریافت منابع ناموفق بود؛ دوباره تلاش کنید")
+                }
+            }
 
-        // اتصال فقط پس از اتمام آزمون واقعی انجام می‌شود.
+            if (Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
+            // Do not restart a connection or compete with a scan the user already started.
+            if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
+            if (VpnService.prepare(app) != null) {
+                if (settings.autoConnectOnOpen) requestSmartConnectInternal()
+                return
+            }
 
-        SmartConnect.scanAndConnect(
-            app,
-            autoConnect = settings.autoConnectOnOpen,
-            limit = 450
-        )
+            val best = SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
+            // If the first source or all cached profiles fail, refresh the other stale
+            // sources and retry once rather than leaving the user disconnected.
+            if (best == null && refresh && !syncFinished) {
+                syncFinished = true
+                val (updated, _) = syncAll(announce = false, onlyStale = true)
+                if (updated > 0 && !Repo.tunnel.value.isActive && !Repo.scan.value.running) {
+                    SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
+                }
+            }
+        } finally {
+            // Fetching unrelated subscriptions is not a pre-connect test. Keep it off
+            // the hot path and preserve the selected/live profile while it runs.
+            if (refresh && !syncFinished && Repo.settings.value.autoRefreshOnOpen) {
+                viewModelScope.launch(errorHandler) { syncAll(announce = false, onlyStale = true) }
+            }
+        }
     }
 
     /** اگر «فقط وای‌فای» روشن باشد و شبکه داده باشد، اتصال خودکار انجام نمی‌شود */
@@ -141,6 +167,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // --------------------------------------------------------------- connect
 
     fun toggleConnection() {
+        cancelStartupForUserAction()
         if (Repo.scan.value.running) {
             SmartConnect.cancelScan()
             if (Repo.tunnel.value.isActive) TunnelController.stop(getApplication())
@@ -153,12 +180,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun disconnectTunnel() {
+        cancelStartupForUserAction()
         SmartConnect.cancelScan()
         TunnelController.stop(getApplication())
     }
 
     /** درخواست اتصال؛ در صورت نیاز مجوز VPN از کاربر گرفته می‌شود */
     fun requestConnect(serverId: String?) {
+        cancelStartupForUserAction()
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingServerId = serverId
@@ -181,6 +210,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun requestSmartConnect(subscriptionId: String? = null) {
+        cancelStartupForUserAction()
+        requestSmartConnectInternal(subscriptionId)
+    }
+
+    private fun requestSmartConnectInternal(subscriptionId: String? = null) {
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingServerId = null
@@ -241,6 +275,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun quickConnect() {
+        cancelStartupForUserAction()
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingSmartScan = false
@@ -257,12 +292,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ----------------------------------------------------------------- tests
 
     fun testAll() {
+        cancelStartupForUserAction()
         viewModelScope.launch(errorHandler) {
-            SmartConnect.scanAndConnect(getApplication(), autoConnect = false)
+            SmartConnect.scanAndConnect(getApplication(), autoConnect = false, exhaustive = true)
         }
     }
 
     fun testServer(id: String) {
+        cancelStartupForUserAction()
         viewModelScope.launch(errorHandler + Dispatchers.IO) {
             val server = Repo.serverById(id) ?: return@launch
             val settings = Repo.settings.value
@@ -272,10 +309,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 servers = listOf(server),
                 settings = settings,
                 preferredId = id,
-                onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping) },
-                onReal = { cfg, probe -> Repo.setVerifiedResult(cfg.id, probe) },
-                onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing) },
-                onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false) }
+                onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
+                onReal = { cfg, probe -> Repo.setVerifiedResult(cfg.id, probe, expectedFingerprint = cfg.fingerprint()) },
+                onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing, expectedFingerprint = cfg.fingerprint()) },
+                onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false, expectedFingerprint = cfg.fingerprint()) }
             )
             Repo.persistNow()
             showMessage(result.best?.let { "تست واقعی موفق بود: ${it.realPing}ms" } ?: result.message)
@@ -288,6 +325,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * اگر VPN وصل باشد، اتصال تا پیدا شدن گزینه‌ی بهتر حفظ می‌شود.
      */
     fun restartScan() {
+        cancelStartupForUserAction()
         val app = getApplication<Application>()
         if (VpnService.prepare(app) != null) {
             pendingServerId = null
@@ -316,6 +354,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------- subscriptions
 
     fun addSubscription(name: String, url: String) {
+        cancelStartupForUserAction()
         val cleanUrl = url.trim()
         if (cleanUrl.isEmpty()) {
             showMessage("آدرس اشتراک را وارد کنید")
@@ -350,31 +389,40 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Apply only a still-existing source and preserve user subscriptions without a count cap. */
+    private fun applyFetchedSubscription(sub: Subscription, result: SubscriptionFetcher.Result): Int {
+        val current = Repo.subById(sub.id) ?: return 0
+        if (!result.ok) return 0
+        val configs = SubscriptionPolicy.candidates(current, result.configs)
+        if (configs.isEmpty()) return 0
+        configs.forEach { it.subId = current.id }
+        Repo.replaceSubscriptionServers(current.id, configs)
+        Repo.updateSubscription(current.copy(
+            updatedAt = System.currentTimeMillis(), count = configs.size,
+            upload = result.upload, download = result.download, total = result.total,
+            expireAt = result.expireAt, lastError = ""
+        ))
+        return configs.size
+    }
+
     fun refreshSubscription(id: String) {
         val sub = Repo.subById(id) ?: return
         viewModelScope.launch(errorHandler) {
             _busy.value = true
-            val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url) }
+            val result = withContext(Dispatchers.IO) { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
             _busy.value = false
             if (!result.ok) {
                 Repo.updateSubscription(sub.copy(lastError = result.error))
                 showMessage(result.error)
                 return@launch
             }
-            result.configs.forEach { it.subId = sub.id }
-            Repo.replaceSubscriptionServers(sub.id, result.configs)
-            Repo.updateSubscription(
-                sub.copy(
-                    updatedAt = System.currentTimeMillis(),
-                    count = result.configs.size,
-                    upload = result.upload,
-                    download = result.download,
-                    total = result.total,
-                    expireAt = result.expireAt,
-                    lastError = ""
-                )
-            )
-            showMessage("اشتراک به‌روزرسانی شد (${Format.number(result.configs.size)} کانفیگ)")
+            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result) }
+            if (count == 0) {
+                Repo.subById(sub.id)?.let { Repo.updateSubscription(it.copy(lastError = "کانفیگ قابل استفاده‌ای دریافت نشد")) }
+                showMessage("کانفیگ قابل استفاده‌ای دریافت نشد؛ فهرست قبلی حفظ شد")
+            } else {
+                showMessage("اشتراک به‌روزرسانی شد (${Format.number(count)} کانفیگ)")
+            }
         }
     }
 
@@ -399,69 +447,55 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * و ذخیره‌ی نتیجه.
      * @return (تعداد منابع موفق، تعداد کل کانفیگ‌ها)
      */
-    private suspend fun syncAll(announce: Boolean): Pair<Int, Int> = syncMutex.withLock {
-        val targets = Repo.subs.value
+    private suspend fun syncAll(announce: Boolean, onlyStale: Boolean = false): Pair<Int, Int> = syncMutex.withLock {
+        val now = System.currentTimeMillis()
+        val targets = Repo.subs.value.filter { !onlyStale || now - it.updatedAt > 3 * 60 * 60 * 1000L }
         if (targets.isEmpty()) return@withLock 0 to Repo.servers.value.size
 
         Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = true,
-            done = 0,
-            total = targets.size,
+            running = true, done = 0, total = targets.size,
             message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
         )
-
         val semaphore = Semaphore(6)
         val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
         val okCount = java.util.concurrent.atomic.AtomicInteger(0)
-
-        // نوشتن انبوه روی دیسک موقتاً متوقف می‌شود تا همگام‌سازی سریع بماند
         Repo.suspendPersist(true)
         try {
-        coroutineScope {
-            targets.map { sub ->
-                async(Dispatchers.IO) {
-                    val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url) }
-                    if (result.ok) {
-                        val cap = PublicSources.forUrl(sub.url)?.maxConfigs ?: 400
-                        val trimmed = result.configs.take(cap)
-                        trimmed.forEach { it.subId = sub.id }
-                        Repo.replaceSubscriptionServers(sub.id, trimmed)
-                        Repo.updateSubscription(
-                            sub.copy(
-                                updatedAt = System.currentTimeMillis(),
-                                count = trimmed.size,
-                                upload = result.upload,
-                                download = result.download,
-                                total = result.total,
-                                expireAt = result.expireAt,
-                                lastError = ""
-                            )
+            coroutineScope {
+                targets.map { sub ->
+                    async(Dispatchers.IO) {
+                        val result = semaphore.withPermit { SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub)) }
+                        val count = if (result.ok) applyFetchedSubscription(sub, result) else 0
+                        if (count > 0) {
+                            okCount.incrementAndGet()
+                        } else {
+                            val error = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }
+                            Repo.subById(sub.id)?.let { Repo.updateSubscription(it.copy(lastError = error)) }
+                        }
+                        val done = doneCount.incrementAndGet()
+                        Repo.sync.value = Repo.sync.value.copy(
+                            done = done,
+                            message = "دریافت منابع (${Format.number(done)}/${Format.number(targets.size)})"
                         )
-                        okCount.incrementAndGet()
-                    } else {
-                        Repo.updateSubscription(sub.copy(lastError = result.error))
                     }
-                    val d = doneCount.incrementAndGet()
-                    Repo.sync.value = Repo.sync.value.copy(
-                        done = d,
-                        message = "دریافت منابع (${Format.number(d)}/${Format.number(targets.size)})"
-                    )
-                }
-            }.awaitAll()
-        }
-
+                }.awaitAll()
+            }
         } finally {
             Repo.suspendPersist(false)
+            // A cancellation must not lose results already applied in memory.
+            withContext(NonCancellable + Dispatchers.IO) { Repo.persistNow() }
+            Repo.sync.value = Repo.sync.value.copy(running = false)
         }
 
-        val removed = Repo.dedupeAllServers()
-        Repo.trimBuiltInServers()
-        Repo.persistNow()
+        val removed = withContext(Dispatchers.IO) {
+            val n = Repo.dedupeAllServers()
+            Repo.trimBuiltInServers()
+            Repo.persistNow()
+            n
+        }
         val total = Repo.servers.value.size
         Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = false,
-            done = targets.size,
-            total = targets.size,
+            running = false, done = targets.size, total = targets.size,
             message = "${Format.number(okCount.get())} منبع به‌روزرسانی شد · ${Format.number(total)} کانفیگ" +
                 if (removed > 0) " (${Format.number(removed)} تکراری حذف شد)" else ""
         )

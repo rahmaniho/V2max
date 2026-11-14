@@ -178,14 +178,15 @@ class V2maxVpnService : VpnService() {
             // تست دوباره‌ی سرور فعلی و جابه‌جایی در صورت خرابی
             scope.launch {
                 val id = currentServer?.id ?: Repo.tunnel.value.serverId
-                val server = Repo.serverById(id)
+                val server = Repo.serverById(id)?.copy()
                 if (server != null) {
                     val result = ProbePlanner.verify(server, Repo.settings.value, ir.v2max.app.net.HealthScanner::realDelay)
-                    if (Repo.tunnel.value.status != TunnelStatus.CONNECTED || currentServer?.id != id) return@launch
+                    if (Repo.tunnel.value.status != TunnelStatus.CONNECTED || currentServer?.id != id ||
+                        Repo.serverById(id)?.fingerprint() != server.fingerprint()) return@launch
                     if (result == null) {
                         rotate("تست مجدد ناموفق بود")
                     } else {
-                        Repo.setVerifiedResult(server.id, result)
+                        Repo.setVerifiedResult(server.id, result, expectedFingerprint = server.fingerprint())
                         Repo.persistNow()
                         publish(Repo.tunnel.value.copy(ping = result.delayMs, message = "تست مجدد: ${result.delayMs}ms"))
                     }
@@ -226,7 +227,9 @@ class V2maxVpnService : VpnService() {
                     }
                     coroutineContext.ensureActive()
                     val best = preferred ?: ir.v2max.app.core.SmartConnect.scanAndConnect(
-                        applicationContext, autoConnect = false
+                        applicationContext, autoConnect = false,
+                        excludedIds = if (serverId.isNotBlank() && intent?.getBooleanExtra(EXTRA_SMART_SELECT, false) != true)
+                            setOf(serverId) else emptySet()
                     )
                     coroutineContext.ensureActive()
                     if (generation != connectToken.get()) return@launch
@@ -294,7 +297,7 @@ class V2maxVpnService : VpnService() {
 
     private suspend fun doConnect(serverId: String, token: Int, isFailover: Boolean = false) {
         try {
-            val server = Repo.serverById(serverId)
+            val server = Repo.serverById(serverId)?.copy()
                 ?: throw IllegalStateException("سرور انتخاب‌شده دیگر در فهرست نیست")
             require(server.realPing > 0 && server.testedUrl.isNotBlank()) {
                 "پیش از اتصال باید تست واقعی این سرور کامل شود"
@@ -408,7 +411,7 @@ class V2maxVpnService : VpnService() {
             Repo.setVerifiedResult(server.id, ProbeResult(
                 primaryVerification.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
                 primaryVerification.second, settings.fragment, settings.fragmentProfile
-            ), clearOtherTargets = false)
+            ), clearOtherTargets = false, expectedFingerprint = server.fingerprint())
             Repo.persistNow()
 
             running = true
@@ -645,7 +648,7 @@ class V2maxVpnService : VpnService() {
                 } else if (failures >= MAX_FAIL_RESILIENCE) {
                     // تلاش نهایی: کاوش گسترده؛ اگر چیزی نبود اتصال را قطع نمی‌کنیم
                     val generation = connectToken.get()
-                    val replacement = Failover.probeAsync(applicationContext, limit = 120)
+                    val replacement = Failover.probeAsync(applicationContext, limit = 120, currentId = currentServer?.id)
                         ?: Failover.findReplacement(applicationContext, currentServer?.id)
                     coroutineContext.ensureActive()
                     if (generation != connectToken.get()) return@launch

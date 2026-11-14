@@ -5,6 +5,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.SubscriptionFetcher
+import ir.v2max.app.net.SubscriptionPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -14,7 +15,6 @@ import kotlinx.coroutines.withContext
 
 /** Fail over only to a recently verified Xray configuration, never a TCP-only result. */
 object Failover {
-    private const val FRESH_MS = 10 * 60 * 1000L
     private const val REFRESH_INTERVAL_MS = 10 * 60 * 1000L
     private val failed = java.util.Collections.synchronizedSet(HashSet<String>())
     private val refreshMutex = Mutex()
@@ -25,28 +25,35 @@ object Failover {
     fun markWorking(id: String) { if (id.isNotBlank()) failed.remove(id) }
     fun failedCount(): Int = failed.size
 
-    fun next(currentId: String? = null): ServerConfig? =
-        Repo.healthyServers(FRESH_MS).firstOrNull { it.id != currentId && it.id !in failed }
-
-    /** Complete the same real-protocol test before choosing an untested replacement. */
-    suspend fun probeAsync(context: Context, limit: Int = 80): ServerConfig? = withContext(Dispatchers.IO) {
-        val builtIns = Repo.subs.value.filter { it.builtIn }.map { it.id }.toSet()
-        val pool = Repo.servers.value.filter { it.id !in failed && it.hasUsableEndpoint() }
-            .shuffled()
-            .sortedWith(compareByDescending<ServerConfig> { it.favorite }.thenBy { it.subId in builtIns })
-            .take(limit)
+    /** Re-test promising replacements on the current network before switching. */
+    suspend fun probeAsync(context: Context, limit: Int = 0, currentId: String? = null): ServerConfig? =
+        withContext(Dispatchers.IO) {
+        val pool = Repo.servers.value.filter {
+            it.id != currentId && it.id !in failed && it.hasUsableEndpoint()
+        }
         if (pool.isEmpty()) return@withContext null
+        val startedAt = System.currentTimeMillis()
         val outcome = HealthScanner.scan(
             context = context,
             servers = pool,
             settings = Repo.settings.value,
-            onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping) },
-            onReal = { cfg, result -> Repo.setVerifiedResult(cfg.id, result) },
-            onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing) },
-            onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false) }
+            limit = limit,
+            onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
+            onReal = { cfg, result -> Repo.setVerifiedResult(cfg.id, result, expectedFingerprint = cfg.fingerprint()) },
+            onMulti = { cfg -> Repo.setMultiPing(cfg.id, cfg.googlePing, cfg.instagramPing, cfg.youtubePing, expectedFingerprint = cfg.fingerprint()) },
+            onSpeed = { cfg, kbps -> Repo.setSpeed(cfg.id, kbps, persist = false, expectedFingerprint = cfg.fingerprint()) }
         )
+        currentCoroutineContext().ensureActive()
+        val selected = outcome.qualified.firstNotNullOfOrNull { tested ->
+            Repo.serverById(tested.id)?.takeIf { current ->
+                current.fingerprint() == tested.fingerprint() && current.testedAt >= startedAt &&
+                    current.realPing > 0 && current.testedUrl == tested.testedUrl &&
+                    current.testedFragment == tested.testedFragment &&
+                    (!current.testedFragment || current.testedFragmentProfile == tested.testedFragmentProfile)
+            }
+        }
         Repo.persistNow()
-        outcome.best?.let { Repo.serverById(it.id) }
+        selected
     }
 
     /** Refresh stale subscriptions once if no existing configuration succeeds. */
@@ -59,13 +66,16 @@ object Failover {
         var refreshed = false
         for (sub in sources) {
             currentCoroutineContext().ensureActive()
-            val result = SubscriptionFetcher.fetch(sub.url)
+            val result = SubscriptionFetcher.fetch(sub.url, SubscriptionPolicy.limit(sub))
             currentCoroutineContext().ensureActive()
+            val current = Repo.subById(sub.id) ?: continue
             if (!result.ok) continue
-            result.configs.forEach { it.subId = sub.id }
-            Repo.replaceSubscriptionServers(sub.id, result.configs)
-            Repo.updateSubscription(sub.copy(
-                updatedAt = System.currentTimeMillis(), count = result.configs.size,
+            val configs = SubscriptionPolicy.candidates(current, result.configs)
+            if (configs.isEmpty()) continue
+            configs.forEach { it.subId = current.id }
+            Repo.replaceSubscriptionServers(current.id, configs)
+            Repo.updateSubscription(current.copy(
+                updatedAt = System.currentTimeMillis(), count = configs.size,
                 upload = result.upload, download = result.download, total = result.total,
                 expireAt = result.expireAt, lastError = ""
             ))
@@ -75,9 +85,8 @@ object Failover {
     }
 
     suspend fun findReplacement(context: Context, currentId: String?): ServerConfig? {
-        next(currentId)?.let { return it }
-        probeAsync(context)?.let { return it }
-        if (refreshSubscriptions()) return probeAsync(context)
+        probeAsync(context, currentId = currentId)?.let { return it }
+        if (refreshSubscriptions()) return probeAsync(context, currentId = currentId)
         return null
     }
 }

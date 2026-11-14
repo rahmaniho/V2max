@@ -7,6 +7,7 @@ import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
+import ir.v2max.app.net.ProbePlanner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,15 +25,22 @@ object SmartConnect {
 
     private val scanMutex = Mutex()
     private val probeMutex = Mutex()
+    private val scanJobs = java.util.Collections.synchronizedSet(HashSet<Job>())
     @Volatile private var activeScanJob: Job? = null
+    @Volatile private var assessmentNetwork: Long? = null
 
-    fun cancelScan() { activeScanJob?.cancel() }
+    // Cancel queued scans too, so an automatic scan cannot reconnect after a user cancels.
+    fun cancelScan() {
+        val jobs = synchronized(scanJobs) { scanJobs.toList() }
+        jobs.forEach { it.cancel() }
+    }
 
     /** بررسی عمیق شبکه (اپراتور، DNS، DPI، تأخیر/لرزش) و انتشار نتیجه برای رابط کاربری */
     suspend fun assessNetwork(context: Context, force: Boolean = false) {
         if (!Repo.settings.value.deepProbe) return
         probeMutex.withLock {
-            if (!force && Repo.network.value.fresh) return@withLock
+            val before = CarrierProbe.networkHandle(context)
+            if (!force && before != null && before == assessmentNetwork && Repo.network.value.fresh) return@withLock
             Repo.scan.value = Repo.scan.value.copy(
                 phase = "بررسی عمیق شبکه‌ی اپراتور",
                 message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
@@ -44,6 +52,13 @@ object SmartConnect {
             } catch (_: Exception) {
                 return@withLock
             }
+            val after = CarrierProbe.networkHandle(context)
+            if (before != after) {
+                assessmentNetwork = null
+                Repo.network.value = ir.v2max.app.data.NetworkAssessment()
+                return@withLock
+            }
+            assessmentNetwork = after
             Repo.network.value = result
         }
     }
@@ -54,150 +69,168 @@ object SmartConnect {
         autoConnect: Boolean = true,
         subscriptionId: String? = null,
         limit: Int = 0,
-        preferredId: String? = null
-    ): ServerConfig? = scanMutex.withLock {
+        preferredId: String? = null,
+        excludedIds: Set<String> = emptySet(),
+        exhaustive: Boolean = false
+    ): ServerConfig? {
         val job = currentCoroutineContext()[Job]
-        activeScanJob = job
+        if (job != null) scanJobs.add(job)
         try {
-            val all = withContext(Dispatchers.Default) {
-                Repo.servers.value.filter { subscriptionId == null || it.subId == subscriptionId }
-            }
-            // اولویت‌بندی: علاقه‌مندی‌ها، سپس سرورهایی که قبلاً سالم بوده‌اند
-            val servers = if (limit > 0 && all.size > limit) {
-                all.sortedWith(
-                    compareByDescending<ServerConfig> { it.id == preferredId }
-                        .thenByDescending { it.favorite }
-                        .thenByDescending { it.realPing > 0 }
-                        .thenBy { if (it.bestPing() > 0) it.bestPing() else Int.MAX_VALUE }
-                ).take(limit)
-            } else all
-
-            if (servers.isEmpty()) {
-                Repo.scan.value = ScanState(
-                    running = false,
-                    finished = true,
-                    message = "هیچ کانفیگی وجود ندارد. ابتدا یک اشتراک اضافه کنید."
-                )
-                return@withLock null
-            }
-
-            Repo.scan.value = ScanState(
-                running = true,
-                total = servers.size,
-                phase = "شروع اسکن هوشمند",
-                message = "در حال بررسی ${servers.size} کانفیگ"
-            )
-
-            // پیش از هر تستی، شبکه‌ی اپراتور بررسی می‌شود تا فرگمنت/MTU درست انتخاب شود
-            assessNetwork(context)
-
-            val settings = Repo.settings.value
-            val assessment = Repo.network.value
-            val scanSettings = if (settings.autoTuneFragment && assessment.fresh) {
-                settings.copy(fragmentProfile = assessment.recommendedFragment)
-            } else settings
-            val outcome = try {
-                HealthScanner.scan(
-                    context = context,
-                    servers = servers,
-                    settings = scanSettings,
-                    preferredId = preferredId,
-                    onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping) },
-                    onReal = { cfg, result -> Repo.setVerifiedResult(cfg.id, result) },
-                    onSpeed = { cfg, kbps ->
-                        Repo.setSpeed(cfg.id, kbps, persist = false)
-                    },
-                    onMulti = { cfg ->
-                        Repo.setMultiPing(
-                            cfg.id,
-                            google = cfg.googlePing,
-                            instagram = cfg.instagramPing,
-                            youtube = cfg.youtubePing,
-                            persist = false
+            return scanMutex.withLock {
+                activeScanJob = job
+                try {
+                    val servers = withContext(Dispatchers.Default) {
+                        Repo.servers.value.filter {
+                            (subscriptionId == null || it.subId == subscriptionId) && it.id !in excludedIds
+                        }
+                    }
+                    if (servers.isEmpty()) {
+                        Repo.scan.value = ScanState(
+                            running = false,
+                            finished = true,
+                            message = "هیچ کانفیگی برای بررسی وجود ندارد. ابتدا یک اشتراک اضافه کنید."
                         )
-                    },
-                    onPhase = { phase, done, total ->
-                        Repo.scan.value = Repo.scan.value.copy(phase = phase, done = done, total = total)
-                    },
-                    onAlive = { alive ->
-                        Repo.scan.value = Repo.scan.value.copy(alive = alive)
+                        return@withLock null
                     }
-                )
-            } catch (e: CancellationException) {
-                Repo.scan.value = Repo.scan.value.copy(running = false, message = "تست لغو شد")
-                throw e
-            } catch (t: Exception) {
-                Repo.scan.value = Repo.scan.value.copy(
-                    running = false,
-                    finished = true,
-                    message = "اسکن متوقف شد: ${t.message ?: "خطا"}"
-                )
-                return@withLock null
-            }
 
-            // A temporary outage is not evidence that a user's configuration should be deleted.
-            Repo.persistNow()
+                    Repo.scan.value = ScanState(
+                        running = true,
+                        total = if (limit > 0) minOf(limit, servers.size) else servers.size,
+                        phase = "شروع اسکن هوشمند",
+                        message = "در حال بررسی مرحله‌ای کانفیگ‌ها"
+                    )
 
-            val best = outcome.best?.let { Repo.serverById(it.id) } ?: outcome.best
-            Repo.scan.value = Repo.scan.value.copy(
-                running = false,
-                finished = true,
-                finishedAt = System.currentTimeMillis(),
-                alive = outcome.qualified.size,
-                done = outcome.testedCount,
-                total = outcome.testedCount,
-                bestName = best?.displayName().orEmpty(),
-                phase = "پایان",
-                message = when {
-                    best == null -> outcome.message
-                    else -> buildString {
-                        if (preferredId != null && best.id != preferredId) append("سرور انتخابی پاسخ نداد؛ جایگزین: ")
-                        else append("سرور تأییدشده: ")
-                        append("${best.displayName()} (${best.realPing}ms)")
-                        append(" · ${outcome.testedCount} تست واقعی")
+                    // This assessment, when enabled, is complete before any connection.
+                    assessNetwork(context)
+                    val settings = Repo.settings.value
+                    val assessment = Repo.network.value
+                    val assessmentValid = settings.deepProbe && assessment.fresh && assessmentNetwork != null &&
+                        assessmentNetwork == CarrierProbe.networkHandle(context)
+                    val scanSettings = if (settings.autoTuneFragment && assessmentValid) {
+                        settings.copy(fragmentProfile = assessment.recommendedFragment)
+                    } else settings
+                    val profileKey = if (assessmentValid) profileKeyOf(assessment) else ""
+                    val rememberedId = if (preferredId == null && settings.rememberNetworks && profileKey.isNotBlank()) {
+                        Repo.profileFor(profileKey)?.serverId
+                    } else null
+                    val scanStartedAt = System.currentTimeMillis()
+                    val outcome = try {
+                        HealthScanner.scan(
+                            context = context,
+                            servers = servers,
+                            settings = scanSettings,
+                            preferredId = preferredId,
+                            rememberedId = rememberedId,
+                            limit = limit,
+                            exhaustive = exhaustive,
+                            onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
+                            onReal = { cfg, result ->
+                                Repo.setVerifiedResult(cfg.id, result, expectedFingerprint = cfg.fingerprint())
+                            },
+                            onSpeed = { cfg, kbps ->
+                                Repo.setSpeed(cfg.id, kbps, persist = false, expectedFingerprint = cfg.fingerprint())
+                            },
+                            onMulti = { cfg ->
+                                Repo.setMultiPing(
+                                    cfg.id,
+                                    google = cfg.googlePing,
+                                    instagram = cfg.instagramPing,
+                                    youtube = cfg.youtubePing,
+                                    persist = false,
+                                    expectedFingerprint = cfg.fingerprint()
+                                )
+                            },
+                            onPhase = { phase, done, total ->
+                                Repo.scan.value = Repo.scan.value.copy(phase = phase, done = done, total = total)
+                            },
+                            onAlive = { alive -> Repo.scan.value = Repo.scan.value.copy(alive = alive) }
+                        )
+                    } catch (e: CancellationException) {
+                        Repo.scan.value = Repo.scan.value.copy(running = false, message = "تست لغو شد")
+                        throw e
+                    } catch (t: Exception) {
+                        Repo.scan.value = Repo.scan.value.copy(
+                            running = false,
+                            finished = true,
+                            message = "اسکن متوقف شد: ${t.message ?: "خطا"}"
+                        )
+                        return@withLock null
+                    }
+                    currentCoroutineContext().ensureActive()
+
+                    // A refresh or edit can replace a config while its snapshot is being tested.
+                    // Never turn that old result into permission to start the new configuration.
+                    val qualified = outcome.qualified.mapNotNull { tested ->
+                        Repo.serverById(tested.id)?.takeIf { current ->
+                            current.fingerprint() == tested.fingerprint() && current.testedAt >= scanStartedAt &&
+                                current.realPing > 0 && current.testedUrl == tested.testedUrl &&
+                                current.testedFragment == tested.testedFragment &&
+                                (!current.testedFragment || current.testedFragmentProfile == tested.testedFragmentProfile)
+                        }
+                    }
+                    val best = qualified.firstOrNull { it.id == preferredId } ?: qualified.firstOrNull()
+                    val remembered = qualified.firstOrNull { it.id == rememberedId }
+                    val chosen = when {
+                        best == null -> null
+                        // Do not override a fresh download comparison with old network memory.
+                        !outcome.speedCompared && remembered != null &&
+                            ProbePlanner.latencyScore(remembered) <= ProbePlanner.latencyScore(best) + 60 -> remembered
+                        else -> best
+                    }
+
+                    Repo.scan.value = Repo.scan.value.copy(
+                        running = false,
+                        finished = true,
+                        finishedAt = System.currentTimeMillis(),
+                        alive = qualified.size,
+                        done = outcome.testedCount,
+                        total = outcome.testedCount,
+                        bestName = chosen?.displayName().orEmpty(),
+                        phase = "پایان",
+                        message = when {
+                            chosen == null && outcome.best != null -> "فهرست هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                            chosen == null -> outcome.message
+                            else -> buildString {
+                                if (preferredId != null && chosen.id != preferredId) append("سرور انتخابی پاسخ نداد؛ جایگزین: ")
+                                else append("سرور تأییدشده: ")
+                                append("${chosen.displayName()} (${chosen.realPing}ms)")
+                                append(" · ${outcome.testedCount} تست واقعی · اسکن ${outcome.elapsedMs}ms")
+                                append(" · ${outcome.message}")
+                            }
+                        }
+                    )
+
+                    currentCoroutineContext().ensureActive()
+                    if (chosen != null) {
+                        val tunnel = Repo.tunnel.value
+                        val current = Repo.serverById(tunnel.serverId)
+                        val connected = tunnel.status == TunnelStatus.CONNECTED
+                        val sameAsRunning = connected && current?.id == chosen.id
+                        // Avoid interrupting a working, comparable connection.
+                        val keepCurrent = preferredId == null && autoConnect && connected && current != null &&
+                            !sameAsRunning && current.bestPing() > 0 &&
+                            ProbePlanner.latencyScore(current) <= ProbePlanner.latencyScore(chosen) * 1.35f
+                        when {
+                            sameAsRunning -> Repo.setSelected(chosen.id)
+                            keepCurrent -> Unit
+                            else -> {
+                                Repo.setSelected(chosen.id)
+                                if (autoConnect) TunnelController.start(context, chosen.id, verified = true)
+                            }
+                        }
+                    }
+                    // Serialization of a large list must not block the UI or delay issuing the start command.
+                    withContext(Dispatchers.IO) { Repo.persistNow() }
+                    chosen
+                } finally {
+                    if (activeScanJob === job) activeScanJob = null
+                    if (job?.isCancelled == true) {
+                        Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, message = "تست لغو شد")
                     }
                 }
-            )
-
-            // حافظه‌ی شبکه‌های آشنا: اگر سرور ذخیره‌شده‌ی همین شبکه تقریباً هم‌سطح بهترین بود، همان انتخاب می‌شود
-            val profileKey = profileKeyOf(assessment)
-            val rememberedId = if (preferredId == null && settings.rememberNetworks && profileKey.isNotBlank()) {
-                Repo.profileFor(profileKey)?.serverId
-            } else null
-            val remembered = outcome.qualified.firstOrNull { it.id == rememberedId }
-                ?.let { Repo.serverById(it.id) }
-
-            val chosen = when {
-                best == null -> null
-                remembered != null && remembered.realPing > 0 && remembered.score() <= best.score() + 60 -> remembered
-                else -> best
             }
-
-            if (chosen != null) {
-                val tunnel = Repo.tunnel.value
-                val current = Repo.serverById(tunnel.serverId)
-                val connected = tunnel.status == TunnelStatus.CONNECTED
-                val sameAsRunning = connected && current?.id == chosen.id
-                // اتصال فعلی تقریباً هم‌سطح بهترین است؛ برای جلوگیری از قطعی سوییچ نمی‌کنیم
-                val keepCurrent = preferredId == null && autoConnect && connected && current != null &&
-                    !sameAsRunning && current.bestPing() > 0 &&
-                    current.score() <= chosen.score() * 1.35f
-
-                when {
-                    sameAsRunning -> Repo.setSelected(chosen.id)
-                    keepCurrent -> Unit
-                    else -> {
-                        Repo.setSelected(chosen.id)
-                        if (autoConnect) TunnelController.start(context, chosen.id, verified = true)
-                    }
-                }
-            }
-            return@withLock chosen
         } finally {
-            if (activeScanJob === job) activeScanJob = null
-            if (job?.isCancelled == true) {
-                Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, message = "تست لغو شد")
-            }
+            if (job != null) scanJobs.remove(job)
         }
     }
 
@@ -214,8 +247,12 @@ object SmartConnect {
         // A manual choice should not wait for hundreds of unrelated public configs.
         if (scanAndConnect(context, autoConnect = true, limit = 1, preferredId = serverId) != null) return true
         currentCoroutineContext().ensureActive()
+        if (Repo.servers.value.none { it.id != serverId }) {
+            Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد و جایگزینی وجود ندارد")
+            return false
+        }
         Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد؛ جستجوی جایگزین…")
-        return scanAndConnect(context, autoConnect = true) != null
+        return scanAndConnect(context, autoConnect = true, excludedIds = setOf(serverId)) != null
     }
 
     /**

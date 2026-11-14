@@ -7,12 +7,21 @@ import ir.v2max.app.data.ServerConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
+import java.io.IOException
 import java.net.InetSocketAddress
 import java.net.Proxy
+import java.net.Socket
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
 
 /**
  * سنجش سرعت دانلود واقعی از طریق یک کانفیگ، پیش از اتصال تانل.
@@ -51,8 +60,8 @@ object SpeedTester {
             try {
                 lease = XrayCore.startSpeedTest(config) ?: return@withContext 0
                 if (!XrayCore.isRunning) return@withContext 0
-                // کمی صبر تا inbound آماده شود
-                delay(350)
+                // Proceed as soon as the local inbound is actually listening.
+                if (!awaitSocksReady()) return@withContext 0
 
                 val request = Request.Builder()
                     .url(TEST_URL)
@@ -60,27 +69,7 @@ object SpeedTester {
                     .get()
                     .build()
 
-                var totalBytes = 0L
-                val start = System.currentTimeMillis()
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@withContext 0
-                    val body = response.body ?: return@withContext 0
-                    val stream = body.byteStream()
-                    val buffer = ByteArray(16 * 1024)
-                    while (true) {
-                        val read = stream.read(buffer)
-                        if (read <= 0) break
-                        totalBytes += read
-                        if (totalBytes >= MAX_BYTES) break
-                        if (System.currentTimeMillis() - start > 12_000L) break
-                    }
-                }
-                val elapsedMs = (System.currentTimeMillis() - start).coerceAtLeast(1L)
-                if (totalBytes < 20_000) return@withContext 0
-
-                // کیلوبیت بر ثانیه
-                val kbps = ((totalBytes * 8L) / elapsedMs).toInt()
-                kbps.coerceIn(0, 999_999)
+                downloadKbps(request)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -89,4 +78,57 @@ object SpeedTester {
                 lease?.let { runCatching { XrayCore.stopSpeedTest(it) } }
             }
         }
+
+    /** Cancellation closes the HTTP stream rather than waiting for the read timeout. */
+    private suspend fun downloadKbps(request: Request): Int = suspendCancellableCoroutine { continuation ->
+        val call = client.newCall(request)
+        val start = System.nanoTime()
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) continuation.resume(0)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val kbps = try {
+                    response.use {
+                        val body = it.body
+                        if (!it.isSuccessful || body == null) 0 else {
+                            var totalBytes = 0L
+                            val stream = body.byteStream()
+                            val buffer = ByteArray(16 * 1024)
+                            while (true) {
+                                val read = stream.read(buffer)
+                                if (read <= 0) break
+                                totalBytes += read
+                                if (totalBytes >= MAX_BYTES ||
+                                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) > 12_000L) break
+                            }
+                            val elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start).coerceAtLeast(1L)
+                            if (totalBytes < 20_000) 0 else ((totalBytes * 8L) / elapsed).coerceIn(0, 999_999).toInt()
+                        }
+                    }
+                } catch (_: Exception) {
+                    0
+                }
+                if (continuation.isActive) continuation.resume(kbps)
+            }
+        })
+    }
+
+    private suspend fun awaitSocksReady(): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            coroutineContext.ensureActive()
+            val ready = try {
+                Socket().use { it.connect(InetSocketAddress("127.0.0.1", SOCKS_PORT), 100) }
+                true
+            } catch (_: Exception) {
+                false
+            }
+            if (ready) return true
+            delay(25)
+        }
+        return false
+    }
 }

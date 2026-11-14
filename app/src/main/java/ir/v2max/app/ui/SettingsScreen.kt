@@ -201,7 +201,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "سنجش سرعت دانلود واقعی",
-                subtitle = "برای چند سرور برتر، سرعت دانلود واقعی اندازه‌گیری و در رتبه‌بندی لحاظ می‌شود",
+                subtitle = "سرعت چند سرور تست‌شده با دانلود نمونه مقایسه می‌شود؛ زمان و حجم بیشتری مصرف می‌کند و هنگام اتصال فعال اجرا نمی‌شود",
                 checked = settings.speedTest
             ) { value -> onChange { it.copy(speedTest = value) } }
         }

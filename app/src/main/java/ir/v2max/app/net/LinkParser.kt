@@ -13,15 +13,17 @@ import java.net.URLDecoder
 object LinkParser {
 
     /** پارس یک متن چندخطی (محتویات اشتراک) */
-    fun parseAll(text: String): List<ServerConfig> {
+    fun parseAll(text: String, maxConfigs: Int = 0): List<ServerConfig> {
         val result = ArrayList<ServerConfig>()
         val body = maybeBase64(text)
-        body.split('\n', '\r')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .forEach { line ->
-                parseLine(line)?.let { result.add(it) }
-            }
+        // Do not allocate thousands of ServerConfig objects only to discard them
+        // for a capped built-in feed. A personal subscription passes zero: no cap.
+        for (line in body.lineSequence()) {
+            val cfg = parseLine(line) ?: continue
+            if (maxConfigs > 0 && !cfg.hasUsableEndpoint()) continue
+            result.add(cfg)
+            if (maxConfigs > 0 && result.size >= maxConfigs) break
+        }
         return result
     }
 

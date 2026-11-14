@@ -51,50 +51,45 @@ object CarrierProbe {
 
     private const val CONNECT_TIMEOUT = 2500
 
+    /** Process-local hint only; do not use a cached assessment after a network change. */
+    fun networkHandle(context: Context): Long? = runCatching {
+        context.getSystemService(ConnectivityManager::class.java)?.activeNetwork?.networkHandle
+    }.getOrNull()
+
     suspend fun assess(context: Context): NetworkAssessment = withContext(Dispatchers.IO) {
         val info = carrierInfo(context)
 
-        // ---------- ۱) کیفیت مسیر نسبت به لنگرها
-        val samples = ArrayList<Pair<Int, Boolean>>() // (latency, ok)
-        coroutineScope {
-            ANCHORS.map { (host, port) ->
-                async { tcpLatency(host, port) }
-            }.awaitAll().forEach { samples.add(it) }
+        // The anchor and DNS/TLS groups are independent. Run both together, but
+        // await every measurement before selecting settings or starting a tunnel.
+        val (samples, hostStates) = coroutineScope {
+            val anchors = ANCHORS.map { (host, port) -> async { tcpLatency(host, port) } }
+            val hosts = PROBE_HOSTS.map { host ->
+                async {
+                    val resolved = runCatching { InetAddress.getByName(host) }.getOrNull()
+                        ?: return@async Pair(host, 0) // DNS failure
+                    val ip = resolved.hostAddress ?: return@async Pair(host, 0)
+                    val tcp = tcpLatency(ip, 443)
+                    if (!tcp.second) return@async Pair(host, 1)
+                    Pair(host, if (tlsHandshake(ip, 443, host)) 3 else 2)
+                }
+            }
+            anchors.awaitAll() to hosts.awaitAll()
         }
-
         val ok = samples.filter { it.second }.map { it.first }
         val latency = if (ok.isEmpty()) -1 else ok.average().toInt()
         val jitter = if (ok.size < 2) -1 else (ok.maxOrNull()!! - ok.minOrNull()!!)
         val loss = ((samples.size - ok.size) * 100) / samples.size.coerceAtLeast(1)
 
-        // ---------- ۲) DNS و دسترسی مستقیم
         var dnsBlocked = false
         val blocked = ArrayList<String>()
         var tlsBlocked = 0
         var reachableHosts = 0
-
-        coroutineScope {
-            PROBE_HOSTS.map { host ->
-                async {
-                    val resolved = runCatching { InetAddress.getByName(host) }.getOrNull()
-                    if (resolved == null) {
-                        dnsBlocked = true
-                        return@async Pair(host, 0) // DNS fail
-                    }
-                    val ip = resolved.hostAddress ?: return@async Pair(host, 0)
-                    val tcp = tcpLatency(ip, 443)
-                    if (!tcp.second) return@async Pair(host, 1) // TCP blocked
-                    // TCP وصل شد: حالا دست‌دادن TLS با همان SNI را امتحان می‌کنیم
-                    val tlsOk = tlsHandshake(ip, 443, host)
-                    Pair(host, if (tlsOk) 3 else 2)
-                }
-            }.awaitAll().forEach { (host, state) ->
-                when (state) {
-                    3 -> reachableHosts++
-                    2 -> { tlsBlocked++; blocked.add(host) }
-                    1 -> blocked.add(host)
-                    0 -> { dnsBlocked = true; blocked.add(host) }
-                }
+        hostStates.forEach { (host, state) ->
+            when (state) {
+                3 -> reachableHosts++
+                2 -> { tlsBlocked++; blocked.add(host) }
+                1 -> blocked.add(host)
+                0 -> { dnsBlocked = true; blocked.add(host) }
             }
         }
 
