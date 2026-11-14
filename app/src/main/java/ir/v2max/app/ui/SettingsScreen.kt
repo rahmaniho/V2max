@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,6 +58,8 @@ fun SettingsScreen(
     onRestore: () -> Unit = {},
     onCopyCrashLog: () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    var showLockSetupDialog by remember { mutableStateOf(false) }
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
@@ -468,7 +471,11 @@ fun SettingsScreen(
                 subtitle = "ورود به برنامه با اثر انگشت، چهره یا رمز دستگاه",
                 checked = settings.appLock
             ) { value ->
-                onChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
+                if (value && !AppLock.isAvailable(context)) {
+                    showLockSetupDialog = true
+                } else {
+                    onChange { it.copy(appLock = value, allowExternalAutomation = if (value) false else it.allowExternalAutomation) }
+                }
             }
         }
 
@@ -563,6 +570,16 @@ fun SettingsScreen(
         }
 
         item { Spacer(Modifier.height(12.dp)) }
+    }
+
+    if (showLockSetupDialog) {
+        AlertDialog(
+            onDismissRequest = { showLockSetupDialog = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("احراز هویت در دسترس نیست", color = V2.TextPrimary) },
+            text = { Text("برای قفل برنامه به رمز، الگو یا روش احراز هویت فعال و در دسترس نیاز است. تنظیمات امنیت اندروید را بررسی و دوباره تلاش کنید.", color = V2.TextSecondary) },
+            confirmButton = { TextButton(onClick = { showLockSetupDialog = false }) { Text("متوجه شدم") } }
+        )
     }
 
     if (showAutomationWarning) {

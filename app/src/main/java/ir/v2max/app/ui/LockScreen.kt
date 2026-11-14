@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.sp
 
 /** صفحه‌ی قفل برنامه؛ تا زمان احراز هویت موفق نمایش داده می‌شود */
 @Composable
-fun LockScreen(onUnlock: () -> Unit) {
+fun LockScreen(onUnlock: () -> Unit, error: String = "", onOpenSecuritySettings: () -> Unit = {}) {
     AppBackground {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(
@@ -66,9 +66,19 @@ fun LockScreen(onUnlock: () -> Unit) {
                     modifier = Modifier.fillMaxWidth(),
                     onClick = onUnlock
                 )
+                if (error.isNotBlank()) {
+                    Spacer(Modifier.height(14.dp))
+                    Text(error, style = MaterialTheme.typography.bodySmall, color = V2.Amber, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    GhostButton(
+                        text = "تنظیمات امنیت دستگاه",
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = onOpenSecuritySettings
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "می‌توانید قفل برنامه را از تنظیمات خاموش کنید.",
+                    "پس از ورود، می‌توانید قفل برنامه را از تنظیمات خاموش کنید.",
                     fontSize = 10.sp,
                     color = V2.TextMuted
                 )

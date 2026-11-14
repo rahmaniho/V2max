@@ -32,6 +32,7 @@ class MainActivity : FragmentActivity() {
 
     /** وضعیت قفل برنامه (اگر در تنظیمات فعال شده باشد) */
     private val unlocked = androidx.compose.runtime.mutableStateOf(false)
+    private val lockError = androidx.compose.runtime.mutableStateOf("")
     // External shares/deep links can be sent by any app, so stage them until
     // the user explicitly confirms instead of changing VPN state on receipt.
     private val pendingExternalImport = androidx.compose.runtime.mutableStateOf<String?>(null)
@@ -72,7 +73,9 @@ class MainActivity : FragmentActivity() {
                 val locked = Repo.settings.collectAsStateWithLifecycle().value.appLock && !unlocked.value
                 if (locked) {
                     LockScreen(
-                        onUnlock = { requestUnlock() }
+                        onUnlock = { requestUnlock() },
+                        error = lockError.value,
+                        onOpenSecuritySettings = { openSecuritySettings() }
                     )
                     LaunchedEffect(Unit) {
                         if (!lockPromptShown) {
@@ -190,11 +193,17 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun requestUnlock() {
+        lockError.value = ""
         ir.v2max.app.ui.AppLock.prompt(
             this,
-            onSuccess = { unlocked.value = true },
-            onFailure = { /* کاربر می‌تواند دوباره تلاش کند */ }
+            onSuccess = { lockError.value = ""; unlocked.value = true },
+            onFailure = { lockError.value = it }
         )
+    }
+
+    private fun openSecuritySettings() {
+        runCatching { startActivity(Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS)) }
+            .onFailure { lockError.value = "تنظیمات باز نشد؛ تنظیمات امنیت دستگاه را به‌صورت دستی باز کنید." }
     }
 
     override fun onStop() {
