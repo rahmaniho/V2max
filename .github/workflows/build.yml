@@ -13,6 +13,11 @@ on:
         required: false
         type: boolean
         default: false
+      security_only:
+        description: "Run targeted security/backup emulators only (no release APK or VPN smoke)"
+        required: false
+        type: boolean
+        default: false
 
 env:
   LIBV2RAY_VERSION: v26.10.21
@@ -24,6 +29,7 @@ permissions:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_dispatch' || !inputs.security_only
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -240,6 +246,60 @@ jobs:
           name: v2max-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+
+  security-smoke:
+    # A fast, explicitly limited diagnostic run; never publishes or replaces CI.
+    if: github.event_name == 'workflow_dispatch' && inputs.security_only
+    name: Security-only emulator API ${{ matrix.api }} (no release APK)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api: 24
+            backup_only: true
+          - api: 30
+            backup_only: false
+          - api: 35
+            backup_only: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify consent backup exclusions
+        run: python3 scripts/verify-backup-rules.py
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - uses: actions/cache@v4
+        with:
+          path: app/libs/libv2ray.aar
+          key: libv2ray-${{ env.LIBV2RAY_VERSION }}
+      - name: Verify pinned Xray library
+        run: |
+          mkdir -p app/libs
+          if [ ! -s app/libs/libv2ray.aar ]; then
+            curl -fL --retry 3 -o app/libs/libv2ray.aar \
+              "https://github.com/2dust/AndroidLibXrayLite/releases/download/${{ env.LIBV2RAY_VERSION }}/libv2ray.aar"
+          fi
+          printf '%s  %s\n' "$LIBV2RAY_SHA256" app/libs/libv2ray.aar | sha256sum --check
+      - name: Enable emulator hardware acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Targeted Android security and backup tests
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          V2MAX_BACKUP_ONLY: ${{ matrix.backup_only && 'true' || 'false' }}
+        with:
+          api-level: ${{ matrix.api }}
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/run-android-security-smoke.sh
 
   publish:
     # Keep write access out of Gradle, tests, third-party dependencies and PR runs.

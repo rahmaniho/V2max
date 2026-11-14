@@ -27,4 +27,10 @@ adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS
 run_instrumentation granted \
   'ir.v2max.app.AndroidVpnSmokeTest#updateNoticeIsPostedAndPendingVersionIsPersisted,ir.v2max.app.AndroidVpnSmokeTest#updaterAcceptsOnlyTheInstalledPackageIdentity' 2
 
-echo 'Android 13+ update permission and signer checks passed.'
+# Exercise the actual Android crypto provider and exported entry points on the
+# latest target SDK as well as on the API 30 VPN emulator. No VPN fixture is needed.
+run_instrumentation backup 'ir.v2max.app.AndroidSecureBackupTest' 4
+run_instrumentation external 'ir.v2max.app.AndroidExternalControlTest' 4 \
+  -e expectNoDeviceCredential true
+
+echo 'Android 13+ update, backup, app-lock and external-control checks passed.'

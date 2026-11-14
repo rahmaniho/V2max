@@ -45,9 +45,12 @@ object SecureBackup {
     }.getOrNull()
 
     fun decrypt(text: String, password: String): String? = runCatching {
-        val body = text.trimStart().removePrefix(PREFIX)
+        val trimmed = text.trimStart()
+        if (!trimmed.startsWith(PREFIX)) return@runCatching null
+        val body = trimmed.removePrefix(PREFIX)
         val payload = Base64.decode(body, Base64.DEFAULT)
-        if (payload.size <= SALT_LEN + IV_LEN) return@runCatching null
+        // Reject malformed input before performing the expensive password derivation.
+        if (payload.size < SALT_LEN + IV_LEN + TAG_BITS / 8) return@runCatching null
 
         val salt = payload.copyOfRange(0, SALT_LEN)
         val iv = payload.copyOfRange(SALT_LEN, SALT_LEN + IV_LEN)
@@ -60,10 +63,22 @@ object SecureBackup {
     }.getOrNull()
 
     private fun deriveKey(password: String, salt: ByteArray): SecretKeySpec {
-        val spec = PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS)
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-        val key = factory.generateSecret(spec).encoded
-        spec.clearPassword()
-        return SecretKeySpec(key, "AES")
+        val chars = password.toCharArray()
+        val spec = try {
+            PBEKeySpec(chars, salt, ITERATIONS, KEY_BITS)
+        } finally {
+            chars.fill('\u0000')
+        }
+        return try {
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            val key = factory.generateSecret(spec).encoded
+            try {
+                SecretKeySpec(key, "AES")
+            } finally {
+                key.fill(0)
+            }
+        } finally {
+            spec.clearPassword()
+        }
     }
 }
