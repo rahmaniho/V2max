@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Disposable fixtures only: the test VLESS server is bound on the CI runner and
 # its freedom outbound redirects to a local HTTP server. No public VPN is used.
+if [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+  echo '::error title=Android VPN smoke::Use a disposable Android emulator, not a physical device.'
+  exit 1
+fi
 work="$(mktemp -d)"
 http_pid=""
 xray_pid=""

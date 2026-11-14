@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Targeted, disposable emulator checks only; this is not a release build and
 # does not replace the full VPN/TUN or updater integration suites.
+if [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+  echo '::error title=Android security smoke::Use a disposable Android emulator, not a physical device.'
+  exit 1
+fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 if ! gradle --no-daemon installDebug installDebugAndroidTest 2>&1 | tee "$work/build.log"; then
@@ -46,6 +50,9 @@ if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
   run_instrumentation installer \
     'ir.v2max.app.AndroidUpdatePermissionTest#installSourcePermissionReflectsAndroidSetting,ir.v2max.app.AndroidInstallFlowTest' 4 \
     -e expectInstallPermission true -e allowInstallSessionTest true
+fi
+if [[ "${V2MAX_SELF_UPDATE_TEST:-false}" == true ]]; then
+  bash scripts/run-android-self-update-smoke.sh
 fi
 if [[ "${V2MAX_CAPTURE_UI:-false}" == true ]]; then
   bash scripts/capture-android-ui.sh

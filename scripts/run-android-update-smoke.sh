@@ -3,6 +3,10 @@ set -euo pipefail
 
 # A disposable Android 13+ emulator verifies both denied and granted runtime
 # notification permission, plus archive identity/signature checks.
+if [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
+  echo '::error title=Android update smoke::Use a disposable Android emulator, not a physical device.'
+  exit 1
+fi
 gradle --no-daemon installDebug installDebugAndroidTest
 pkg=ir.v2max.app.debug
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
@@ -48,5 +52,8 @@ run_instrumentation granted \
 run_instrumentation backup 'ir.v2max.app.AndroidSecureBackupTest' 4
 run_instrumentation external 'ir.v2max.app.AndroidExternalControlTest' 4 \
   -e expectNoDeviceCredential true
+
+# Only the disposable emulator's same-signed debug package is replaced.
+V2MAX_SELF_UPDATE_TEST=true bash scripts/run-android-self-update-smoke.sh
 
 echo 'Android 13+ update, backup, app-lock and external-control checks passed.'
