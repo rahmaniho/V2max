@@ -860,9 +860,10 @@ object Repo {
     fun removeSubscription(id: String) {
         if (isStorageReadOnly()) return
         val removed = subById(id)
-        // An explicitly deleted default source must not be silently recreated at
-        // next startup. The catalogue picker can add it again deliberately.
-        val catalogue = removed?.takeIf { it.builtIn }?.let { PublicSources.forUrl(it.url) }
+        // An explicitly deleted catalogue URL must not be silently recreated at
+        // next startup, even if the user had imported that exact URL as a
+        // personal subscription. The picker can add it again deliberately.
+        val catalogue = removed?.let { PublicSources.forUrl(it.url) }
         if (catalogue != null) {
             val disabled = (_settings.value.disabledBuiltInSources + PublicSources.normalize(catalogue.url)).distinct()
             saveSettings(_settings.value.copy(disabledBuiltInSources = disabled))

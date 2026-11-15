@@ -103,6 +103,21 @@ class RepoConcurrencyTest {
         assertFalse("A source explicitly removed by the user must stay removed", Repo.subs.value.any { it.url == iboxz })
         assertNotNull("The source picker can deliberately restore it", Repo.addBuiltInSource(iboxz))
         assertEquals(1, Repo.subs.value.count { it.url == iboxz })
+
+        // Removing a personal subscription with the exact catalogue address is
+        // also an explicit removal; startup must not recreate it as public.
+        Repo.removeSubscription(personal.id)
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertFalse("A deleted personal copy must not reappear as a default", Repo.subs.value.any {
+            PublicSources.normalize(it.url) == thomas
+        })
+        val restored = requireNotNull(Repo.addBuiltInSource(thomas))
+        val private = Subscription(id = "private-query", url = "$thomas?token=private-fixture", builtIn = false)
+        assertTrue(Repo.addSubscription(private))
+        Repo.removeSubscription(private.id)
+        assertNotNull(Repo.subById(restored.id))
+        assertFalse("Private URL parameters must not enter the public opt-out list",
+            Repo.settings.value.disabledBuiltInSources.any { "private-fixture" in it })
     }
 
     @Test fun `full public catalogue does not starve newly refreshed requested feeds`() {
