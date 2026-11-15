@@ -116,6 +116,47 @@ object ServerListPolicyTests {
             ServerListPolicy.capBuiltIn(ordered, builtIn, limit = 2).map { it.id },
         )
 
+        // ---- optional per-source shares prevent a full old feed from hiding
+        // every candidate of a newer feed. Empty subscriptions get no quota.
+        val publicSources = setOf("old", "new", "empty")
+        val sources = listOf(
+            server("old-fast", "old", realPing = 10),
+            server("old-favorite", "old", favorite = true, realPing = 2000),
+            server("old-mid", "old", realPing = 20),
+            server("old-slow", "old", realPing = 30),
+            server("new-fast", "new", realPing = 900),
+            server("new-slow", "new", realPing = 1000),
+            server("personal", "mine", realPing = 5000),
+        )
+        val fair = ServerListPolicy.capBuiltIn(sources, publicSources, limit = 4, sourceReserve = 2)
+        T.eq("source shares reserve both newer candidates", listOf("new-fast", "new-slow"),
+            fair.filter { it.subscriptionId == "new" }.map { it.id })
+        T.eq("protected records count toward their source share", listOf("old-fast", "old-favorite"),
+            fair.filter { it.subscriptionId == "old" }.map { it.id })
+        T.ok("personal entries survive a fair cap", fair.any { it.id == "personal" })
+        T.eq("fair cap preserves original order", listOf("old-fast", "old-favorite", "new-fast", "new-slow", "personal"),
+            fair.map { it.id })
+        val spare = ServerListPolicy.capBuiltIn(sources, publicSources, limit = 5, sourceReserve = 2)
+        T.ok("remaining capacity goes to the best unreserved score", spare.any { it.id == "old-mid" })
+        T.ok("a slower unreserved score is still dropped", spare.none { it.id == "old-slow" })
+
+        val protectedOld = (0..2).map { server("protected-$it", "old", favorite = true) }
+        val newcomers = (0..4).map { server("new-$it", "new") }
+        val soft = ServerListPolicy.capBuiltIn(protectedOld + newcomers, publicSources, limit = 2, sourceReserve = 50)
+        T.eq("all protected records survive over capacity", 3, soft.count { it.subscriptionId == "old" })
+        T.eq("a new source still has a representative when protected records fill capacity", 1,
+            soft.count { it.subscriptionId == "new" })
+
+        // With more represented sources than slots, reserve at most one normal
+        // capacity in extra unprotected records; protected records are never cut.
+        val manySources = protectedOld + (0..5).map { server("other-$it", "other-$it") }
+        val manyIds = setOf("old") + (0..5).map { "other-$it" }
+        val bounded = ServerListPolicy.capBuiltIn(manySources, manyIds, limit = 2, sourceReserve = 50)
+        T.eq("source reservation has a bounded overflow", 5, bounded.size)
+        T.eq("bounded overflow preserves all protected", 3, bounded.count { it.subscriptionId == "old" })
+        T.eq("zero capacity does not reserve extra records", 3,
+            ServerListPolicy.capBuiltIn(manySources, manyIds, limit = 0, sourceReserve = 50).size)
+
         // ---- dedupe: distinct servers are untouched
         val distinct = listOf(server("a"), server("b"), server("c"))
         val dDistinct = ServerListPolicy.dedupe(distinct)

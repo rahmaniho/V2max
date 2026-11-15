@@ -105,6 +105,85 @@ class RepoConcurrencyTest {
         assertEquals(1, Repo.subs.value.count { it.url == iboxz })
     }
 
+    @Test fun `full public catalogue does not starve newly refreshed requested feeds`() {
+        val previous = Subscription(id = "old", url = PublicSources.DEFAULT.first().url, builtIn = true)
+        assertTrue(Repo.addSubscription(previous))
+        val old = (0 until 700).map { server("old-$it", previous.id) }
+        Repo.replaceSubscriptionServers(previous.id, old)
+        Repo.setSelected("old-1")
+        Repo.setFavorite("old-699", true)
+        Repo.tunnel.value = TunnelUiState(status = TunnelStatus.CONNECTED, serverId = "old-2")
+        val iboxz = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        ))
+        val thomas = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        ))
+        assertTrue(Repo.commitSubscriptionRefresh(iboxz, (0 until 150).map { server("ibox-$it", iboxz.id) }, 0, 0, 0, 0))
+        assertTrue(Repo.commitSubscriptionRefresh(thomas, (0 until 17).map { server("thomas-$it", thomas.id) }, 0, 0, 0, 0))
+
+        assertEquals(700, Repo.servers.value.size)
+        assertEquals("A full catalogue must leave a usable sample from the newly added feed", 50,
+            Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+        assertNotNull(Repo.serverById("old-1"))
+        assertNotNull(Repo.serverById("old-2"))
+        assertTrue(requireNotNull(Repo.serverById("old-699")).favorite)
+    }
+
+    @Test fun `all default sources retain a sample regardless of refresh order`() {
+        listOf(false, true).forEach { reverse ->
+            assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
+            val sources = PublicSources.DEFAULT.mapIndexed { index, item ->
+                Subscription(id = "source-$index", url = item.url, builtIn = true).also {
+                    assertTrue(Repo.addSubscription(it))
+                }
+            }
+            val order = if (reverse) sources.reversed() else sources
+            order.forEach { sub ->
+                val incoming = (0 until 150).map { server("${sub.id}-$it", sub.id) }
+                assertTrue(Repo.commitSubscriptionRefresh(sub, incoming, 0, 0, 0, 0))
+            }
+            assertEquals(700, Repo.servers.value.size)
+            sources.forEach { sub ->
+                assertTrue("Source ${sub.id} lost its sample with reverse=$reverse",
+                    Repo.servers.value.count { it.subId == sub.id } >= 50)
+            }
+        }
+    }
+
+    @Test fun `capacity keeps measured servers and public source samples beside a large personal list`() {
+        val previous = Subscription(id = "old", url = PublicSources.DEFAULT.first().url, builtIn = true)
+        assertTrue(Repo.addSubscription(previous))
+        val measured = (0 until 700).map {
+            server("healthy-$it", previous.id).copy(realPing = 40, testedUrl = "https://example.org/probe")
+        }
+        Repo.replaceSubscriptionServers(previous.id, measured)
+        val iboxz = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        ))
+        val thomas = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        ))
+        assertTrue(Repo.commitSubscriptionRefresh(iboxz, (0 until 150).map { server("ibox-$it", iboxz.id) }, 0, 0, 0, 0))
+        assertTrue(Repo.commitSubscriptionRefresh(thomas, (0 until 17).map { server("thomas-$it", thomas.id) }, 0, 0, 0, 0))
+        assertEquals("Recorded real successes must survive the soft ceiling", 700,
+            Repo.servers.value.count { it.subId == previous.id })
+        assertEquals(50, Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+
+        // Personal imports do not consume the public sources' capacity, even
+        // when the separate total-size cleanup is triggered.
+        val personal = (0 until 3001).map { server("personal-$it", "") }
+        assertEquals(personal.size, Repo.addServers(personal))
+        repeat(40) { Repo.updateServer(server("extra-$it", previous.id)) }
+        assertEquals(40, Repo.trimBuiltInServers())
+        assertEquals(3001, Repo.servers.value.count { it.subId.isBlank() })
+        assertEquals(700, Repo.servers.value.count { it.subId == previous.id })
+        assertEquals(50, Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+    }
+
     @Test fun `editor preserves newer health on rename and clears it for a different connection`() {
         val original = server("edit", "personal").copy(
             tcpPing = 20, realPing = 30, googlePing = 30, instagramPing = 40, youtubePing = 50,

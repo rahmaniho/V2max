@@ -587,7 +587,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 Repo.recordSubscriptionRefreshError(sub, "کانفیگ قابل استفاده‌ای دریافت نشد", expectedEpoch = epoch)
                 showMessage("کانفیگ قابل استفاده‌ای دریافت نشد یا اشتراک هم‌زمان تغییر کرد؛ فهرست فعلی حفظ شد")
             } else {
-                showMessage("اشتراک به‌روزرسانی شد (${Format.number(count)} کانفیگ)")
+                showMessage("اشتراک به‌روزرسانی شد؛ ${Format.number(count)} کانفیگ دریافت شد")
             }
         })
     }

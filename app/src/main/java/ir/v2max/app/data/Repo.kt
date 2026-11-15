@@ -280,19 +280,26 @@ object Repo {
         if (!isStorageReadOnly()) prefs?.edit()?.putString(KEY_SELECTED, id)?.apply()
     }
 
-    private fun capped(list: List<ServerConfig>): List<ServerConfig> =
-        ServerListPolicy.capBuiltIn(
-            list = list,
-            builtInSubscriptionIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet(),
-            selectedId = _selectedId.value,
-            protectedIds = editingServerIds.keys +
-                setOfNotNull(tunnel.value.serverId.takeIf { tunnel.value.isActive && it.isNotBlank() }) +
-                list.filter { it.realPing > 0 && it.testedUrl.isNotBlank() }.map { it.id },
-            idOf = { it.id },
-            subscriptionIdOf = { it.subId },
-            isFavorite = { it.favorite },
-            scoreOf = { it.score() },
-        )
+    // Keep a bounded sample from each represented source when older feeds have
+    // filled the public catalogue. The policy apportions this against capacity.
+    private const val MAX_SOURCE_RESERVE = 50
+
+    private fun capped(
+        list: List<ServerConfig>, limit: Int = ServerListPolicy.MAX_BUILT_IN_SERVERS
+    ): List<ServerConfig> = ServerListPolicy.capBuiltIn(
+        list = list,
+        builtInSubscriptionIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet(),
+        selectedId = _selectedId.value,
+        limit = limit,
+        protectedIds = editingServerIds.keys +
+            setOfNotNull(tunnel.value.serverId.takeIf { tunnel.value.isActive && it.isNotBlank() }) +
+            list.filter { it.realPing > 0 && it.testedUrl.isNotBlank() }.map { it.id },
+        sourceReserve = MAX_SOURCE_RESERVE,
+        idOf = { it.id },
+        subscriptionIdOf = { it.subId },
+        isFavorite = { it.favorite },
+        scoreOf = { it.score() },
+    )
 
     /**
      * افزودن کانفیگ‌های جدید با حذف تکراری‌ها.
@@ -996,7 +1003,8 @@ object Repo {
 
     /**
      * محدود کردن حجم داده‌ها: اگر تعداد کانفیگ‌های منابع رایگان از حد گذشت،
-     * ضعیف‌ترین/قدیمی‌ترین آن‌ها حذف می‌شوند.
+     * ضعیف‌ترین/قدیمی‌ترین آن‌ها حذف می‌شوند. منابع شخصی نباید باعث شوند
+     * نمونه‌های محافظت‌شدهٔ منابع عمومی نیز از فهرست پاک شوند.
      */
     @Synchronized
     fun trimBuiltInServers(
@@ -1007,10 +1015,15 @@ object Repo {
         val all = _servers.value
         if (all.size <= maxTotal) return 0
         val builtInIds = _subs.value.filter { it.builtIn }.map { it.id }.toHashSet()
+        // Personal records are never trimmed. Preserve the normal public-source
+        // capacity and its fair shares as well, even if personal imports alone
+        // already exceed maxTotal. Protected data can make this a soft limit.
+        val capacityKept = capped(all, minOf(maxTotal.coerceAtLeast(0), ServerListPolicy.MAX_BUILT_IN_SERVERS))
+            .asSequence().filter { it.subId in builtInIds }.mapTo(HashSet()) { it.id }
         val now = System.currentTimeMillis()
         val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
         val removable = all
-            .filter { it.subId in builtInIds && !it.favorite && it.id !in editingServerIds &&
+            .filter { it.subId in builtInIds && it.id !in capacityKept && !it.favorite && it.id !in editingServerIds &&
                 it.id != _selectedId.value && it.id != liveId &&
                 !(it.realPing > 0 && it.testedUrl.isNotBlank()) }
             .sortedWith(
@@ -1018,7 +1031,7 @@ object Repo {
                     .thenByDescending { now - it.testedAt }
                     .thenByDescending { it.addedAt }
             )
-        val toRemove = (all.size - maxTotal).coerceAtMost(removable.size)
+        val toRemove = (all.size - maxTotal.coerceAtLeast(0)).coerceAtMost(removable.size)
         if (toRemove <= 0) return 0
         val removeIds = removable.take(toRemove).map { it.id }.toHashSet()
         _servers.value = all.filterNot { it.id in removeIds }
