@@ -45,7 +45,7 @@ object SmartConnect {
                 if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
                 Repo.scan.value = Repo.scan.value.copy(
                     phase = "بررسی عمیق شبکه‌ی اپراتور",
-                    message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
+                    message = "سنجش نمونه‌های DNS، TCP و TLS شبکه…"
                 )
                 val result = try {
                     CarrierProbe.assess(context)
@@ -314,7 +314,7 @@ object SmartConnect {
 
     /**
      * «ری‌استارت جستجو»: نتایج قبلی پاک می‌شوند و کل چرخه از نو اجرا می‌شود.
-     * اتصال فعلی تا پیدا شدن گزینه‌ی بهتر برقرار می‌ماند (بدون قطعی برای کاربر).
+     * اتصال فعلی تا آماده‌شدن گزینهٔ جایگزین حفظ می‌شود؛ تغییر مسیر ممکن است وقفه داشته باشد.
      */
     internal suspend fun restart(context: Context, autoConnect: Boolean = true): VerifiedSelection? {
         Failover.reset()

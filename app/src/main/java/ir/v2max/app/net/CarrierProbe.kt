@@ -22,14 +22,11 @@ import javax.net.ssl.SSLSocket
 /**
  * بررسی عمیق شبکه‌ی دستگاه پیش از اتصال.
  *
- * چهار لایه سنجیده می‌شود:
- *  ۱) مشخصات اپراتور (MCC/MNC، نسل شبکه، سیگنال، IPv6)
- *  ۲) کیفیت مسیر: تأخیر، لرزش (jitter) و درصد افت بسته به چند لنگر مستقل
- *  ۳) سلامت DNS و دسترسی مستقیم به مقصدهای پرکاربرد
- *  ۴) رفتار DPI: تلاش برای دست‌دادن TLS با SNI هدف؛ اگر TCP وصل شود ولی TLS بسته شود،
- *     یعنی مسیر با DPI فیلتر می‌شود و باید با فرگمنت از آن عبور کرد.
- *
- * خروجی، پروفایل فرگمنت و MTU پیشنهادی برای «نفوذ» از همین شبکه است.
+ * مشخصات شبکه و چند اتصال نمونهٔ TCP، DNS و TLS پیش از اتصال سنجیده می‌شوند.
+ * اختلاف بیشترین و کمترین زمان اتصال نمونه‌ها و نسبت اتصال‌های ناموفق،
+ * سنجش کامل لرزش یا افت بسته نیستند. شکست TLS/DNS می‌تواند علت‌های مختلفی
+ * داشته باشد و به‌تنهایی وجود DPI یا اثربخشی فرگمنت را ثابت نمی‌کند.
+ * پروفایل فرگمنت و MTU صرفاً پیشنهادهایی هستند که باید در تست واقعی تأیید شوند.
  */
 object CarrierProbe {
 
@@ -109,13 +106,9 @@ object CarrierProbe {
         val message = buildString {
             append(info.family.label)
             if (info.netType.isNotBlank()) append(" · ${info.netType}")
-            when {
-                dpi && dnsBlocked -> append(" · فیلترینگ DPI و DNS شناسایی شد")
-                dpi -> append(" · فیلترینگ DPI شناسایی شد")
-                dnsBlocked -> append(" · DNS محدود است")
-                else -> append(" · مسیر مستقیم سالم است")
-            }
-            if (latency > 0) append(" · تأخیر ${latency}ms")
+            val connectionFailures = hostStates.any { (_, state) -> state == 1 || state == 2 }
+            append(" · ${NetworkProbeSummary.describe(dnsBlocked, connectionFailures)}")
+            if (latency > 0) append(" · تأخیر نمونه ${latency}ms")
         }
 
         NetworkAssessment(

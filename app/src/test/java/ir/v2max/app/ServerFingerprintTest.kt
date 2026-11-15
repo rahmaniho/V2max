@@ -9,6 +9,15 @@ import org.junit.Test
 import java.lang.reflect.Modifier
 
 class ServerFingerprintTest {
+    @Test fun `a displayed real ping requires a recorded successful protocol test`() {
+        val server = ServerConfig(realPing = 42, tcpPing = 1)
+        assertEquals(-1, server.recordedRealPing())
+        assertEquals(-1, server.copy(testedAt = 1).recordedRealPing())
+        assertEquals(-1, server.copy(testedUrl = "https://example.org/probe").recordedRealPing())
+        assertEquals(-1, server.copy(realPing = -1, testedAt = 1, testedUrl = "https://example.org/probe").recordedRealPing())
+        assertEquals(42, server.copy(testedAt = 1, testedUrl = "https://example.org/probe").recordedRealPing())
+    }
+
     @Test fun `every outbound input changes identity and metadata does not`() {
         // These are the ServerConfig properties consumed by ConfigBuilder's
         // outbound, including all TLS, transport, authentication and obfs inputs.

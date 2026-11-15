@@ -400,7 +400,7 @@ fun NetworkCard(network: NetworkAssessment, onRefresh: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    "${network.score}/۱۰۰",
+                    "امتیاز نمونه ${Format.number(network.score)}/۱۰۰",
                     color = V2.TextMuted,
                     fontSize = 11.sp
                 )
@@ -415,17 +415,22 @@ fun NetworkCard(network: NetworkAssessment, onRefresh: () -> Unit) {
             )
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TargetChip("تأخیر", network.latencyMs)
-                if (network.jitterMs >= 0) TargetChip("لرزش", network.jitterMs)
-                TargetChip("افت٪", if (network.lossPercent > 0) network.lossPercent else -1)
-                if (network.dpiDetected) {
+                TargetChip("تأخیر TCP", network.latencyMs)
+                if (network.jitterMs >= 0) TargetChip("دامنهٔ تأخیر", network.jitterMs, allowZero = true)
+                if (network.totalAnchors > 0 && network.lossPercent in 0..100) {
+                    val color = when {
+                        network.lossPercent == 0 -> V2.Mint
+                        network.lossPercent < 50 -> V2.Amber
+                        else -> V2.Red
+                    }
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(V2.Red.copy(alpha = 0.14f))
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .background(color.copy(alpha = 0.12f))
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
                     ) {
-                        Text("DPI", color = V2.Red, fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
+                        Text("TCP ناموفق ${Format.number(network.lossPercent)}٪", color = color,
+                            fontSize = 9.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -533,9 +538,10 @@ fun PingTargetsRow(google: Int, instagram: Int, youtube: Int) {
 }
 
 @Composable
-private fun TargetChip(label: String, ping: Int) {
+private fun TargetChip(label: String, ping: Int, allowZero: Boolean = false) {
+    val measured = ping > 0 || (allowZero && ping == 0)
     val color = when {
-        ping <= 0 -> V2.TextMuted.copy(alpha = 0.55f)
+        !measured -> V2.TextMuted.copy(alpha = 0.55f)
         ping < 300 -> V2.Mint
         ping < 700 -> V2.Amber
         else -> V2.Red
@@ -547,7 +553,7 @@ private fun TargetChip(label: String, ping: Int) {
             .padding(horizontal = 5.dp, vertical = 2.dp)
     ) {
         Text(
-            text = "$label ${if (ping > 0) Format.number(ping) else "—"}",
+            text = "$label ${if (measured) Format.number(ping) else "—"}",
             color = color,
             fontSize = 9.sp,
             fontWeight = FontWeight.SemiBold

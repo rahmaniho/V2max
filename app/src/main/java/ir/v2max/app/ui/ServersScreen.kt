@@ -106,7 +106,7 @@ fun ServersScreen(
             .sortedWith(
                 when (sort) {
                     SortMode.FASTEST -> compareBy<ServerConfig> {
-                        if (it.realPing > 0 && it.testedAt > 0 && it.testedUrl.isNotBlank()) it.realPing else Int.MAX_VALUE
+                        it.recordedRealPing().takeIf { ping -> ping > 0 } ?: Int.MAX_VALUE
                     }
                     SortMode.SPEED -> compareByDescending<ServerConfig> { it.speedKbps }
                     SortMode.STABLE -> compareByDescending<ServerConfig> { it.stability() }
@@ -116,7 +116,7 @@ fun ServersScreen(
             )
     }
 
-    val measured = servers.count { it.realPing > 0 && it.testedAt > 0 && it.testedUrl.isNotBlank() }
+    val measured = servers.count { it.recordedRealPing() > 0 }
 
     LazyColumn(
         modifier = Modifier
@@ -454,7 +454,7 @@ private fun ServerRow(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            PingBadge(if (server.testedAt > 0 && server.testedUrl.isNotBlank()) server.realPing else -1, compact = true)
+            PingBadge(server.recordedRealPing(), compact = true)
             if (!selectable) {
                 IconButton(onClick = onConnect, modifier = Modifier.size(34.dp)) {
                     Icon(

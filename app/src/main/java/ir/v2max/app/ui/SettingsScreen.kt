@@ -120,8 +120,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "فرگمنت هوشمند (ضد فیلترینگ)",
-                subtitle = "تکه‌تکه کردن بسته‌های TLS برای عبور از سیستم‌های DPI",
+                title = "فرگمنت TLS",
+                subtitle = "تکه‌تکه‌سازی TLS؛ ممکن است روی برخی شبکه‌ها مؤثر باشد",
                 checked = settings.fragment
             ) { value -> onChange { it.copy(fragment = value) } }
         }
@@ -179,7 +179,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "بررسی عمیق شبکه پیش از اتصال",
-                subtitle = "سنجش DNS، تشخیص DPI، تأخیر و لرزش شبکه‌ی اپراتور و انتخاب خودکار فرگمنت مناسب",
+                subtitle = "سنجش نمونه‌های DNS و TCP/TLS؛ علت اختلال به‌طور قطعی مشخص نمی‌شود",
                 checked = settings.deepProbe
             ) { value -> onChange { it.copy(deepProbe = value) } }
         }
@@ -198,7 +198,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "تنظیم خودکار شدت فرگمنت",
-                subtitle = "پروفایل مناسب بر اساس شبکه‌ی اپراتور انتخاب و در صورت نیاز خودکار اصلاح می‌شود",
+                subtitle = "پیشنهاد بر اساس تست نمونهٔ شبکه؛ موفقیت اتصال تضمین نمی‌شود",
                 checked = settings.autoTuneFragment
             ) { value -> onChange { it.copy(autoTuneFragment = value) } }
         }

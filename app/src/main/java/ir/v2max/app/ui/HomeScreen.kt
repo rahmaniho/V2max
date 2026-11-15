@@ -313,8 +313,8 @@ fun HomeScreen(
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    // A TCP handshake alone is not a successful VPN test.
-                    PingBadge(selected?.realPing ?: -1)
+                    // A legacy ping without a recorded protocol test is not a success.
+                    PingBadge(selected?.recordedRealPing() ?: -1)
                 }
             }
         }

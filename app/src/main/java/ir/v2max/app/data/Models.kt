@@ -150,6 +150,10 @@ data class ServerConfig(
     fun bestPing(): Int =
         ServerHealth.bestPing(tcpPing, realPing, googlePing, instagramPing, youtubePing)
 
+    /** Last recorded protocol success, not a fresh connection authorization. */
+    fun recordedRealPing(): Int =
+        if (realPing > 0 && testedAt > 0 && testedUrl.isNotBlank()) realPing else -1
+
     fun displayName(): String = name.ifBlank { endpoint }
 
     fun proxyHost(): String = host.ifBlank { address }
