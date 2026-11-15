@@ -2,6 +2,7 @@ package ir.v2max.app.net
 
 import android.content.Context
 import ir.v2max.app.core.ConfigBuilder
+import ir.v2max.app.core.ConnectionTestBarrier
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PingTargets
@@ -29,10 +30,6 @@ object HealthScanner {
     internal const val PRECHECK_WINDOW = 24
     internal const val REAL_BATCH_SIZE = 6
     private const val MULTI_CONCURRENCY = 4
-    // UI tests and service failover may otherwise publish conflicting results or
-    // run multiple temporary speed cores concurrently.
-    private val scanMutex = Mutex()
-
     data class Outcome(
         val best: ServerConfig? = null,
         val aliveCount: Int = 0,
@@ -67,6 +64,7 @@ object HealthScanner {
         rememberedId: String? = null,
         limit: Int = 0,
         exhaustive: Boolean = false,
+        fastestRecentFirst: Boolean = false,
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
@@ -75,7 +73,7 @@ object HealthScanner {
         onAlive: suspend (Int) -> Unit = {}
     ): Outcome = withContext(Dispatchers.IO) {
         if (servers.isEmpty()) return@withContext Outcome(message = "کانفیگی برای تست وجود ندارد")
-        scanMutex.withLock {
+        ConnectionTestBarrier.tests {
             XrayCore.init(context)
             XrayCore.clearProbeProblem()
             scanPrepared(
@@ -91,6 +89,7 @@ object HealthScanner {
                 rememberedId = rememberedId,
                 limit = limit,
                 exhaustive = exhaustive,
+                fastestRecentFirst = fastestRecentFirst,
                 onTcp = onTcp,
                 onReal = onReal,
                 onMulti = onMulti,
@@ -114,6 +113,7 @@ object HealthScanner {
         rememberedId: String? = null,
         limit: Int = 0,
         exhaustive: Boolean = false,
+        fastestRecentFirst: Boolean = false,
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
@@ -133,7 +133,8 @@ object HealthScanner {
             },
             nowMs = System.currentTimeMillis(),
             preferredId = preferredId,
-            rememberedId = rememberedId
+            rememberedId = rememberedId,
+            fastestRecentFirst = fastestRecentFirst
         )
         val ordered = if (limit > 0) prioritized.take(limit) else prioritized
         val lock = Mutex()
@@ -318,8 +319,11 @@ object HealthScanner {
         // When speed testing is enabled, only profiles whose download test was
         // actually attempted may be selected or added to the connection pool.
         val connectable = if (settings.speedTest) results.filter { it.id in speedTestedIds } else results
-        val qualified = ProbePlanner.rank(connectable, speeds)
-        val best = ProbePlanner.choose(qualified, preferredId, speeds)
+        val ranked = ProbePlanner.rank(connectable, speeds)
+        // A low-latency switch uses freshly measured real delays, not TCP or a
+        // persisted score. Respect an enabled download comparison and a manual choice.
+        val qualified = if (fastestRecentFirst && !settings.speedTest) ranked.sortedBy { it.realPing } else ranked
+        val best = qualified.firstOrNull { it.id == preferredId } ?: qualified.firstOrNull()
         val speedNote = when {
             settings.speedTest && speeds.isEmpty() -> "سنجش دانلود ناموفق بود؛ انتخاب بر اساس تأخیر انجام شد"
             speeds.isNotEmpty() -> "سرعت دانلود ${speeds.size} سرور سنجیده شد"

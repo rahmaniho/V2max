@@ -51,6 +51,23 @@ class VpnPermissionQueueTest {
         assertNull(queue.snapshot().pendingId)
     }
 
+    @Test fun disablingAutomaticConnectionDoesNotCancelANewerManualChoice() {
+        val queue = VpnPermissionQueue<String>()
+        queue.enqueue("automatic")
+        assertTrue(queue.claim())
+        queue.enqueue("manual")
+        queue.cancelIf { it == "automatic" }
+        assertNull("The old dialog must not consume the manual action", queue.complete())
+        assertTrue(queue.claim())
+        assertEquals("manual", queue.complete())
+
+        queue.enqueue("automatic")
+        assertTrue(queue.claim())
+        queue.cancelIf { it == "automatic" }
+        assertNull(queue.complete())
+        assertNull(queue.snapshot().pendingId)
+    }
+
     @Test fun replacingAnUnlaunchedActionKeepsOnlyTheLatest() {
         val queue = VpnPermissionQueue<String>()
         queue.enqueue("old")

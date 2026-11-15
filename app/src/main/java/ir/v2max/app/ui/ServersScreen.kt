@@ -60,7 +60,7 @@ import ir.v2max.app.data.TunnelUiState
 import ir.v2max.core.format.Format
 
 private enum class SortMode(val label: String) {
-    FASTEST("بهترین امتیاز"),
+    FASTEST("کمترین پینگ"),
     SPEED("سرعت"),
     STABLE("پایداری"),
     NAME("نام"),
@@ -105,7 +105,9 @@ fun ServersScreen(
             }
             .sortedWith(
                 when (sort) {
-                    SortMode.FASTEST -> compareBy<ServerConfig> { it.score() }
+                    SortMode.FASTEST -> compareBy<ServerConfig> {
+                        if (it.realPing > 0 && it.testedAt > 0 && it.testedUrl.isNotBlank()) it.realPing else Int.MAX_VALUE
+                    }
                     SortMode.SPEED -> compareByDescending<ServerConfig> { it.speedKbps }
                     SortMode.STABLE -> compareByDescending<ServerConfig> { it.stability() }
                     SortMode.NAME -> compareBy<ServerConfig> { it.displayName() }
@@ -114,7 +116,7 @@ fun ServersScreen(
             )
     }
 
-    val alive = servers.count { it.tcpPing > 0 || it.realPing > 0 }
+    val measured = servers.count { it.realPing > 0 && it.testedAt > 0 && it.testedUrl.isNotBlank() }
 
     LazyColumn(
         modifier = Modifier
@@ -128,7 +130,7 @@ fun ServersScreen(
                 Column(Modifier.weight(1f)) {
                     Text("سرورها", style = MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
                     Text(
-                        "${Format.number(servers.size)} کانفیگ • ${Format.number(alive)} سالم",
+                        "${Format.number(servers.size)} کانفیگ • ${Format.number(measured)} پینگ واقعی ثبت‌شده",
                         style = MaterialTheme.typography.bodySmall,
                         color = V2.TextMuted
                     )
@@ -157,7 +159,7 @@ fun ServersScreen(
             item {
                 Text(
                     if (selectionMode) "سرورها را برای عملیات گروهی انتخاب کنید"
-                    else "برای اتصال، سرور موردنظر را لمس کنید؛ تست‌ها پیش از اتصال کامل می‌شوند.",
+                    else "برای اتصال، سرور موردنظر را لمس کنید؛ پینگ‌ها ممکن است قدیمی باشند و تست‌های فعال دوباره کامل می‌شوند.",
                     style = MaterialTheme.typography.bodySmall,
                     color = V2.TextSecondary
                 )
@@ -452,7 +454,7 @@ private fun ServerRow(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            PingBadge(server.bestPing(), compact = true)
+            PingBadge(if (server.testedAt > 0 && server.testedUrl.isNotBlank()) server.realPing else -1, compact = true)
             if (!selectable) {
                 IconButton(onClick = onConnect, modifier = Modifier.size(34.dp)) {
                     Icon(

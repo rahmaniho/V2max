@@ -324,7 +324,7 @@ fun HomeScreen(
                 PrimaryButton(
                     text = when {
                         scan.running -> "در حال اسکن…"
-                        tunnel.status == TunnelStatus.CONNECTED -> "تغییر به سریع‌ترین"
+                        tunnel.status == TunnelStatus.CONNECTED -> "انتخاب کم‌تأخیر"
                         else -> "اتصال هوشمند"
                     },
                     modifier = Modifier.weight(1f),

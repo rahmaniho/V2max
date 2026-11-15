@@ -56,6 +56,14 @@ object CarrierProbe {
         context.getSystemService(ConnectivityManager::class.java)?.activeNetwork?.networkHandle
     }.getOrNull()
 
+    /** An OS validation is only a hint for a later user prompt, never proof a proxy is dead. */
+    fun internetValidated(context: Context): Boolean = runCatching {
+        val cm = context.getSystemService(ConnectivityManager::class.java) ?: return@runCatching false
+        val caps = cm.activeNetwork?.let { cm.getNetworkCapabilities(it) } ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }.getOrDefault(false)
+
     suspend fun assess(context: Context): NetworkAssessment = withContext(Dispatchers.IO) {
         val info = carrierInfo(context)
 

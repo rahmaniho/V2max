@@ -61,6 +61,8 @@ fun AppRoot(vm: AppViewModel) {
     val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
+    val vpnPermission by vm.vpnPermissionState.collectAsStateWithLifecycle()
+    val notificationPermissionInFlight by vm.notificationPermissionInFlight.collectAsStateWithLifecycle()
     val recoveryWarning by Repo.recoveryWarning.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -80,6 +82,42 @@ fun AppRoot(vm: AppViewModel) {
     var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // Restore the editor lease after process/activity recreation as well.
+    LaunchedEffect(editingId) {
+        if (editingId.isNotBlank() && !vm.beginServerEdit(editingId)) editingId = ""
+    }
+
+    val canSuggestRemoval = !sync.running && !scan.running && !notificationPermissionInFlight &&
+        vpnPermission.pendingId == null && vpnPermission.inFlightId == null &&
+        !showPerApp && !showQr && !showRouting && !showDiag && editingId.isBlank() &&
+        !showBackupDialog && !showRestoreDialog && !showPlainRestoreDialog &&
+        pendingInstall == null && recoveryWarning.isBlank() && !Repo.isStorageReadOnly()
+    val removalSuggestion = if (canSuggestRemoval) subs.firstOrNull { sub ->
+        sub.lastError.isBlank() && ir.v2max.core.domain.SubscriptionHealthPolicy.shouldSuggest(
+            sub.healthEvidence(), sub.updatedAt, System.currentTimeMillis()
+        ) && servers.none { it.subId == sub.id && tunnel.isActive && it.id == tunnel.serverId }
+    } else null
+    removalSuggestion?.let { sub ->
+        AlertDialog(
+            onDismissRequest = { vm.deferUnhealthySubscription(sub) },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("بررسی حذف اشتراک", color = V2.TextPrimary) },
+            text = {
+                Text(
+                    "سرورهای دریافت‌شده از «${sub.name.ifBlank { "اشتراک" }}» در دو بررسی با فاصلهٔ دست‌کم یک روز پاسخ ندادند. " +
+                        "مشکل ممکن است از شبکه یا مقصد تست باشد. اشتراک و کانفیگ‌هایش حذف شوند؟",
+                    color = V2.TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.removeUnhealthySubscription(sub) }) { Text("حذف اشتراک", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.deferUnhealthySubscription(sub) }) { Text("بعداً", color = V2.TextMuted) }
+            }
+        )
+    }
 
     if (recoveryWarning.isNotBlank()) {
         AlertDialog(
@@ -400,17 +438,22 @@ fun AppRoot(vm: AppViewModel) {
                 if (editingId.isNotBlank()) {
                     val server = servers.firstOrNull { it.id == editingId }
                     if (server == null) {
+                        vm.endServerEdit()
                         editingId = ""
                     } else {
                         ConfigEditorScreen(
                             server = server,
                             dataEpoch = Repo.currentDataEpoch(),
-                            onBack = { editingId = "" },
+                            onBack = { vm.endServerEdit(); editingId = "" },
                             onSave = { edited, fingerprint, epoch ->
-                                if (vm.saveEditedServer(edited, fingerprint, epoch)) editingId = ""
+                                if (vm.saveEditedServer(edited, fingerprint, epoch)) {
+                                    vm.endServerEdit(); editingId = ""
+                                }
                             },
                             onClone = { copy, fingerprint, epoch ->
-                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) editingId = ""
+                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) {
+                                    vm.endServerEdit(); editingId = ""
+                                }
                             }
                         )
                     }
@@ -482,7 +525,10 @@ fun AppRoot(vm: AppViewModel) {
                         onDelete = { vm.deleteServer(it) },
                         showFlags = settings.showFlags,
                         onQrContent = { id -> vm.shareLink(id).orEmpty() },
-                        onEdit = { id -> editingId = id },
+                        onEdit = { id ->
+                            if (vm.beginServerEdit(id)) editingId = id
+                            else vm.showMessage("سرور دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+                        },
                         onBulkDelete = { ids -> vm.deleteServers(ids) },
                         onBulkFavorite = { ids, fav -> vm.setFavorite(ids, fav) },
                         onCopyLink = { id ->

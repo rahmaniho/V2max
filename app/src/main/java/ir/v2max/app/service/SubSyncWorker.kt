@@ -11,6 +11,7 @@ import androidx.work.WorkerParameters
 import ir.v2max.core.model.PublicSources
 import ir.v2max.app.data.Repo
 import ir.v2max.app.net.SubscriptionPolicy
+import ir.v2max.app.net.SubscriptionSyncGate
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -18,6 +19,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.TimeUnit
 
@@ -36,13 +38,13 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         Result.success()
     }
 
-    private suspend fun run(): Result {
+    private suspend fun run(): Result = SubscriptionSyncGate.mutex.withLock {
         Repo.init(applicationContext)
         // WorkManager may still have a request scheduled by an older process or
         // version. Re-check consent at execution time, including after recovery.
-        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC) ?: return Result.success()
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC) ?: return@withLock Result.success()
         val subs = Repo.subs.value
-        if (subs.isEmpty()) return Result.success()
+        if (subs.isEmpty()) return@withLock Result.success()
 
         val semaphore = Semaphore(4)
         val updated = java.util.concurrent.atomic.AtomicInteger(0)
@@ -82,12 +84,12 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             Repo.persistNow()
         }
 
-        if (!Repo.automaticRefreshIsCurrent(permit)) return Result.success()
+        if (!Repo.automaticRefreshIsCurrent(permit)) return@withLock Result.success()
         Repo.dedupeAllServers(automaticPermit = permit)
         Repo.trimBuiltInServers(automaticPermit = permit)
         Repo.persistNow()
 
-        return if (updated.get() == 0) Result.retry() else Result.success()
+        if (updated.get() == 0) Result.retry() else Result.success()
     }
 
     companion object {
@@ -97,6 +99,9 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         fun schedule(context: Context) {
             runCatching {
                 val request = PeriodicWorkRequestBuilder<SubSyncWorker>(INTERVAL_HOURS, TimeUnit.HOURS)
+                    // Opening the app already performs a full refresh. Avoid a
+                    // duplicate immediate run competing with its health pass.
+                    .setInitialDelay(INTERVAL_HOURS, TimeUnit.HOURS)
                     .setConstraints(
                         Constraints.Builder()
                             .setRequiredNetworkType(NetworkType.CONNECTED)

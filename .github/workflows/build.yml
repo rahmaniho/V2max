@@ -161,22 +161,23 @@ jobs:
           if not paths:
               print('::error title=app-tests::no app test results — testReleaseUnitTest did not run')
               sys.exit(1)
-          total = 0
-          names = set()
-          for p in paths:
-              for tc in ET.parse(p).iter('testcase'):
-                  total += 1
-                  names.add(tc.get('classname') or '')
-          if total < 1:
-              print('::error title=app-tests::app test results contain no test cases')
-              sys.exit(1)
-          required = 'ir.v2max.app.ConfigGeneratorTest'
-          if not any(n.startswith(required) for n in names):
-              print(f'::error title=app-tests::{required} did not execute — '
-                    f'check the test include pattern. Classes seen: {sorted(names)}')
-              sys.exit(1)
-          print(f'app unit tests ran: {total} test case(s) across {len(paths)} file(s)')
-          print(f'{required} confirmed among {len(names)} test class(es)')
+          cases = [tc for p in paths for tc in ET.parse(p).iter('testcase')]
+          required = {
+              'ir.v2max.app.ConfigGeneratorTest': 1,
+              'ir.v2max.app.StartupHealthTest': 13,
+              'ir.v2max.app.StartupMaintenanceTest': 1,
+              'ir.v2max.app.ConnectionTestBarrierTest': 3,
+              'ir.v2max.app.HealthScannerTest': 1,
+              'ir.v2max.app.PreflightTest': 1,
+              'ir.v2max.app.VpnPermissionQueueTest': 1,
+          }
+          for name, minimum in required.items():
+              suite = [tc for tc in cases if (tc.get('classname') or '').startswith(name)]
+              if len(suite) < minimum or any(tc.find('skipped') is not None for tc in suite):
+                  print(f'::error title=app-tests::{name} has {len(suite)} cases or was skipped; expected at least {minimum} unskipped')
+                  sys.exit(1)
+              print(f'{name}: {len(suite)} unskipped test case(s)')
+          print(f'app unit tests ran: {len(cases)} test case(s) across {len(paths)} file(s)')
           PY
 
       - name: Report test failures

@@ -81,6 +81,7 @@ fun runAllSuites(): Int {
     ScanOrderTests.run()
     ServerListPolicyTests.run()
     SubscriptionMergerTests.run()
+    SubscriptionHealthPolicyTests.run()
     SubscriptionUsageTests.run()
     FormatTests.run()
     CountryFlagsTests.run()

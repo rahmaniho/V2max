@@ -3,6 +3,7 @@ package ir.v2max.app
 import android.Manifest
 import android.app.Instrumentation
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.net.VpnService
@@ -24,6 +25,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.data.RoutingMode
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.service.V2maxVpnService
 import ir.v2max.app.ui.AppViewModel
@@ -117,7 +119,8 @@ class AndroidUiConnectionTest {
         val deadline = SystemClock.elapsedRealtime() + 10_000
         while (SystemClock.elapsedRealtime() < deadline &&
             (V2maxVpnService.running || Repo.tunnel.value.isActive || XrayCore.isRunning)) SystemClock.sleep(50)
-        Repo.updateSettings { it.copy(autoConnectOnOpen = false) }
+        Repo.updateSettings { it.copy(autoConnectOnOpen = false, autoRefreshOnOpen = false) }
+        Repo.removeSubscription("startup-ui-source")
         shell("appops set ${context.packageName} ACTIVATE_VPN ignore")
     }
 
@@ -167,6 +170,30 @@ class AndroidUiConnectionTest {
         awaitConnected(alpha.id)
         assertTunTraffic()
 
+        // A notification retest may be canceled while its native request is
+        // still running. A new selection must wait for that actual completion,
+        // not merely for the cancellation signal, without dropping the old VPN.
+        assertEquals("waiting", fixtureControl("hold-reset"))
+        Repo.updateSettings { it.copy(delayTestUrl = "http://198.51.100.1:18081/hold-probe") }
+        context.startService(Intent(context, V2maxVpnService::class.java).apply {
+            action = V2maxVpnService.ACTION_RETEST
+        })
+        awaitHeldProbe()
+        val previousBetaTest = Repo.serverById(beta.id)?.testedAt
+        Repo.updateSettings { it.copy(delayTestUrl = "http://198.51.100.1:18081/probe") }
+        clickText("UI Beta")
+        val scanDeadline = SystemClock.elapsedRealtime() + 10_000
+        while (!Repo.scan.value.running && SystemClock.elapsedRealtime() < scanDeadline) SystemClock.sleep(50)
+        assertTrue("The new selection did not begin waiting for preflight", Repo.scan.value.running)
+        SystemClock.sleep(1_500)
+        assertEquals("The old VPN changed before the canceled native retest returned", alpha.id, Repo.tunnel.value.serverId)
+        assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+        assertEquals("A new test ran while the old native retest was held", previousBetaTest, Repo.serverById(beta.id)?.testedAt)
+        assertTunTraffic()
+        fixtureControl("hold-release")
+        awaitConnected(beta.id)
+        assertTunTraffic()
+
         // The home power control must disconnect and then reconnect the chosen
         // profile without asking for a permission that is already granted.
         clickText("خانه")
@@ -174,7 +201,7 @@ class AndroidUiConnectionTest {
         awaitDisconnected()
         assertTrue("VPN permission was unexpectedly lost", VpnService.prepare(context) == null)
         clickDescription("اتصال")
-        awaitConnected(alpha.id)
+        awaitConnected(beta.id)
         assertTunTraffic()
     }
 
@@ -262,6 +289,84 @@ class AndroidUiConnectionTest {
         assertEquals("Scrolling and canceling restore must not change settings", settingsBefore, Repo.settings.value)
         assertNotNull("Opening restore must not authorize the VPN", VpnService.prepare(context))
         assertFalse("Opening restore unexpectedly started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
+    }
+
+    @Test fun manualSelectionCancelsStartupButWaitsForItsNativeProbe() {
+        grantNotificationsIfNeeded()
+        assertTrue(Repo.addSubscription(Subscription(
+            id = "startup-ui-source", name = "Startup fixture",
+            url = "http://10.0.2.2:18081/subscription", updatedAt = System.currentTimeMillis()
+        )))
+        assertTrue(Repo.updateSettings { it.copy(
+            autoRefreshOnOpen = true, autoConnectOnOpen = true,
+            delayTestUrl = "http://198.51.100.1:18081/hold-probe"
+        ) })
+        launchActivity()
+        awaitHeldProbe()
+        val fetched = requireNotNull(Repo.servers.value.firstOrNull { it.subId == "startup-ui-source" })
+        assertTrue(Repo.sync.value.running)
+        assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
+
+        // An explicit choice supersedes startup, but the held native call is
+        // still in flight and must really return before a new tunnel starts.
+        Repo.updateSettings { it.copy(delayTestUrl = "http://198.51.100.1:18081/probe") }
+        openServers()
+        clickText("UI Alpha")
+        awaitVpnDialog()
+        clickViewId("button1")
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (!Repo.scan.value.running && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+        assertTrue("Manual preflight did not start", Repo.scan.value.running)
+        SystemClock.sleep(1_500)
+        assertFalse("Cancellation started a tunnel before the old native test returned",
+            Repo.tunnel.value.isActive || V2maxVpnService.running || XrayCore.isRunning)
+        assertEquals("An incomplete startup scan published a result", 0L, Repo.serverById(fetched.id)?.testedAt)
+        assertEquals("The new manual test ran before the held scan finished", 0L, Repo.serverById(alpha.id)?.testedAt)
+        fixtureControl("hold-release")
+        awaitConnected(alpha.id)
+        assertNotNull("Canceling an incomplete startup test must keep its fetched profile", Repo.serverById(fetched.id))
+        assertNotNull("Canceling startup must keep personal profiles", Repo.serverById(beta.id))
+        assertTunTraffic()
+    }
+
+    @Test fun subscriptionRefreshAndHealthFinishBeforeAutomaticConsentAndPreflight() {
+        grantNotificationsIfNeeded()
+        Repo.removeServers(listOf(alpha.id, beta.id))
+        val before = System.currentTimeMillis()
+        assertTrue(Repo.addSubscription(Subscription(
+            id = "startup-ui-source", name = "Startup fixture",
+            url = "http://10.0.2.2:18081/subscription", updatedAt = before
+        )))
+        assertTrue(Repo.updateSettings { it.copy(
+            autoRefreshOnOpen = true, autoConnectOnOpen = true,
+            delayTestUrl = "http://198.51.100.1:18081/hold-probe"
+        ) })
+        launchActivity()
+        awaitHeldProbe()
+        val refreshed = Repo.subById("startup-ui-source")
+        assertTrue("Even a recently updated source must be fetched on launch", (refreshed?.updatedAt ?: 0) > before)
+        val fetched = Repo.servers.value.firstOrNull { it.subId == "startup-ui-source" }
+        assertNotNull("The subscription was not applied before the health check", fetched)
+        assertTrue("The subscription check was not shown as background preparation", Repo.sync.value.running)
+        assertFalse("The connection preflight must follow the subscription check", Repo.scan.value.running)
+        assertFalse("A tunnel started while health was being checked", Repo.tunnel.value.isActive || V2maxVpnService.running)
+        assertNotNull("VPN permission was granted before health finished", VpnService.prepare(context))
+        assertFalse("VPN consent was shown before health finished", activePackage().contains("vpndialog", ignoreCase = true))
+        assertFalse("An unfinished health result was published", (fetched?.realPing ?: -1) > 0)
+
+        fixtureControl("hold-release")
+        awaitVpnDialog()
+        val id = requireNotNull(fetched).id
+        assertFalse("Subscription health was still in progress at consent", Repo.sync.value.running)
+        assertTrue("A completed real health result was not published", (Repo.serverById(id)?.realPing ?: -1) > 0)
+        assertEquals("waiting", fixtureControl("hold-reset"))
+        clickViewId("button1")
+        awaitHeldProbe()
+        assertTrue("The independent connection preflight did not start", Repo.scan.value.running)
+        assertFalse("Stored health bypassed the active preflight", Repo.tunnel.value.isActive || V2maxVpnService.running)
+        fixtureControl("hold-release")
+        awaitConnected(id)
+        assertTunTraffic()
     }
 
     private fun grantNotificationsIfNeeded() {

@@ -256,7 +256,7 @@ fun SettingsScreen(
                 Column(Modifier.padding(14.dp)) {
                     Text("محافظت از کانفیگ‌ها", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(3.dp))
-                    Text("ناموفق بودن تست می‌تواند موقتی باشد؛ کانفیگ‌ها به‌خاطر خطای تست خودکار حذف نمی‌شوند.",
+                    Text("پس از تازه‌سازی، کانفیگ‌های اشتراک که در تست واقعی پاسخ ندهند فقط با موفقیت سروری دیگر در همان نوبت کنار گذاشته می‌شوند. موارد مستقل، انتخاب‌شده، فعال، علاقه‌مندی و در حال ویرایش حفظ می‌شوند. در شکست همگانی یا تست ناقص، پاک‌سازی بر اساس تست انجام نمی‌شود.",
                         style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
                 }
             }
@@ -265,7 +265,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "به‌روزرسانی خودکار در شروع",
-                subtitle = "اشتراک‌ها در شروع و به‌صورت دوره‌ای (حدود هر ۱۲ ساعت) به‌روزرسانی می‌شوند",
+                subtitle = "در هر شروع، دریافت و پینگ واقعی انجام می‌شود؛ دریافت دوره‌ای حدود هر ۱۲ ساعت است",
                 checked = settings.autoRefreshOnOpen
             ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
         }
@@ -281,7 +281,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "اتصال خودکار هنگام باز شدن برنامه",
-                subtitle = "به محض ورود به V2max، اتصال برقرار می‌شود",
+                subtitle = "پس از آماده‌سازی اشتراک‌ها و پایان همهٔ تست‌های فعال، اتصال بررسی می‌شود",
                 checked = settings.autoConnectOnOpen
             ) { value -> onChange { it.copy(autoConnectOnOpen = value) } }
         }

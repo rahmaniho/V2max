@@ -24,6 +24,7 @@ object ScanOrder {
         nowMs: Long,
         preferredId: String? = null,
         rememberedId: String? = null,
+        fastestRecentFirst: Boolean = false,
     ): List<T> {
         data class Entry<T>(val item: T, val hint: ScanHint, val index: Int, val tier: Int)
 
@@ -33,8 +34,9 @@ object ScanOrder {
                 nowMs - h.verifiedAt in 0..RECENT_MS
             val tier = when {
                 preferredId != null && h.id == preferredId -> 0
-                rememberedId != null && h.id == rememberedId -> 1
-                h.favorite -> 2
+                fastestRecentFirst && recent -> 1
+                rememberedId != null && h.id == rememberedId -> if (fastestRecentFirst) 2 else 1
+                h.favorite -> if (fastestRecentFirst) 3 else 2
                 recent -> 3
                 else -> 4
             }
@@ -44,11 +46,19 @@ object ScanOrder {
         for (tier in 0..4) {
             // Within a source, use a recent real measurement rather than TCP-only data.
             // Unmeasured items preserve their original order.
+            val recentTier = if (fastestRecentFirst) 1 else 3
             val members = entries.filter { it.tier == tier }.sortedWith(
                 compareBy<Entry<T>> {
-                    if (tier == 3) it.hint.realPing else Int.MAX_VALUE
+                    if (tier == recentTier) it.hint.realPing else Int.MAX_VALUE
                 }.thenBy { it.index }
             )
+            // Failover and fast selection try recent low-latency profiles globally
+            // first. They still get a new real preflight, and untested profiles
+            // are retained below with the usual cross-source fairness.
+            if (fastestRecentFirst && tier == recentTier) {
+                ordered.addAll(members.map { it.item })
+                continue
+            }
             val bySource = linkedMapOf<String, java.util.ArrayDeque<T>>()
             for (entry in members) {
                 bySource.getOrPut(entry.hint.sourceId) { java.util.ArrayDeque() }.addLast(entry.item)

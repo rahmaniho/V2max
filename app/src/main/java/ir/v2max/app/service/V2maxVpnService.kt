@@ -11,6 +11,7 @@ import android.os.PowerManager
 import android.util.Log
 import ir.v2max.app.core.AppliedTunnelPolicy
 import ir.v2max.app.core.ConfigBuilder
+import ir.v2max.app.core.ConnectionTestBarrier
 import ir.v2max.app.core.Failover
 import ir.v2max.app.core.PreflightTickets
 import ir.v2max.app.core.RecoveryLoop
@@ -26,6 +27,7 @@ import ir.v2max.app.data.TunnelUiState
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.ProbePlanner
 import ir.v2max.app.net.ProbeResult
+import ir.v2max.app.net.StartupMaintenance
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -305,10 +307,13 @@ class V2maxVpnService : VpnService() {
             actionJob = scope.launch {
                 try {
                     if (!ownsGeneration(generation)) return@launch
+                    StartupMaintenance.cancelAll()
                     val id = currentServer?.id ?: Repo.tunnel.value.serverId
                     val server = Repo.serverById(id)?.copy()
                     if (server != null) {
-                        val result = ProbePlanner.verify(server, Repo.settings.value, ir.v2max.app.net.HealthScanner::realDelay)
+                        val result = ConnectionTestBarrier.tests {
+                            ProbePlanner.verify(server, Repo.settings.value.copy(), ir.v2max.app.net.HealthScanner::realDelay)
+                        }
                         coroutineContext.ensureActive()
                         if (!ownsGeneration(generation) || Repo.tunnel.value.status != TunnelStatus.CONNECTED ||
                             !running || !coreRunning() || currentServer?.id != id ||
@@ -384,6 +389,7 @@ class V2maxVpnService : VpnService() {
         preflightJob = scope.launch {
             try {
                 if (!ownsGeneration(generation)) return@launch
+                StartupMaintenance.cancelAll()
                 val preferred = serverId.takeIf {
                     it.isNotBlank() && intent?.getBooleanExtra(EXTRA_SMART_SELECT, false) != true
                 }?.let { id ->
@@ -492,6 +498,9 @@ class V2maxVpnService : VpnService() {
         // Check-and-advance as one operation; an old failover may finish
         // between a newer manual action and delivery of its service intent.
         if (!ownsGeneration(expectedGeneration)) return@synchronized false
+        // A replacement takes precedence over housekeeping. The connection gate
+        // below still waits until any in-flight native probes have returned.
+        StartupMaintenance.cancelAll()
         // Only the accepted generation may cancel other work. A stale
         // receipt must not cancel a newer preflight before this check.
         preflightJob?.cancel()
@@ -514,176 +523,178 @@ class V2maxVpnService : VpnService() {
     private suspend fun doConnect(selection: VerifiedSelection, token: Int, isFailover: Boolean, requestStartId: Int) {
         var replacedTunnel = false
         try {
-            val server = selection.server()
-            val baseSettings = Repo.settings.value.copy()
-            var settings = baseSettings.copy(
-                fragment = server.testedFragment,
-                fragmentProfile = server.testedFragmentProfile,
-                balancer = false
-            )
-            // Catch malformed VPN/routing settings before interrupting a live tunnel.
-            val initialConfig = ConfigBuilder.vpnConfig(server, settings, listOf(server))
-            synchronized(coreStartStopLock) {
-                if (!ownsGeneration(token)) throw CancellationException("superseded")
-                val current = Repo.serverById(server.id)
-                val network = CarrierProbe.networkHandle(this)
-                if (!selection.validFor(current, baseSettings, network) ||
-                    !selection.validFor(current, Repo.settings.value, network) ||
-                    AppliedTunnelPolicy.from(server, baseSettings) != AppliedTunnelPolicy.from(server, Repo.settings.value)) {
-                    throw PreflightChanged()
-                }
-                monitorJob?.cancel()
-                monitorJob = null
-                // Claim before touching the process-global core. A canceled job
-                // from a destroyed Service instance may finish much later.
-                resourceOwner.claim(token)
-                replacedTunnel = true
-                running = false
-                activeIdentity = null
-                XrayCore.stop()
-                closeTun()
-                currentServer = server
-                Repo.setSelected(server.id)
-                if (isFailover) {
-                    Log.i(TAG, "failover: connecting to ${server.endpoint}")
-                } else {
-                    Failover.reset()
-                }
-                publish(
-                    TunnelUiState(
-                        status = TunnelStatus.CONNECTING,
-                        serverId = server.id,
-                        serverName = server.displayName(),
-                        serverProto = server.proto.label,
-                        ping = server.bestPing(),
-                        message = if (isFailover) "تغییر خودکار به سرور جایگزین…" else "در حال اتصال…"
-                    )
+            ConnectionTestBarrier.connection {
+                val server = selection.server()
+                val baseSettings = Repo.settings.value.copy()
+                var settings = baseSettings.copy(
+                    fragment = server.testedFragment,
+                    fragmentProfile = server.testedFragmentProfile,
+                    balancer = false
                 )
-            }
-
-            // Stop and cancellation must not slip between establishing the fd
-            // and registering it for cleanup.
-            val fd = synchronized(coreStartStopLock) {
-                if (!ownsGeneration(token)) throw CancellationException("superseded")
-                val created = establishTun(settings)
-                    ?: throw IllegalStateException("دسترسی VPN داده نشده است. دوباره تلاش کنید.")
-                tun = created
-                Repo.clearLatencyHistory()
-                Repo.poolSize.value = 1
-                created
-            }
-            XrayCore.init(applicationContext)
-
-            suspend fun startAndVerify(
-                currentSettings: AppSettings,
-                pool: List<ServerConfig>,
-                prebuilt: String? = null
-            ): Pair<Long, String> {
-                coroutineContext.ensureActive()
-                if (!ownsGeneration(token)) throw CancellationException("superseded")
-                val config = prebuilt ?: ConfigBuilder.vpnConfig(server, currentSettings, pool)
+                // Catch malformed VPN/routing settings before interrupting a live tunnel.
+                val initialConfig = ConfigBuilder.vpnConfig(server, settings, listOf(server))
                 synchronized(coreStartStopLock) {
                     if (!ownsGeneration(token)) throw CancellationException("superseded")
+                    val current = Repo.serverById(server.id)
+                    val network = CarrierProbe.networkHandle(this)
+                    if (!selection.validFor(current, baseSettings, network) ||
+                        !selection.validFor(current, Repo.settings.value, network) ||
+                        AppliedTunnelPolicy.from(server, baseSettings) != AppliedTunnelPolicy.from(server, Repo.settings.value)) {
+                        throw PreflightChanged()
+                    }
+                    monitorJob?.cancel()
+                    monitorJob = null
+                    // Claim before touching the process-global core. A canceled job
+                    // from a destroyed Service instance may finish much later.
+                    resourceOwner.claim(token)
+                    replacedTunnel = true
+                    running = false
+                    activeIdentity = null
                     XrayCore.stop()
-                    XrayCore.start(config, fd.fd)
+                    closeTun()
+                    currentServer = server
+                    Repo.setSelected(server.id)
+                    if (isFailover) {
+                        Log.i(TAG, "failover: connecting to ${server.endpoint}")
+                    } else {
+                        Failover.reset()
+                    }
+                    publish(
+                        TunnelUiState(
+                            status = TunnelStatus.CONNECTING,
+                            serverId = server.id,
+                            serverName = server.displayName(),
+                            serverProto = server.proto.label,
+                            ping = server.bestPing(),
+                            message = if (isFailover) "تغییر خودکار به سرور جایگزین…" else "در حال اتصال…"
+                        )
+                    )
                 }
-                if (!XrayCore.isRunning) throw IllegalStateException("هسته اجرا نشد")
-                // This probes the running Xray outbound; it does not by itself prove Android TUN traffic.
-                val urls = (listOf(server.testedUrl) + ProbePlanner.testUrls(currentSettings))
-                    .filter { it.isNotBlank() }.distinct()
-                for (url in urls) {
+
+                // Stop and cancellation must not slip between establishing the fd
+                // and registering it for cleanup.
+                val fd = synchronized(coreStartStopLock) {
+                    if (!ownsGeneration(token)) throw CancellationException("superseded")
+                    val created = establishTun(settings)
+                        ?: throw IllegalStateException("دسترسی VPN داده نشده است. دوباره تلاش کنید.")
+                    tun = created
+                    Repo.clearLatencyHistory()
+                    Repo.poolSize.value = 1
+                    created
+                }
+                XrayCore.init(applicationContext)
+
+                suspend fun startAndVerify(
+                    currentSettings: AppSettings,
+                    pool: List<ServerConfig>,
+                    prebuilt: String? = null
+                ): Pair<Long, String> {
                     coroutineContext.ensureActive()
-                    val ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(url) }
-                    if (ping > 0) return ping to url
+                    if (!ownsGeneration(token)) throw CancellationException("superseded")
+                    val config = prebuilt ?: ConfigBuilder.vpnConfig(server, currentSettings, pool)
+                    synchronized(coreStartStopLock) {
+                        if (!ownsGeneration(token)) throw CancellationException("superseded")
+                        XrayCore.stop()
+                        XrayCore.start(config, fd.fd)
+                    }
+                    if (!XrayCore.isRunning) throw IllegalStateException("هسته اجرا نشد")
+                    // This probes the running Xray outbound; it does not by itself prove Android TUN traffic.
+                    val urls = (listOf(server.testedUrl) + ProbePlanner.testUrls(currentSettings))
+                        .filter { it.isNotBlank() }.distinct()
+                    for (url in urls) {
+                        coroutineContext.ensureActive()
+                        val ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(url) }
+                        if (ping > 0) return ping to url
+                    }
+                    throw IllegalStateException("پروکسی به مقصدهای تست پاسخ نداد")
                 }
-                throw IllegalStateException("پروکسی به مقصدهای تست پاسخ نداد")
-            }
 
-            if (!publishIfCurrent(Repo.tunnel.value.copy(message = "راه‌اندازی با تنظیمات تست‌شده…"), token))
-                throw CancellationException("superseded")
-            var verified = try {
-                startAndVerify(settings, listOf(server), initialConfig)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // A damaged geodata file must not make every otherwise-valid profile unusable.
-                val message = e.message.orEmpty().lowercase()
-                if (settings.geoAssets && (message.contains("geoip") || message.contains("geosite"))) {
-                    XrayCore.log("فایل مسیریابی جغرافیایی نامعتبر بود؛ اتصال بدون آن امتحان می‌شود")
-                    settings = settings.copy(geoAssets = false)
-                    startAndVerify(settings, listOf(server))
-                } else throw e
-            }
-
-            val primaryVerification = verified
-            // Pool members must come from this completed preflight, not from
-            // arbitrary persisted pings that may lack the enabled optional tests.
-            val pool = if (baseSettings.balancer) {
-                listOf(server) + selection.pool()
-                    .filter { it.id != server.id && it.testedFragment == settings.fragment }
-                    .filter { !it.testedFragment || it.testedFragmentProfile == settings.fragmentProfile }
-                    .filter { Repo.serverById(it.id)?.fingerprint() == it.fingerprint() }
-                    .take((baseSettings.balancerSize - 1).coerceIn(0, 5))
-            } else listOf(server)
-            if (pool.size > 1) {
-                try {
-                    val poolSettings = settings.copy(balancer = true)
-                    val poolVerified = startAndVerify(poolSettings, pool)
-                    settings = poolSettings
-                    verified = poolVerified
-                    Repo.poolSize.value = pool.size
+                if (!publishIfCurrent(Repo.tunnel.value.copy(message = "راه‌اندازی با تنظیمات تست‌شده…"), token))
+                    throw CancellationException("superseded")
+                var verified = try {
+                    startAndVerify(settings, listOf(server), initialConfig)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    XrayCore.log("استخر پاسخ نداد؛ بازگشت به سرور انتخابی")
-                    verified = startAndVerify(settings, listOf(server))
-                    Repo.poolSize.value = 1
+                    // A damaged geodata file must not make every otherwise-valid profile unusable.
+                    val message = e.message.orEmpty().lowercase()
+                    if (settings.geoAssets && (message.contains("geoip") || message.contains("geosite"))) {
+                        XrayCore.log("فایل مسیریابی جغرافیایی نامعتبر بود؛ اتصال بدون آن امتحان می‌شود")
+                        settings = settings.copy(geoAssets = false)
+                        startAndVerify(settings, listOf(server))
+                    } else throw e
                 }
-            }
-            coroutineContext.ensureActive()
-            if (!ownsGeneration(token)) throw CancellationException("superseded")
-            Repo.setVerifiedResult(server.id, ProbeResult(
-                primaryVerification.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
-                primaryVerification.second, settings.fragment, settings.fragmentProfile
-            ), clearOtherTargets = false, expectedFingerprint = server.fingerprint())
-            Repo.persistNow()
 
-            synchronized(coreStartStopLock) {
-                // A stop/new action may arrive while persistence or the native
-                // post-start probe is running. Never publish its stale result.
+                val primaryVerification = verified
+                // Pool members must come from this completed preflight, not from
+                // arbitrary persisted pings that may lack the enabled optional tests.
+                val pool = if (baseSettings.balancer) {
+                    listOf(server) + selection.pool()
+                        .filter { it.id != server.id && it.testedFragment == settings.fragment }
+                        .filter { !it.testedFragment || it.testedFragmentProfile == settings.fragmentProfile }
+                        .filter { Repo.serverById(it.id)?.fingerprint() == it.fingerprint() }
+                        .take((baseSettings.balancerSize - 1).coerceIn(0, 5))
+                } else listOf(server)
+                if (pool.size > 1) {
+                    try {
+                        val poolSettings = settings.copy(balancer = true)
+                        val poolVerified = startAndVerify(poolSettings, pool)
+                        settings = poolSettings
+                        verified = poolVerified
+                        Repo.poolSize.value = pool.size
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        XrayCore.log("استخر پاسخ نداد؛ بازگشت به سرور انتخابی")
+                        verified = startAndVerify(settings, listOf(server))
+                        Repo.poolSize.value = 1
+                    }
+                }
+                coroutineContext.ensureActive()
                 if (!ownsGeneration(token)) throw CancellationException("superseded")
-                // A geo/balancer fallback may differ from the user's request;
-                // remember what was actually started, not the requested policy.
-                activeIdentity = identity(server, settings)
-                running = true
-                connectedAt = System.currentTimeMillis()
-                connectedAtNanos = System.nanoTime()
-                totalUp = 0
-                totalDown = 0
-                if (!isFailover) {
-                    failoverAttempts = 0
-                    recoveryAttempt = 0
-                }
-                Failover.markWorking(server.id)
+                Repo.setVerifiedResult(server.id, ProbeResult(
+                    primaryVerification.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
+                    primaryVerification.second, settings.fragment, settings.fragmentProfile
+                ), clearOtherTargets = false, expectedFingerprint = server.fingerprint())
+                Repo.persistNow()
 
-                publish(
-                    TunnelUiState(
-                        status = TunnelStatus.CONNECTED,
-                        serverId = server.id,
-                        serverName = server.displayName(),
-                        serverProto = server.proto.label,
-                        ping = verified.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
-                        connectedAt = connectedAt,
-                        message = "متصل"
+                synchronized(coreStartStopLock) {
+                    // A stop/new action may arrive while persistence or the native
+                    // post-start probe is running. Never publish its stale result.
+                    if (!ownsGeneration(token)) throw CancellationException("superseded")
+                    // A geo/balancer fallback may differ from the user's request;
+                    // remember what was actually started, not the requested policy.
+                    activeIdentity = identity(server, settings)
+                    running = true
+                    connectedAt = System.currentTimeMillis()
+                    connectedAtNanos = System.nanoTime()
+                    totalUp = 0
+                    totalDown = 0
+                    if (!isFailover) {
+                        failoverAttempts = 0
+                        recoveryAttempt = 0
+                    }
+                    Failover.markWorking(server.id)
+
+                    publish(
+                        TunnelUiState(
+                            status = TunnelStatus.CONNECTED,
+                            serverId = server.id,
+                            serverName = server.displayName(),
+                            serverProto = server.proto.label,
+                            ping = verified.first.coerceIn(1, Int.MAX_VALUE.toLong()).toInt(),
+                            connectedAt = connectedAt,
+                            message = "متصل"
+                        )
                     )
-                )
-                startMonitor()
+                    startMonitor()
+                }
+                // Persisting a large server list must not hold the lifecycle gate.
+                if (ownsGeneration(token)) runCatching {
+                    Repo.recordOutcome(server.id, true)
+                    SmartConnect.rememberWorkingNetwork(Repo.serverById(server.id) ?: server)
+                }.onFailure { Log.w(TAG, "could not persist connection statistics") }
             }
-            // Persisting a large server list must not hold the lifecycle gate.
-            if (ownsGeneration(token)) runCatching {
-                Repo.recordOutcome(server.id, true)
-                SmartConnect.rememberWorkingNetwork(Repo.serverById(server.id) ?: server)
-            }.onFailure { Log.w(TAG, "could not persist connection statistics") }
         } catch (e: CancellationException) {
             if (replacedTunnel) releaseOwnedResources(token)
             throw e
@@ -919,11 +930,14 @@ class V2maxVpnService : VpnService() {
                 val multiUrls = if (options.multiPing) ir.v2max.app.data.PingTargets.ALL.map { it.url } else emptyList()
                 val rotated = if (multiUrls.isNotEmpty()) multiUrls[probeIndex++ % multiUrls.size] else primary
                 val urls = (listOf(rotated, primary) + ProbePlanner.testUrls(options)).filter { it.isNotBlank() }.distinct()
-                var ping = -1L
-                for (url in urls) {
-                    coroutineContext.ensureActive()
-                    ping = withContext(Dispatchers.IO) { XrayCore.measureDelay(url) }
-                    if (ping > 0) break
+                val ping = ConnectionTestBarrier.monitoring {
+                    var measured = -1L
+                    for (url in urls) {
+                        coroutineContext.ensureActive()
+                        measured = withContext(Dispatchers.IO) { XrayCore.measureDelay(url) }
+                        if (measured > 0) break
+                    }
+                    measured
                 }
                 if (ping > 0) {
                     if (failures > 0) Log.i(TAG, "connection recovered after $failures failures")
@@ -1059,6 +1073,7 @@ class V2maxVpnService : VpnService() {
             if (!serviceOwner.isOwner(serviceInstance) ||
                 (expectedGeneration != null && expectedGeneration != connectToken.get())) return@synchronized false
             connectToken.incrementAndGet()
+            StartupMaintenance.cancelAll()
             SmartConnect.cancelScan()
             preflightJob?.cancel()
             preflightJob = null

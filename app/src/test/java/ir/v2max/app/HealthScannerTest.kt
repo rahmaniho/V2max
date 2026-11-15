@@ -47,6 +47,24 @@ class HealthScannerTest {
         assertNotNull(outcome.best)
     }
 
+    @Test fun `fast switch uses recent real ping only as ordering and repeats every chosen protocol test`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val fast = node(0, "A").copy(realPing = 12, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val other = node(1, "B").copy(realPing = 30, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val slow = node(2, "A").copy(realPing = 300, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val favorite = node(3, "B").copy(favorite = true)
+        val calls = mutableListOf<String>()
+        val result = HealthScanner.scanPrepared(
+            listOf(favorite, slow, other, fast), settings,
+            ops(real = { cfg, _, _ -> calls.add(cfg.id); if (cfg.id == fast.id) 90 else 20 }),
+            fastestRecentFirst = true
+        )
+        assertEquals(listOf(fast.id, other.id, slow.id, favorite.id), calls)
+        assertEquals(4, result.testedCount)
+        assertNotEquals("An old 12ms measurement must not be reused as proof", fast.id, result.best?.id)
+        assertEquals(20, result.best?.realPing)
+    }
+
     @Test fun `a tcp failure is deferred not discarded and all windows remain searchable`() = runBlocking {
         val profiles = (0 until 30).map { node(it) }
         val results = mutableMapOf<String, Boolean>()

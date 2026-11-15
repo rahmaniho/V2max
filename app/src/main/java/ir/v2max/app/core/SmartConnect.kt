@@ -39,29 +39,31 @@ object SmartConnect {
 
     /** بررسی عمیق شبکه (اپراتور، DNS، DPI، تأخیر/لرزش) و انتشار نتیجه برای رابط کاربری */
     suspend fun assessNetwork(context: Context, force: Boolean = false): Boolean {
-        return probeMutex.withLock {
-            val before = CarrierProbe.networkHandle(context) ?: return@withLock false
-            if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
-            Repo.scan.value = Repo.scan.value.copy(
-                phase = "بررسی عمیق شبکه‌ی اپراتور",
-                message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
-            )
-            val result = try {
-                CarrierProbe.assess(context)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                return@withLock false
+        return ConnectionTestBarrier.tests {
+            probeMutex.withLock {
+                val before = CarrierProbe.networkHandle(context) ?: return@withLock false
+                if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
+                Repo.scan.value = Repo.scan.value.copy(
+                    phase = "بررسی عمیق شبکه‌ی اپراتور",
+                    message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
+                )
+                val result = try {
+                    CarrierProbe.assess(context)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    return@withLock false
+                }
+                val after = CarrierProbe.networkHandle(context)
+                if (before != after) {
+                    assessmentNetwork = null
+                    Repo.network.value = ir.v2max.app.data.NetworkAssessment()
+                    return@withLock false
+                }
+                assessmentNetwork = after
+                Repo.network.value = result
+                true
             }
-            val after = CarrierProbe.networkHandle(context)
-            if (before != after) {
-                assessmentNetwork = null
-                Repo.network.value = ir.v2max.app.data.NetworkAssessment()
-                return@withLock false
-            }
-            assessmentNetwork = after
-            Repo.network.value = result
-            true
         }
     }
 
@@ -82,6 +84,7 @@ object SmartConnect {
         preferredId: String? = null,
         excludedIds: Set<String> = emptySet(),
         exhaustive: Boolean = false,
+        preferFastest: Boolean = false,
         manualFailure: String? = null
     ): VerifiedSelection? {
         val job = currentCoroutineContext()[Job]
@@ -145,6 +148,7 @@ object SmartConnect {
                             rememberedId = rememberedId,
                             limit = limit,
                             exhaustive = exhaustive,
+                            fastestRecentFirst = preferFastest,
                             onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
                             onReal = { cfg, result ->
                                 Repo.setVerifiedResult(cfg.id, result, expectedFingerprint = cfg.fingerprint())
@@ -201,7 +205,7 @@ object SmartConnect {
                     val chosen = when {
                         best == null -> null
                         // Do not override a fresh download comparison with old network memory.
-                        !outcome.speedCompared && remembered != null &&
+                        !preferFastest && !outcome.speedCompared && remembered != null &&
                             ProbePlanner.latencyScore(remembered) <= ProbePlanner.latencyScore(best) + 60 -> remembered
                         else -> best
                     }
@@ -224,6 +228,8 @@ object SmartConnect {
                             else -> buildString {
                                 if (manualFailure != null || (preferredId != null && chosen.id != preferredId)) {
                                     append("سرور انتخابی تأیید نشد؛ جایگزین تأییدشده: ")
+                                } else if (preferFastest && !settings.speedTest) {
+                                    append("کم‌تأخیرترین سرورِ بررسی‌شده: ")
                                 } else append("سرور تأییدشده: ")
                                 append("${chosen.displayName()} (${chosen.realPing}ms)")
                                 append(" · ${outcome.testedCount} تست واقعی · اسکن ${outcome.elapsedMs}ms")
@@ -241,7 +247,7 @@ object SmartConnect {
                         val sameAsRunning = connected && current?.id == selection.id &&
                             TunnelController.matchesActiveProfile(selection.server(), settings)
                         // Avoid interrupting a working, comparable connection.
-                        val keepCurrent = preferredId == null && connected && current != null &&
+                        val keepCurrent = preferredId == null && !preferFastest && connected && current != null &&
                             !sameAsRunning && current.bestPing() > 0 &&
                             ProbePlanner.latencyScore(current) <= ProbePlanner.latencyScore(chosen) * 1.35f
                         when {
@@ -296,7 +302,7 @@ object SmartConnect {
         }
         Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی تأیید نشد؛ جستجوی جایگزین…")
         return scanAndConnect(
-            context, autoConnect = true, excludedIds = setOf(serverId), manualFailure = manualFailure
+            context, autoConnect = true, excludedIds = setOf(serverId), preferFastest = true, manualFailure = manualFailure
         ) != null
     }
 

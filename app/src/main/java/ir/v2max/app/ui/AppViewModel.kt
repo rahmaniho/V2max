@@ -15,9 +15,11 @@ import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.UpdateCoordinator
 import ir.v2max.app.net.SubscriptionFetcher
-import ir.v2max.app.net.SubscriptionBootstrap
+import ir.v2max.app.net.StartupMaintenance
 import ir.v2max.app.net.SubscriptionPolicy
+import ir.v2max.app.net.SubscriptionSyncGate
 import ir.v2max.core.format.Format
+import ir.v2max.core.model.PublicSources
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -57,7 +59,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private sealed class VpnAction {
         data class Server(val id: String) : VpnAction()
-        data class Smart(val subscriptionId: String?) : VpnAction()
+        data class Smart(val subscriptionId: String?, val automaticOnOpen: Boolean = false) : VpnAction()
         object Quick : VpnAction()
         object Restart : VpnAction()
     }
@@ -71,9 +73,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal var lastVpnPermissionLaunchError: String = ""
         private set
     private var startupJob: Job? = null
-    private var startupRefreshJob: Job? = null
+    private var editingServerId: String? = null
     private val dataJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
-    private val syncMutex = kotlinx.coroutines.sync.Mutex()
     private val updateDownloadLock = Any()
     private var updateDownloadActive = false
     private var updateDownloadAttempt = 0L
@@ -89,10 +90,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Importing data does not cancel an unrelated VPN or its recovery. */
     private fun cancelStartup() {
+        // Invalidation and cleanup publication share Repo's lock, so a user
+        // action cannot race an obsolete result into deleting a profile.
+        Repo.invalidateStartupHealth()
         startupJob?.cancel()
         startupJob = null
-        startupRefreshJob?.cancel()
-        startupRefreshJob = null
     }
 
     private fun requireWritableData(): Boolean {
@@ -126,7 +128,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         startupJob = viewModelScope.launch(errorHandler) { startup() }
     }
 
-    /** Use cached profiles immediately; network refresh never certifies a profile. */
+    /** Refresh, then protocol health, then the separate full connection preflight. */
     private suspend fun startup() {
         val app = getApplication<Application>()
         val settings = Repo.settings.value
@@ -135,67 +137,89 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (settings.useFreeSources) runCatching { Repo.ensureBuiltInSources(requireEnabled = true) }
         if (settings.autoUpdateCheck) checkUpdates(manual = false)
 
-        val now = System.currentTimeMillis()
-        val refreshPermit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC)
-        val refresh = refreshPermit != null && Repo.subs.value.any {
-            now - it.updatedAt > 3 * 60 * 60 * 1000L
-        }
-        var syncFinished = false
-        try {
-            if (refresh && refreshPermit != null && Repo.automaticRefreshIsCurrent(refreshPermit) && Repo.servers.value.isEmpty()) {
-                // First install: race sources, but still test the obtained configs with Xray.
-                val epoch = refreshPermit.dataEpoch
-                val sources = Repo.subs.value.sortedBy { it.builtIn }
-                Repo.sync.value = ir.v2max.app.data.SyncState(
-                    running = true, total = sources.size, message = "دریافت نخستین منبع قابل استفاده…"
-                )
-                val first = try {
-                    SubscriptionBootstrap.firstUsable(sources) { done, total ->
-                        Repo.sync.value = Repo.sync.value.copy(done = done, total = total)
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC)
+        val token = Repo.startupHealthToken()
+        if (permit != null && Repo.subs.value.isNotEmpty()) {
+            // Attempt all current sources, even recently updated ones. User
+            // actions and service recovery can cancel this entire phase.
+            Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "آماده‌سازی اشتراک‌ها…")
+            val complete = try {
+                StartupMaintenance.track {
+                    SubscriptionSyncGate.mutex.withLock {
+                        // A service action may have invalidated startup just
+                        // before this job registered or acquired the gate.
+                        if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
+                        val refreshed = syncAllLocked(announce = false, automaticPermit = permit, collectSources = true)
+                        currentCoroutineContext().ensureActive()
+                        if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
+                        if (refreshed.sources.isEmpty()) {
+                            showMessage("به‌روزرسانی اشتراک‌ها انجام نشد؛ فهرست قبلی حفظ شد")
+                            return@withLock true
+                        }
+                        Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                        val checked = try {
+                            withContext(Dispatchers.IO) {
+                                StartupMaintenance.check(app, refreshed.sources, permit, token) { phase, done, total ->
+                                    Repo.sync.value = Repo.sync.value.copy(
+                                        done = done, total = total,
+                                        message = if (phase.startsWith("پیش")) "پیش‌بررسی سرورهای اشتراک…"
+                                            else "سنجش واقعی سرورهای اشتراک…"
+                                    )
+                                }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            showMessage("سنجش اشتراک‌ها کامل نشد؛ فهرست حفظ شد و اتصال خودکار آغاز نشد")
+                            return@withLock false
+                        }
+                        currentCoroutineContext().ensureActive()
+                        when (checked.status) {
+                            StartupMaintenance.Status.COMPLETE -> {
+                                when {
+                                    checked.health.healthy == 0 -> showMessage(
+                                        "هیچ سروری در این نوبت پاسخ نداد؛ مشکل ممکن است از شبکه یا مقصد تست باشد و کانفیگ‌ها حفظ شدند"
+                                    )
+                                    checked.health.removed > 0 -> showMessage(
+                                        "${Format.number(checked.health.removed)} کانفیگ اشتراک در این بررسی پاسخ نداد و کنار گذاشته شد"
+                                    )
+                                    checked.health.unknownSources > 0 -> showMessage(
+                                        "سنجش برخی اشتراک‌ها کامل نبود؛ کانفیگ‌های نامشخص حفظ شدند"
+                                    )
+                                }
+                                true
+                            }
+                            StartupMaintenance.Status.NO_NETWORK -> {
+                                showMessage("شبکه‌ای برای سنجش پیدا نشد؛ کانفیگ‌ها حفظ شدند")
+                                false
+                            }
+                            StartupMaintenance.Status.NO_PROFILES -> {
+                                showMessage("کانفیگ‌های دریافت‌شده برای سنجش در دسترس نبودند؛ اتصال خودکار آغاز نشد")
+                                false
+                            }
+                            StartupMaintenance.Status.INCOMPLETE, StartupMaintenance.Status.CHANGED -> {
+                                showMessage("سنجش کامل نشد یا شبکه و تنظیمات تغییر کردند؛ اتصال خودکار آغاز نشد")
+                                false
+                            }
+                        }
                     }
-                } finally {
-                    Repo.sync.value = Repo.sync.value.copy(running = false)
                 }
-                if (first != null) {
-                    withContext(Dispatchers.IO) {
-                        applyFetchedSubscription(first.subscription, first.result, epoch, automaticPermit = refreshPermit)
-                    }
-                } else {
-                    syncFinished = true // all sources were already attempted
-                    Repo.sync.value = Repo.sync.value.copy(message = "دریافت منابع ناموفق بود؛ دوباره تلاش کنید")
-                }
+            } finally {
+                Repo.sync.value = Repo.sync.value.copy(running = false)
             }
-
-            // With auto-connect off, do not launch unsolicited preflight probes.
-            if (!Repo.settings.value.autoConnectOnOpen || Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
-            // Do not restart a connection or compete with a scan the user already started.
-            if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
-            val needsPermission = vpnPermissionRequired() ?: return
-            if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
-                if (settings.autoConnectOnOpen) requestSmartConnectInternal()
-                return
-            }
-
-            val best = SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
-            // If the first source or all cached profiles fail, refresh the other stale
-            // sources and retry once rather than leaving the user disconnected.
-            if (best == null && refresh && refreshPermit != null && !syncFinished) {
-                syncFinished = true
-                val (updated, _) = syncAll(announce = false, onlyStale = true, automaticPermit = refreshPermit)
-                if (updated > 0 && !Repo.tunnel.value.isActive && !Repo.scan.value.running) {
-                    SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
-                }
-            }
-        } finally {
-            // Fetching unrelated subscriptions is not a pre-connect test. Keep it off
-            // the hot path and preserve the selected/live profile while it runs.
-            if (currentCoroutineContext().isActive && refresh && refreshPermit != null && !syncFinished &&
-                Repo.automaticRefreshIsCurrent(refreshPermit)) {
-                startupRefreshJob = viewModelScope.launch(errorHandler) {
-                    syncAll(announce = false, onlyStale = true, automaticPermit = refreshPermit)
-                }
-            }
+            if (!complete) return
         }
+
+        currentCoroutineContext().ensureActive()
+        if (!Repo.settings.value.autoConnectOnOpen || Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
+        // Never restart a working or recovering connection while opening the UI.
+        if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
+        val needsPermission = vpnPermissionRequired() ?: return
+        if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
+            if (Repo.settings.value.autoConnectOnOpen) requestSmartConnectInternal(automaticOnOpen = true)
+            return
+        }
+        SmartConnect.scanAndConnect(app, autoConnect = true, limit = 450, preferFastest = true)
     }
 
     /** اگر «فقط وای‌فای» روشن باشد و شبکه داده باشد، اتصال خودکار انجام نمی‌شود */
@@ -264,8 +288,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         requestSmartConnectInternal(subscriptionId)
     }
 
-    private fun requestSmartConnectInternal(subscriptionId: String? = null) {
-        if (hasServers(subscriptionId)) runOrRequestVpn(VpnAction.Smart(subscriptionId))
+    private fun requestSmartConnectInternal(subscriptionId: String? = null, automaticOnOpen: Boolean = false) {
+        if (hasServers(subscriptionId)) runOrRequestVpn(VpnAction.Smart(subscriptionId, automaticOnOpen))
     }
 
     private fun hasServers(subscriptionId: String? = null): Boolean {
@@ -359,7 +383,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
                 }
             }
-            is VpnAction.Smart -> launchSmartConnect(action.subscriptionId)
+            is VpnAction.Smart -> {
+                if (!action.automaticOnOpen ||
+                    (Repo.settings.value.autoConnectOnOpen && !Repo.tunnel.value.isActive)) {
+                    launchSmartConnect(action.subscriptionId, action.automaticOnOpen)
+                }
+            }
             VpnAction.Quick -> viewModelScope.launch(errorHandler) {
                 if (!SmartConnect.quickConnect(getApplication())) {
                     showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
@@ -369,11 +398,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun launchSmartConnect(subscriptionId: String?) {
-        viewModelScope.launch(errorHandler) {
-            val best = SmartConnect.scanAndConnect(getApplication(), autoConnect = true, subscriptionId = subscriptionId)
+    private fun launchSmartConnect(subscriptionId: String?, automaticOnOpen: Boolean = false) {
+        val job = viewModelScope.launch(errorHandler) {
+            if (automaticOnOpen && (!Repo.settings.value.autoConnectOnOpen || Repo.tunnel.value.isActive)) return@launch
+            val best = SmartConnect.scanAndConnect(
+                getApplication(), autoConnect = true, subscriptionId = subscriptionId, preferFastest = true
+            )
             if (best == null) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
         }
+        if (automaticOnOpen) startupJob = job
     }
 
     fun quickConnect() {
@@ -480,19 +513,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Apply only a still-existing source and preserve user subscriptions without a count cap. */
     private fun applyFetchedSubscription(
         sub: Subscription, result: SubscriptionFetcher.Result, epoch: Long,
-        automaticPermit: Repo.AutomaticRefreshPermit? = null
+        automaticPermit: Repo.AutomaticRefreshPermit? = null,
+        onCommitted: ((Repo.StartupSourceSnapshot) -> Unit)? = null
     ): Int {
         if (!result.ok) return 0
         val configs = SubscriptionPolicy.candidates(sub, result.configs)
         if (configs.isEmpty()) return 0
-        return if (Repo.commitSubscriptionRefresh(
-                sub, configs, result.upload, result.download, result.total, result.expireAt,
-                expectedEpoch = epoch, automaticPermit = automaticPermit
-            )) configs.size else 0
+        val revision = Repo.commitSubscriptionRefreshSnapshot(
+            sub, configs, result.upload, result.download, result.total, result.expireAt,
+            expectedEpoch = epoch, automaticPermit = automaticPermit
+        ) ?: return 0
+        if (onCommitted != null) {
+            onCommitted(Repo.StartupSourceSnapshot(revision, configs.mapTo(HashSet()) { it.fingerprint() }))
+        }
+        return configs.size
     }
 
     fun refreshSubscription(id: String) {
         if (!requireWritableData()) return
+        cancelStartup()
         val epoch = Repo.currentDataEpoch()
         val sub = Repo.subById(id) ?: return
         trackDataJob(viewModelScope.launch(errorHandler) {
@@ -519,6 +558,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshAllSubscriptions(silent: Boolean = false) {
         if (!requireWritableData()) return
+        cancelStartup()
         if (Repo.subs.value.isEmpty()) {
             if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
@@ -539,16 +579,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * و ذخیره‌ی نتیجه.
      * @return (تعداد منابع موفق، تعداد کل کانفیگ‌ها)
      */
+    private data class SyncResult(
+        val updated: Int, val total: Int, val sources: List<Repo.StartupSourceSnapshot> = emptyList()
+    )
+
     private suspend fun syncAll(
-        announce: Boolean, onlyStale: Boolean = false, automaticPermit: Repo.AutomaticRefreshPermit? = null
-    ): Pair<Int, Int> = syncMutex.withLock {
+        announce: Boolean, automaticPermit: Repo.AutomaticRefreshPermit? = null
+    ): SyncResult = SubscriptionSyncGate.mutex.withLock {
+        syncAllLocked(announce, automaticPermit)
+    }
+
+    /** Caller owns SubscriptionSyncGate through the subsequent startup health check. */
+    private suspend fun syncAllLocked(
+        announce: Boolean, automaticPermit: Repo.AutomaticRefreshPermit? = null,
+        collectSources: Boolean = false
+    ): SyncResult {
         if (Repo.isStorageReadOnly() || (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit))) {
-            return@withLock 0 to Repo.servers.value.size
+            return SyncResult(0, Repo.servers.value.size)
         }
         val epoch = automaticPermit?.dataEpoch ?: Repo.currentDataEpoch()
-        val now = System.currentTimeMillis()
-        val targets = Repo.subs.value.filter { !onlyStale || now - it.updatedAt > 3 * 60 * 60 * 1000L }
-        if (targets.isEmpty()) return@withLock 0 to Repo.servers.value.size
+        val targets = Repo.subs.value.filter { !it.builtIn || PublicSources.forUrl(it.url) != null }
+        if (targets.isEmpty()) return SyncResult(0, Repo.servers.value.size)
 
         Repo.sync.value = ir.v2max.app.data.SyncState(
             running = true, done = 0, total = targets.size,
@@ -557,6 +608,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val semaphore = Semaphore(6)
         val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
         val okCount = java.util.concurrent.atomic.AtomicInteger(0)
+        val sourceSnapshots = java.util.concurrent.ConcurrentHashMap<String, Repo.StartupSourceSnapshot>()
         Repo.suspendPersist(true)
         try {
             coroutineScope {
@@ -568,7 +620,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         }
                         currentCoroutineContext().ensureActive()
                         if (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit)) return@async
-                        val count = if (result.ok) applyFetchedSubscription(sub, result, epoch, automaticPermit) else 0
+                        val capture: ((Repo.StartupSourceSnapshot) -> Unit)? = if (collectSources) {
+                            { snapshot -> sourceSnapshots[sub.id] = snapshot }
+                        } else null
+                        val count = if (result.ok) applyFetchedSubscription(sub, result, epoch, automaticPermit, capture) else 0
                         if (count > 0) {
                             okCount.incrementAndGet()
                         } else {
@@ -587,23 +642,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             Repo.suspendPersist(false)
             // A cancellation must not lose results already applied in memory.
             withContext(NonCancellable + Dispatchers.IO) { Repo.persistNow() }
-            Repo.sync.value = Repo.sync.value.copy(running = false)
+            // Startup owns this indicator through its health pass and clears it
+            // in its outer finally, including on cancellation or exceptions.
+            if (!collectSources) Repo.sync.value = Repo.sync.value.copy(running = false)
         }
 
         val removed = withContext(Dispatchers.IO) {
-            val n = Repo.dedupeAllServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-            Repo.trimBuiltInServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-            Repo.persistNow()
-            n
+            // Keep a representative owned by every just-refreshed source until
+            // its health is checked. Global dedupe could otherwise leave only a
+            // standalone or old-source duplicate and make the scan impossible.
+            if (okCount.get() == 0 || collectSources) 0 else {
+                val n = Repo.dedupeAllServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
+                Repo.trimBuiltInServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
+                Repo.persistNow()
+                n
+            }
         }
         val total = Repo.servers.value.size
         Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = false, done = targets.size, total = targets.size,
+            running = collectSources, done = targets.size, total = targets.size,
             message = "${Format.number(okCount.get())} منبع به‌روزرسانی شد · ${Format.number(total)} کانفیگ" +
                 if (removed > 0) " (${Format.number(removed)} تکراری حذف شد)" else ""
         )
         if (announce) showMessage(Repo.sync.value.message)
-        okCount.get() to total
+        return SyncResult(okCount.get(), total, sourceSnapshots.values.toList())
     }
 
     // ------------------------------------------------------- منابع رایگان
@@ -667,6 +729,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         showMessage("اشتراک حذف شد")
     }
 
+    fun deferUnhealthySubscription(sub: Subscription) {
+        if (!Repo.deferUnhealthySubscription(sub)) {
+            showMessage("وضعیت اشتراک تغییر کرده است؛ پیشنهاد دوباره بررسی می‌شود")
+        }
+    }
+
+    fun removeUnhealthySubscription(sub: Subscription) {
+        if (!requireWritableData()) return
+        if (Repo.removeUnhealthySubscription(sub)) showMessage("اشتراک حذف شد")
+        else showMessage("اشتراک تغییر کرده یا در اتصال و ویرایش است؛ حذف نشد")
+    }
+
     // ------------------------------------------------------------ import/CRUD
 
     fun importText(text: String) {
@@ -713,6 +787,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Tapping a server behaves the same whether or not a VPN is already running. */
     fun selectServer(id: String) = requestConnect(id)
+
+    fun beginServerEdit(id: String): Boolean {
+        if (editingServerId == id) return true
+        if (!Repo.beginServerEdit(id)) return false
+        editingServerId?.let(Repo::endServerEdit)
+        editingServerId = id
+        cancelStartup()
+        return true
+    }
+
+    fun endServerEdit() {
+        editingServerId?.let(Repo::endServerEdit)
+        editingServerId = null
+    }
+
+    override fun onCleared() {
+        endServerEdit()
+        super.onCleared()
+    }
 
     fun saveEditedServer(server: ServerConfig, expectedFingerprint: String, expectedEpoch: Long): Boolean {
         if (!requireWritableData()) return false
@@ -900,6 +993,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val after = Repo.settings.value
         if ((before.autoConnectOnOpen && !after.autoConnectOnOpen) ||
             (before.autoRefreshOnOpen && !after.autoRefreshOnOpen)) cancelStartup()
+        if (before.autoConnectOnOpen && !after.autoConnectOnOpen) {
+            vpnPermissions.cancelIf { it is VpnAction.Smart && it.automaticOnOpen }
+            _vpnPermissionState.value = vpnPermissions.snapshot()
+        }
         if (before.autoRefreshOnOpen != after.autoRefreshOnOpen) syncSubscriptionSchedule()
         if (before.autoUpdateCheck != after.autoUpdateCheck) syncUpdateSchedule()
         return true

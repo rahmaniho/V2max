@@ -31,6 +31,11 @@ internal class VpnPermissionQueue<A> {
         // that result arrives, otherwise it could be mistaken for a new request.
     }
 
+    /** Revoke only the obsolete automatic action, not a newer manual choice. */
+    @Synchronized fun cancelIf(predicate: (A) -> Boolean) {
+        if (pending?.let { predicate(it.action) } == true) pending = null
+    }
+
     @Synchronized fun claim(): Boolean {
         val request = pending ?: return false
         if (inFlight != null) return false
