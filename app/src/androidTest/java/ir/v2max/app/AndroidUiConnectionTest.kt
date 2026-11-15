@@ -257,7 +257,7 @@ class AndroidUiConnectionTest {
             if (activity != null) {
                 val vm = ViewModelProvider(activity)[AppViewModel::class.java]
                 vmState = "vpn=${vm.vpnPermissionState.value}; notification=${vm.notificationPermissionInFlight.value}; " +
-                    "message=${vm.message.value}"
+                    "launchError=${vm.lastVpnPermissionLaunchError}; message=${vm.message.value}"
             }
         }
         val needsPermission = runCatching { VpnService.prepare(context) != null }.getOrNull()

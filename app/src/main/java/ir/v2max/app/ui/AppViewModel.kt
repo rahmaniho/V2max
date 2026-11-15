@@ -68,6 +68,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _notificationPermissionInFlight = MutableStateFlow(false)
     internal val notificationPermissionInFlight: StateFlow<Boolean> = _notificationPermissionInFlight.asStateFlow()
     private var notificationPermissionAttempted = false
+    internal var lastVpnPermissionLaunchError: String = ""
+        private set
     private var startupJob: Job? = null
     private var startupRefreshJob: Job? = null
     private val dataJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
@@ -328,7 +330,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    internal fun onVpnPermissionLaunchFailure() {
+    internal fun onVpnPermissionLaunchFailure(error: Throwable) {
+        // The system VPN intent contains no server credentials. Keep this only
+        // in process memory for diagnostics, never in the user-facing message.
+        lastVpnPermissionLaunchError = "${error.javaClass.simpleName}: ${error.message.orEmpty().take(240)}"
         val action = vpnPermissions.complete()
         _vpnPermissionState.value = vpnPermissions.snapshot()
         if (action != null) showVpnPermissionProblem("پنجره‌ی مجوز VPN باز نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")

@@ -71,14 +71,14 @@ class MainActivity : FragmentActivity() {
                                 viewModel.onVpnPermissionResult(true)
                                 askNotificationPermission()
                             } else {
-                                runCatching { vpnPermissionLauncher.launch(intent) }.onFailure {
-                                    viewModel.onVpnPermissionLaunchFailure()
+                                runCatching { vpnPermissionLauncher.launch(intent) }.onFailure { error ->
+                                    viewModel.onVpnPermissionLaunchFailure(error)
                                     askNotificationPermission()
                                 }
                             }
                         },
-                        onFailure = {
-                            viewModel.onVpnPermissionLaunchFailure()
+                        onFailure = { error ->
+                            viewModel.onVpnPermissionLaunchFailure(error)
                             askNotificationPermission()
                         }
                     )
