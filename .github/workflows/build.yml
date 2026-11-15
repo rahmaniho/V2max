@@ -103,6 +103,7 @@ jobs:
           echo "TEST_XRAY_BIN=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
 
       - name: Run unit and local Xray integration tests
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -o pipefail
           # :core:testsuite is a plain JVM module, so it has no
@@ -111,6 +112,7 @@ jobs:
           gradle --no-daemon :core:testsuite:test testReleaseUnitTest 2>&1 | tee test-out.log
 
       - name: Verify the core suite actually ran
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -e
           # Guards against the suite being silently skipped again: if the task
@@ -145,6 +147,7 @@ jobs:
           PY
 
       - name: Verify the app unit tests actually ran
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -e
           # Same guard, other direction. Gradle test tasks pick classes up by
@@ -176,7 +179,7 @@ jobs:
           PY
 
       - name: Report test failures
-        if: always()
+        if: ${{ always() && !inputs.ui_diagnostics }}
         run: |
           if [ -f test-out.log ]; then
             grep -E "^e: |FAILED|tests completed|AssertionError|Exception|error:" test-out.log | head -40 | while IFS= read -r line; do
@@ -199,6 +202,7 @@ jobs:
           PY
 
       - name: Build CI-only release-variant APKs
+        if: ${{ !inputs.ui_diagnostics }}
         id: build_apk
         # The production key is never available to Gradle, tests or emulators.
         # The default debug signer is ephemeral and cannot update real installs.
@@ -208,7 +212,7 @@ jobs:
         continue-on-error: true
 
       - name: Report compile errors as annotations
-        if: always()
+        if: ${{ always() && !inputs.ui_diagnostics }}
         env:
           BUILD_OUTCOME: ${{ steps.build_apk.outcome }}
         run: |
@@ -230,6 +234,7 @@ jobs:
           fi
 
       - name: Exercise re-signing and reject the CI-only signer
+        if: ${{ !inputs.ui_diagnostics }}
         env:
           V2MAX_RELEASE_KEYSTORE: ${{ runner.temp }}/v2max-resign-test.jks
           V2MAX_RELEASE_STORE_PASSWORD: v2max-ci-only

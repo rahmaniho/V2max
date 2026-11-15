@@ -274,11 +274,19 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return false
     }
 
+    /** Keep a permission failure visible after its short snackbar disappears. */
+    private fun showVpnPermissionProblem(text: String) {
+        if (!Repo.tunnel.value.isActive) {
+            Repo.scan.value = ir.v2max.app.data.ScanState(finished = true, message = text)
+        }
+        showMessage(text)
+    }
+
     /** Null means Android could not determine consent; never start a tunnel in that case. */
     private fun vpnPermissionRequired(): Boolean? = try {
         VpnService.prepare(getApplication<Application>()) != null
     } catch (_: Exception) {
-        showMessage("بررسی مجوز VPN ممکن نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+        showVpnPermissionProblem("بررسی مجوز VPN ممکن نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
         null
     }
 
@@ -310,12 +318,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         // A canceled or superseded request must not consume this old dialog result.
         if (action == null) return
         if (!granted) {
-            showMessage("برای اتصال، اجازه‌ی ساخت VPN لازم است؛ در پنجره‌ی اندروید تأیید کنید")
+            showVpnPermissionProblem("برای اتصال، اجازه‌ی ساخت VPN لازم است؛ اگر پنجره باز نشد، VPN همیشه‌روشن یا محدودیت دستگاه را بررسی کنید")
             return
         }
         when (vpnPermissionRequired()) {
             false -> executeVpnAction(action)
-            true -> showMessage("مجوز VPN فعال نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+            true -> showVpnPermissionProblem("مجوز VPN فعال نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
             null -> Unit // vpnPermissionRequired already reported the failure
         }
     }
@@ -323,7 +331,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     internal fun onVpnPermissionLaunchFailure() {
         val action = vpnPermissions.complete()
         _vpnPermissionState.value = vpnPermissions.snapshot()
-        if (action != null) showMessage("پنجره‌ی مجوز VPN باز نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+        if (action != null) showVpnPermissionProblem("پنجره‌ی مجوز VPN باز نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
     }
 
     /** The optional notification prompt must not overlap the VPN consent dialog. */

@@ -6,6 +6,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
@@ -21,6 +22,7 @@ import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.service.V2maxVpnService
+import ir.v2max.app.ui.AppViewModel
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -120,6 +122,8 @@ class AndroidUiConnectionTest {
         assertNotNull("Denied VPN consent unexpectedly granted permission", VpnService.prepare(context))
         assertFalse("Denial started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
         assertFalse("Denial started a pre-connect scan", Repo.scan.value.running)
+        assertTrue("Denied consent was not kept visible", Repo.scan.value.finished &&
+            Repo.scan.value.message.contains("اجازه‌ی ساخت VPN لازم است"))
         assertEquals("Denial tested the selected profile", 0L, Repo.serverById(beta.id)?.testedAt)
 
         clickText("UI Beta")
@@ -243,13 +247,31 @@ class AndroidUiConnectionTest {
         it.text ?: it.contentDescription ?: it.viewIdResourceName
     }.joinToString(" | ").take(1_500)
 
+    private fun permissionDiagnostics(): String {
+        var vmState = "no tracked MainActivity"
+        instrumentation.runOnMainSync {
+            val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+            val activity = listOf(Stage.RESUMED, Stage.PAUSED, Stage.STARTED, Stage.STOPPED)
+                .flatMap { monitor.getActivitiesInStage(it).toList() }
+                .filterIsInstance<MainActivity>().firstOrNull()
+            if (activity != null) {
+                val vm = ViewModelProvider(activity)[AppViewModel::class.java]
+                vmState = "vpn=${vm.vpnPermissionState.value}; notification=${vm.notificationPermissionInFlight.value}; " +
+                    "message=${vm.message.value}"
+            }
+        }
+        val needsPermission = runCatching { VpnService.prepare(context) != null }.getOrNull()
+        return "$vmState; selected=${Repo.selectedId.value}; auto=${Repo.settings.value.autoConnectOnOpen}; " +
+            "scan=${Repo.scan.value}; tunnel=${Repo.tunnel.value.status}; needsVpn=$needsPermission"
+    }
+
     private fun awaitPackage(part: String) {
         val deadline = SystemClock.elapsedRealtime() + 15_000
         while (SystemClock.elapsedRealtime() < deadline) {
             if (activePackage().contains(part, ignoreCase = true)) return
             SystemClock.sleep(100)
         }
-        throw AssertionError("Expected system window $part; active=${activePackage()}; ${visibleSummary()}")
+        throw AssertionError("Expected system window $part; active=${activePackage()}; ${visibleSummary()}; ${permissionDiagnostics()}")
     }
 
     private fun awaitVpnDialog() = awaitPackage("vpndialog")

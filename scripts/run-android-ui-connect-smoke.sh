@@ -42,10 +42,14 @@ adb shell am instrument -w -r -e enableUiVpnTests true \
   "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tr -d '\r' | tee "$work/test.log" || status=$?
 if (( status != 0 )) || ! grep -Fq 'OK (4 tests)' "$work/test.log"; then
   python3 - "$work/test.log" <<'PY'
-import pathlib, sys
-text = pathlib.Path(sys.argv[1]).read_text(errors='replace')[-3400:]
-text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-print(f'::error title=Android UI connection smoke::{text}')
+import pathlib, re, sys
+text = pathlib.Path(sys.argv[1]).read_text(errors='replace')
+def annotate(title, message):
+    safe = message[:3000].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+    print(f'::error title={title}::{safe}')
+for stack in re.findall(r'(?ms)^INSTRUMENTATION_STATUS: stack=(.*?)(?=^INSTRUMENTATION_STATUS(?:_CODE)?:|\Z)', text):
+    annotate('Android UI test failure', stack.strip())
+annotate('Android UI connection smoke', text[-3000:])
 PY
   exit 1
 fi
