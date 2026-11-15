@@ -35,13 +35,35 @@ if ! output=$(adb shell appops set "$pkg" ACTIVATE_VPN ignore 2>&1); then
   echo "::error title=Android UI connection smoke::Could not revoke the test VPN app-op: $output"
   exit 1
 fi
+# Revoking a runtime permission from the instrumented app itself may kill that
+# process on newer Android versions. Do it before starting instrumentation.
+api=$(adb shell getprop ro.build.version.sdk | tr -d '\r')
+if [[ ! "$api" =~ ^[0-9]+$ ]]; then
+  echo '::error title=Android UI connection smoke::Could not determine the emulator API level.'
+  exit 1
+fi
+if (( api >= 33 )); then
+  stage='reset emulator notification permission'
+  if ! output=$(adb shell pm revoke "$pkg" android.permission.POST_NOTIFICATIONS 2>&1); then
+    echo "::error title=Android UI connection smoke::Could not revoke notification permission: $output"
+    exit 1
+  fi
+  if ! output=$(adb shell pm clear-permission-flags "$pkg" android.permission.POST_NOTIFICATIONS user-set user-fixed 2>&1); then
+    echo "::error title=Android UI connection smoke::Could not reset notification permission flags: $output"
+    exit 1
+  fi
+fi
+# Include a crash buffer in diagnostics if the runner dies before JUnit can
+# report a stack trace. The emulator contains only disposable fixture data.
+adb logcat -b crash -c || true
 stage='instrumentation'
 status=0
 adb shell am instrument -w -r -e enableUiVpnTests true \
   -e class ir.v2max.app.AndroidUiConnectionTest \
   "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tr -d '\r' | tee "$work/test.log" || status=$?
 if (( status != 0 )) || ! grep -Fq 'OK (4 tests)' "$work/test.log"; then
-  python3 - "$work/test.log" <<'PY'
+  adb logcat -b crash -d -v threadtime > "$work/crash.log" 2>&1 || true
+  python3 - "$work/test.log" "$work/crash.log" <<'PY'
 import pathlib, re, sys
 text = pathlib.Path(sys.argv[1]).read_text(errors='replace')
 def annotate(title, message):
@@ -49,6 +71,9 @@ def annotate(title, message):
     print(f'::error title={title}::{safe}')
 for stack in re.findall(r'(?ms)^INSTRUMENTATION_STATUS: stack=(.*?)(?=^INSTRUMENTATION_STATUS(?:_CODE)?:|\Z)', text):
     annotate('Android UI test failure', stack.strip())
+crash = pathlib.Path(sys.argv[2]).read_text(errors='replace').strip()
+if 'FATAL EXCEPTION' in crash:
+    annotate('Android UI process crash', crash[-3000:])
 annotate('Android UI connection smoke', text[-3000:])
 PY
   exit 1

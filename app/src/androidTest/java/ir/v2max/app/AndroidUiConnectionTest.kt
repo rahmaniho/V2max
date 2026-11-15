@@ -1,11 +1,14 @@
 package ir.v2max.app
 
+import android.Manifest
 import android.app.Instrumentation
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -30,8 +33,10 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
+import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
@@ -43,6 +48,10 @@ import java.util.ArrayDeque
  * the system VPN consent dialog and a traffic probe from outside the app UID.
  */
 @RunWith(AndroidJUnit4::class)
+// Notification permission is revoked by the shell before instrumentation.
+// Run this scenario before other tests grant it: revoking a runtime permission
+// inside the target process can cause Android to kill the instrumentation.
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 class AndroidUiConnectionTest {
     private val instrumentation: Instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context = instrumentation.targetContext
@@ -194,8 +203,9 @@ class AndroidUiConnectionTest {
         Repo.removeServer(beta.id)
         Repo.updateSettings { it.copy(autoConnectOnOpen = true) }
         if (Build.VERSION.SDK_INT >= 33) {
-            shell("pm revoke ${context.packageName} android.permission.POST_NOTIFICATIONS")
-            shell("pm clear-permission-flags ${context.packageName} android.permission.POST_NOTIFICATIONS user-set user-fixed")
+            assertEquals("The shell must revoke notification permission before instrumentation starts",
+                PackageManager.PERMISSION_DENIED,
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS))
         }
         launchActivity()
         if (Build.VERSION.SDK_INT >= 33) {
