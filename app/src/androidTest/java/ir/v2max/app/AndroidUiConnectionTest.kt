@@ -16,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
+import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.core.XrayCore
@@ -29,6 +30,7 @@ import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.service.V2maxVpnService
 import ir.v2max.app.ui.AppViewModel
+import libv2ray.Libv2ray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -85,7 +87,7 @@ class AndroidUiConnectionTest {
                 autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false,
                 autoUpdateCheck = false, appLock = false, allowExternalAutomation = false,
                 useFreeSources = false, deepProbe = false, autoTuneFragment = false,
-                fragment = false, balancer = false, geoAssets = false, multiPing = false,
+                dropDeadServers = true, fragment = false, balancer = false, geoAssets = false, multiPing = false,
                 speedTest = false, smartFailover = false, killSwitch = false,
                 perAppMode = PerAppMode.OFF, routingMode = RoutingMode.GLOBAL,
                 delayTestUrl = "http://198.51.100.1:18081/probe"
@@ -412,14 +414,32 @@ class AndroidUiConnectionTest {
         assertFalse("Startup health did not finish", Repo.sync.value.running)
         assertEquals("The mixed fixture must contain all three profiles", 3, Repo.subById("startup-ui-source")?.count)
         val fromFeed = Repo.servers.value.filter { it.subId == "startup-ui-source" }
-        val good = fromFeed.firstOrNull { it.method == "none" }
+        val good = fromFeed.firstOrNull { it.port == 18080 && it.method == "none" }
         val unknown = fromFeed.firstOrNull { it.method == "invalid-fixture-encryption" }
         assertNotNull("The healthy fixture was lost", good)
         assertTrue("No native protocol success was published", (good?.realPing ?: -1) > 0)
         assertNotNull("An Xray setup error was mistaken for a dead server", unknown)
         assertEquals("An untested/unknown result must not be published as a success", 0L, unknown?.testedAt)
-        assertFalse("A tested no-response fixture was not removed after a successful peer",
-            fromFeed.any { it.port == 18082 })
+        val remaining = fromFeed.firstOrNull { it.port == 18082 }
+        if (remaining != null) {
+            // Only synthetic fixture URLs and credentials are used here. Capture
+            // the native error channel on failure rather than guessing whether
+            // this was a setup problem or an actual unanswered request.
+            val config = ConfigBuilder.testConfig(remaining, Repo.settings.value.copy(fragment = false, balancer = false))
+            val details = listOf("http://198.51.100.1:18081/probe", "https://www.cloudflare.com/cdn-cgi/trace")
+                .joinToString { url ->
+                    try {
+                        "value=${Libv2ray.measureOutboundDelay(config, url)}"
+                    } catch (error: Throwable) {
+                        "${error.javaClass.simpleName}: ${error.message.orEmpty().take(500)}"
+                    }
+                }
+            org.junit.Assert.fail(
+                "No-response fixture was retained; cleanup=${Repo.settings.value.dropDeadServers}, " +
+                    "selected=${remaining.id == Repo.selectedId.value}, favorite=${remaining.favorite}, " +
+                    "ping=${remaining.realPing}, testedAt=${remaining.testedAt}; native=$details"
+            )
+        }
         assertEquals(0, Repo.subById("startup-ui-source")?.healthFailureChecks)
         assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
     }

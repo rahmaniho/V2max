@@ -18,6 +18,8 @@ class LinkParserCompletenessTest {
         assertEquals(2, capped.configs.size)
         assertTrue(LinkParser.parseAllDetailed("$one\n$two").complete)
         assertFalse(LinkParser.parseAllDetailed("$one\nfuture-protocol://host").complete)
+        assertFalse(LinkParser.parseAllDetailed("$one\nopaque unsupported profile").complete)
+        assertTrue(LinkParser.parseAllDetailed("$one\n# comment\n// comment\n\n").complete)
         assertFalse(LinkParser.parseAllDetailed("$one\nvless://u@127.0.0.1:443").complete)
         assertFalse(LinkParser.parseAllDetailed("$one\nvless://u@host.example.org:443?type=quic").complete)
     }

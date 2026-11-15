@@ -38,7 +38,9 @@ object LinkParser {
             if (clean.isEmpty() || clean.startsWith("#") || clean.startsWith("//")) continue
             val cfg = parseLine(clean)
             if (cfg == null) {
-                if (clean.contains("://")) complete = false
+                // Unknown or opaque content is not evidence that a source has
+                // no other usable profiles, even when it lacks a URL scheme.
+                complete = false
                 continue
             }
             if (!cfg.hasUsableEndpoint()) {
