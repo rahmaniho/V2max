@@ -11,11 +11,11 @@ import sys
 
 CONDITION = ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
              "inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && "
-             "!inputs.validate_preview && vars.V2MAX_RELEASE_APPROVED == 'true'")
+             "!inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'")
 PREVIEW_CONDITION = ("github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && "
-                     "inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview")
+                     "inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview && !inputs.ui_diagnostics")
 PREVIEW_TEST_CONDITION = ("github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && "
-                          "(inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release")
+                          "(inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics")
 
 
 def section(source, name):
@@ -54,7 +54,7 @@ def verify(source):
     if draft_lookup not in publication or 'gh api "$draft_api"' not in publication:
         raise ValueError("Stable draft must be resolved by release ID before verification")
 
-    for input_name in ("publish_test_release", "validate_preview"):
+    for input_name in ("publish_test_release", "validate_preview", "ui_diagnostics"):
         preview_input = re.search(rf"(?ms)^      {input_name}:\n(.*?)(?=^      [a-z_]+:\n|^env:\n)", source)
         if not preview_input or not re.search(r"(?m)^        default: false\s*$", preview_input.group(1)):
             raise ValueError(f"{input_name} must default to false")

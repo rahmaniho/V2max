@@ -178,6 +178,9 @@ PY
 fi
 fi
 
+# connectedDebugAndroidTest may uninstall its target and test APKs after the
+# suite. Reinstall them before invoking the independent, opt-in UI runner.
+gradle --no-daemon installDebug installDebugAndroidTest
 # Use the actual activity, first-time Android consent and selected server on
 # both ordinary and UI-only emulator runs; this is separate from the direct API smoke.
 bash scripts/run-android-ui-connect-smoke.sh debug

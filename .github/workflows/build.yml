@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      ui_diagnostics:
+        description: "Run targeted UI/VPN fixture diagnostics only; never publish"
+        required: false
+        type: boolean
+        default: false
 
 env:
   LIBV2RAY_VERSION: v26.10.21
@@ -249,7 +254,7 @@ jobs:
           echo 'Release guard correctly rejected the ephemeral CI signer.'
 
       - name: Build isolated preview and its instrumentation APK
-        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
         env:
           V2MAX_PREVIEW_KEYSTORE: ${{ runner.temp }}/v2max-preview-only.jks
           V2MAX_PREVIEW_STORE_PASSWORD: v2max-preview-ci-only
@@ -286,7 +291,8 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         env:
           V2MAX_CAPTURE_UI: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_ui && 'true' || 'false' }}
-          V2MAX_PREVIEW_SMOKE: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && 'true' || 'false' }}
+          V2MAX_UI_ONLY: ${{ inputs.ui_diagnostics && 'true' || 'false' }}
+          V2MAX_PREVIEW_SMOKE: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics && 'true' || 'false' }}
         with:
           api-level: 30
           arch: x86_64
@@ -295,6 +301,7 @@ jobs:
           script: bash scripts/run-android-vpn-smoke.sh
 
       - name: Android 35 update permission and signer smoke test
+        if: ${{ !inputs.ui_diagnostics }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -315,6 +322,7 @@ jobs:
           script: bash scripts/run-android-vpn-smoke.sh
 
       - name: Upload CI-only APKs (not a production update)
+        if: ${{ !inputs.ui_diagnostics }}
         uses: actions/upload-artifact@v4
         with:
           name: v2max-ci-only-apk
@@ -322,7 +330,7 @@ jobs:
           if-no-files-found: error
 
       - name: Stage the exact preview APK that passed the TUN test
-        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
         run: |
           set -euo pipefail
           sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"
@@ -331,7 +339,7 @@ jobs:
           python3 scripts/verify-preview-apk.py "$RUNNER_TEMP/v2max-preview/V2max-PREVIEW-universal.apk"
 
       - name: Upload isolated tested preview APK
-        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
         uses: actions/upload-artifact@v4
         with:
           name: v2max-preview-tested-apk
@@ -401,7 +409,7 @@ jobs:
     # A main push or merge can never sign or publish by itself. After owner
     # review, a separate manual dispatch must run both emulator suites first.
     # This job has no repository write access and never runs Gradle with the key.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: [build, security-smoke]
     runs-on: ubuntu-latest
     permissions:
@@ -458,7 +466,7 @@ jobs:
 
   publish:
     # Write access is isolated from Gradle, emulators and the private signing key.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: sign-release
     runs-on: ubuntu-latest
     permissions:
@@ -537,7 +545,7 @@ jobs:
   publish-preview:
     # This is not the production release path. The explicitly requested preview
     # has a separate app ID and ephemeral signer and can never be marked latest.
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview && !inputs.ui_diagnostics
     needs: [build, security-smoke]
     runs-on: ubuntu-latest
     permissions:

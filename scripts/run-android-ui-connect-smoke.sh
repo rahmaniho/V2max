@@ -18,6 +18,13 @@ stage='checking emulator'
 trap 'code=$?; echo "::error title=Android UI connection smoke::Stage $stage failed at line $LINENO (exit $code)"' ERR
 # Stop the earlier smoke process and revoke its shell-granted VPN app-op. The
 # instrumentation itself asserts that VpnService.prepare still needs consent.
+stage='verify installed packages'
+for package in "$pkg" "$pkg.test"; do
+  if ! output=$(adb shell pm path "$package" 2>&1) || [[ "$output" != package:* ]]; then
+    echo "::error title=Android UI connection smoke::Required emulator package is not installed: $package ($output)"
+    exit 1
+  fi
+done
 stage='stop previous app process'
 if ! output=$(adb shell am force-stop "$pkg" 2>&1); then
   echo "::error title=Android UI connection smoke::Could not stop the previous app process: $output"
