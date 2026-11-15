@@ -203,6 +203,10 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.biometric:biometric:1.1.0")
+    // Biometric's old transitive FragmentActivity rejects the 32-bit request
+    // codes used by Activity Result APIs. Pin a modern fragment so VPN consent,
+    // document pickers and runtime permissions can actually open.
+    implementation("androidx.fragment:fragment:1.8.5")
     testImplementation("junit:junit:4.13.2")
     // Test-only on purpose. ConfigGeneratorTests compares core's XrayConfig
     // against the app's ConfigBuilder to prove they agree before any call site
