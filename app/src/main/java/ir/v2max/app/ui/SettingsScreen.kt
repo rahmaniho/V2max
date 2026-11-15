@@ -252,11 +252,19 @@ fun SettingsScreen(
         }
 
         item {
+            SettingSwitch(
+                title = "پاک‌سازی کانفیگ‌های بی‌پاسخ اشتراک",
+                subtitle = "فقط پس از سنجش کامل و موفقیت سروری دیگر؛ خطاهای نامشخص حذف نمی‌شوند",
+                checked = settings.dropDeadServers
+            ) { value -> onChange { it.copy(dropDeadServers = value) } }
+        }
+
+        item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Text("محافظت از کانفیگ‌ها", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(3.dp))
-                    Text("پس از تازه‌سازی، کانفیگ‌های اشتراک که در تست واقعی پاسخ ندهند فقط با موفقیت سروری دیگر در همان نوبت کنار گذاشته می‌شوند. موارد مستقل، انتخاب‌شده، فعال، علاقه‌مندی و در حال ویرایش حفظ می‌شوند. در شکست همگانی یا تست ناقص، پاک‌سازی بر اساس تست انجام نمی‌شود.",
+                    Text("با فعال‌بودن پاک‌سازی، کانفیگ‌های اشتراک که در تست واقعی پاسخ ندهند فقط با موفقیت سروری دیگر در همان نوبت کنار گذاشته می‌شوند. موارد مستقل، انتخاب‌شده، فعال، علاقه‌مندی و در حال ویرایش حفظ می‌شوند. در شکست همگانی یا تست ناقص، پاک‌سازی بر اساس تست انجام نمی‌شود.",
                         style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
                 }
             }

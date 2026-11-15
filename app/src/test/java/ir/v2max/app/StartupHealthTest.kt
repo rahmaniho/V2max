@@ -106,6 +106,70 @@ class StartupHealthTest {
         assertEquals(setOf(one.id, missing.id), Repo.servers.value.map { it.id }.toSet())
     }
 
+    @Test fun `disabled cleanup retains failures while publishing actual successes`() {
+        val source = sub()
+        val good = server("good")
+        val failed = server("failed")
+        Repo.addSubscription(source)
+        Repo.updateServer(good)
+        Repo.updateServer(failed)
+        assertTrue(Repo.updateSettings { it.copy(dropDeadServers = false) })
+        val captured = Repo.servers.value.map { it.copy() }
+        val result = Repo.applyStartupHealth(
+            listOf(snapshot(source, good, failed)), captured, listOf(observation(good, true), observation(failed, false)),
+            permit(), Repo.startupHealthToken(), { true }, now = start
+        )
+        assertTrue(result.applied)
+        assertEquals(0, result.removed)
+        assertEquals(42, Repo.serverById(good.id)?.realPing)
+        assertNotNull("The cleanup preference must be respected", Repo.serverById(failed.id))
+    }
+
+    @Test fun `an indeterminate native result cannot remove a profile or accuse its source`() {
+        val source = sub("mixed")
+        val unknownSource = sub("unknown")
+        val good = server("good", source.id)
+        val failed = server("failed", source.id)
+        val unknown = server("unknown-profile", source.id)
+        val otherUnknown = server("other-unknown", unknownSource.id)
+        listOf(source, unknownSource).forEach { Repo.addSubscription(it) }
+        listOf(good, failed, unknown, otherUnknown).forEach(Repo::updateServer)
+        val captured = Repo.servers.value.map { it.copy() }
+        val result = Repo.applyStartupHealth(
+            listOf(snapshot(source, good, failed, unknown), snapshot(unknownSource, otherUnknown)), captured,
+            listOf(observation(good, true), observation(failed, false),
+                observation(unknown, false).copy(conclusive = false),
+                observation(otherUnknown, false).copy(conclusive = false)),
+            permit(), Repo.startupHealthToken(), { true }, networkValidated = true, now = start
+        )
+        assertTrue(result.applied)
+        assertEquals(1, result.removed)
+        assertNull(Repo.serverById(failed.id))
+        assertNotNull("A setup failure must never be purged", Repo.serverById(unknown.id))
+        assertNotNull(Repo.serverById(otherUnknown.id))
+        assertEquals(1, result.unknownSources)
+        assertEquals(0, Repo.subById(unknownSource.id)?.healthFailureChecks)
+    }
+
+    @Test fun `a truncated source cannot accrue negative evidence even when every returned member fails`() {
+        val source = sub()
+        val profile = server("only-received")
+        Repo.addSubscription(source)
+        Repo.updateServer(profile)
+        val captured = Repo.servers.value.map { it.copy() }
+        val partial = snapshot(source, profile).copy(complete = false)
+        for (now in listOf(start, start + day)) {
+            val result = Repo.applyStartupHealth(listOf(partial), captured, listOf(observation(profile, false)),
+                permit(), Repo.startupHealthToken(), { true }, networkValidated = true, now = now)
+            assertTrue(result.applied)
+            assertEquals(1, result.unknownSources)
+        }
+        val current = requireNotNull(Repo.subById(source.id))
+        assertEquals(0, current.healthFailureChecks)
+        assertFalse(SubscriptionHealthPolicy.shouldSuggest(current.healthEvidence(), current.updatedAt, start + day))
+        assertNotNull(Repo.serverById(profile.id))
+    }
+
     @Test fun `two complete separated failures can only suggest deletion with fresh evidence and confirmation`() {
         val source = sub()
         val profile = server("only")
@@ -216,6 +280,26 @@ class StartupHealthTest {
         assertNotNull(Repo.subById(source.id))
     }
 
+    @Test fun `a canceled startup cannot commit its late download or error`() {
+        val source = sub()
+        val existing = server("existing")
+        Repo.addSubscription(source)
+        Repo.updateServer(existing)
+        val capturedToken = Repo.startupHealthToken()
+        val capturedPermit = permit()
+        Repo.invalidateStartupHealth()
+        val committed = Repo.commitSubscriptionRefreshSnapshot(
+            source, listOf(server("late")), 0, 0, 0, 0,
+            automaticPermit = capturedPermit, startupToken = capturedToken
+        )
+        Repo.recordSubscriptionRefreshError(source, "late error", automaticPermit = capturedPermit, startupToken = capturedToken)
+        assertNull(committed)
+        assertNotNull(Repo.serverById(existing.id))
+        assertNull(Repo.serverById("late"))
+        assertEquals("", Repo.subById(source.id)?.lastError)
+        assertEquals(source.updatedAt, Repo.subById(source.id)?.updatedAt)
+    }
+
     @Test fun `a concurrent refresh of one source invalidates the whole startup pass`() {
         val a = sub("one")
         val b = sub("two")
@@ -286,14 +370,32 @@ class StartupHealthTest {
         assertNotNull(Repo.serverById(standalone2.id))
     }
 
-    @Test fun `built in cap keeps an open editor`() {
+    @Test fun `startup defers the global cap and measured successes survive later capacity limits`() {
+        val catalogue = requireNotNull(Repo.addBuiltInSource(PublicSources.DEFAULT.first().url))
+        val incoming = (0..700).map {
+            server("profile-$it", catalogue.id).copy(realPing = 42, testedUrl = ping.url, testedAt = start)
+        }
+        val revision = Repo.commitSubscriptionRefreshSnapshot(
+            catalogue, incoming, 0, 0, 0, 0, automaticPermit = permit(), deferBuiltInCap = true
+        )
+        assertNotNull(revision)
+        assertEquals("All members must be available for the startup check", 701, Repo.servers.value.size)
+        // Later refresh/cap may exceed its nominal limit to preserve verified profiles.
+        Repo.replaceSubscriptionServers(catalogue.id, incoming.map { it.copy(realPing = -1, testedUrl = "") })
+        assertEquals("The global cap must not silently discard proven profiles", 701, Repo.servers.value.size)
+    }
+
+    @Test fun `built in cap keeps an open editor and measured success`() {
         val catalogue = requireNotNull(Repo.addBuiltInSource(PublicSources.DEFAULT.first().url))
         val editing = server("editor", catalogue.id)
+        val healthy = server("healthy", catalogue.id).copy(realPing = 42, testedUrl = ping.url)
         Repo.updateServer(editing)
+        Repo.updateServer(healthy)
         Repo.updateServer(server("other", catalogue.id))
         assertTrue(Repo.beginServerEdit(editing.id))
         assertEquals(1, Repo.trimBuiltInServers(maxTotal = 1))
         assertNotNull(Repo.serverById(editing.id))
+        assertNotNull(Repo.serverById(healthy.id))
         Repo.endServerEdit(editing.id)
     }
 

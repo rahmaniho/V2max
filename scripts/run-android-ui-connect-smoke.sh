@@ -68,7 +68,7 @@ status=0
 adb shell am instrument -w -r -e enableUiVpnTests true \
   -e class ir.v2max.app.AndroidUiConnectionTest \
   "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tr -d '\r' | tee "$work/test.log" || status=$?
-if (( status != 0 )) || ! grep -Fq 'OK (8 tests)' "$work/test.log"; then
+if (( status != 0 )) || ! grep -Fq 'OK (11 tests)' "$work/test.log"; then
   adb logcat -b crash -d -v threadtime > "$work/crash.log" 2>&1 || true
   python3 - "$work/test.log" "$work/crash.log" <<'PY'
 import pathlib, re, sys
@@ -85,4 +85,4 @@ annotate('Android UI connection smoke', text[-3000:])
 PY
   exit 1
 fi
-echo "::notice title=Android UI connection smoke::$pkg exercised startup health and cancellation, VPN consent, selected profiles, local TUN traffic, camera denial and the document picker."
+echo "::notice title=Android UI connection smoke::$pkg exercised startup refresh, unknown/error preservation, cancellation, subscription confirmation, VPN consent, selected profiles and local TUN traffic."

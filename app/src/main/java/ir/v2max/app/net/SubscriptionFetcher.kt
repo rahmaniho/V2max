@@ -41,7 +41,9 @@ object SubscriptionFetcher {
         val total: Long = 0L,
         val expireAt: Long = 0L,
         val title: String = "",
-        val error: String = ""
+        val error: String = "",
+        /** False when the parser omitted unsupported, unusable or capped links. */
+        val fullyParsed: Boolean = true
     ) {
         val ok: Boolean get() = error.isEmpty()
     }
@@ -104,7 +106,8 @@ object SubscriptionFetcher {
             currentCoroutineContext().ensureActive()
             if (response.error.isNotEmpty()) return@withContext Result(error = response.error)
             if (response.body.isBlank()) return@withContext Result(error = "پاسخ اشتراک خالی بود")
-            val configs = LinkParser.parseAll(response.body, maxConfigs = maxConfigs)
+            val parsed = LinkParser.parseAllDetailed(response.body, maxConfigs = maxConfigs)
+            val configs = parsed.configs
             currentCoroutineContext().ensureActive()
             if (configs.isEmpty()) return@withContext Result(error = "هیچ کانفیگ معتبری در اشتراک یافت نشد")
             val usage = SubscriptionUsage.parseHeader(response.userInfo)
@@ -115,7 +118,8 @@ object SubscriptionFetcher {
                 download = usage.download,
                 total = usage.total,
                 expireAt = usage.expireAt,
-                title = title
+                title = title,
+                fullyParsed = parsed.complete
             )
         } catch (e: CancellationException) {
             throw e

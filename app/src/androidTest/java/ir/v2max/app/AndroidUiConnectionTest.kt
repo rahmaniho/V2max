@@ -121,6 +121,7 @@ class AndroidUiConnectionTest {
             (V2maxVpnService.running || Repo.tunnel.value.isActive || XrayCore.isRunning)) SystemClock.sleep(50)
         Repo.updateSettings { it.copy(autoConnectOnOpen = false, autoRefreshOnOpen = false) }
         Repo.removeSubscription("startup-ui-source")
+        Repo.removeSubscription("unhealthy-ui-source")
         shell("appops set ${context.packageName} ACTIVATE_VPN ignore")
     }
 
@@ -366,7 +367,100 @@ class AndroidUiConnectionTest {
         assertFalse("Stored health bypassed the active preflight", Repo.tunnel.value.isActive || V2maxVpnService.running)
         fixtureControl("hold-release")
         awaitConnected(id)
+        assertFalse("An accepted automatic receipt was falsely reported as canceled", Repo.scan.value.message.contains("لغو"))
         assertTunTraffic()
+    }
+
+    @Test fun failedStartupRefreshDoesNotStartAutomaticConnectionButManualChoiceWorks() {
+        grantNotificationsIfNeeded()
+        assertTrue(Repo.addSubscription(Subscription(
+            id = "startup-ui-source", name = "Unavailable fixture", url = "http://10.0.2.2:18081/not-found"
+        )))
+        assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = true, autoConnectOnOpen = true) })
+        launchActivity()
+        val deadline = SystemClock.elapsedRealtime() + 30_000
+        while ((Repo.subById("startup-ui-source")?.lastError.isNullOrBlank() || Repo.sync.value.running) &&
+            SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+        assertFalse("The failing refresh was not recorded", Repo.subById("startup-ui-source")?.lastError.isNullOrBlank())
+        assertFalse("The failing refresh must not start an automatic scan", Repo.scan.value.running)
+        assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
+        assertNotNull("Automatic VPN consent must not appear on a failed refresh", VpnService.prepare(context))
+        assertFalse(activePackage().contains("vpndialog", ignoreCase = true))
+        assertNotNull(Repo.serverById(alpha.id))
+        assertNotNull(Repo.serverById(beta.id))
+        openServers()
+        clickText("UI Alpha")
+        awaitVpnDialog()
+        clickViewId("button1")
+        awaitConnected(alpha.id)
+        assertTunTraffic()
+    }
+
+    @Test fun startupHealthPreservesNativeSetupErrorAndRemovesConfirmedNoResponse() {
+        grantNotificationsIfNeeded()
+        val before = System.currentTimeMillis()
+        assertTrue(Repo.addSubscription(Subscription(
+            id = "startup-ui-source", name = "Mixed fixture", updatedAt = before,
+            url = "http://10.0.2.2:18081/subscription-mixed"
+        )))
+        assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = true, autoConnectOnOpen = false) })
+        launchActivity()
+        val deadline = SystemClock.elapsedRealtime() + 95_000
+        while (((Repo.subById("startup-ui-source")?.updatedAt ?: 0) <= before || Repo.sync.value.running) &&
+            SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+        assertTrue("The source was not refreshed", (Repo.subById("startup-ui-source")?.updatedAt ?: 0) > before)
+        assertFalse("Startup health did not finish", Repo.sync.value.running)
+        assertEquals("The mixed fixture must contain all three profiles", 3, Repo.subById("startup-ui-source")?.count)
+        val fromFeed = Repo.servers.value.filter { it.subId == "startup-ui-source" }
+        val good = fromFeed.firstOrNull { it.method == "none" }
+        val unknown = fromFeed.firstOrNull { it.method == "invalid-fixture-encryption" }
+        assertNotNull("The healthy fixture was lost", good)
+        assertTrue("No native protocol success was published", (good?.realPing ?: -1) > 0)
+        assertNotNull("An Xray setup error was mistaken for a dead server", unknown)
+        assertEquals("An untested/unknown result must not be published as a success", 0L, unknown?.testedAt)
+        assertFalse("A tested no-response fixture was not removed after a successful peer",
+            fromFeed.any { it.port == 18082 })
+        assertEquals(0, Repo.subById("startup-ui-source")?.healthFailureChecks)
+        assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
+    }
+
+    @Test fun unhealthySubscriptionRequiresExplicitConfirmationAndCanBeDeferred() {
+        grantNotificationsIfNeeded()
+        val now = System.currentTimeMillis()
+        val source = Subscription(
+            id = "unhealthy-ui-source", name = "اشتراک نمونه", url = "https://example.org/sub",
+            updatedAt = 100L, count = 1,
+            healthFirstFailureAt = now - 24L * 60 * 60 * 1000,
+            healthLastFailureAt = now, healthFailureChecks = 2, healthCheckedRevision = 100L
+        )
+        val owned = alpha.copy(id = "unhealthy-ui-server", uuid = "unhealthy-fixture", subId = source.id)
+        assertTrue(Repo.addSubscription(source))
+        Repo.updateServer(owned)
+        launchActivity()
+        awaitText("بررسی حذف اشتراک")
+        assertNotNull("A suggestion must not delete the subscription by itself", Repo.subById(source.id))
+        assertNotNull(Repo.serverById(owned.id))
+        clickText("بعداً")
+        val deadline = SystemClock.elapsedRealtime() + 5_000
+        while ((Repo.subById(source.id)?.healthDismissedAt ?: 0L) == 0L && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(50)
+        }
+        val deferred = requireNotNull(Repo.subById(source.id))
+        assertTrue("Deferring did not persist the user's choice", deferred.healthDismissedAt > 0)
+        assertNotNull("Deferring unexpectedly deleted the server", Repo.serverById(owned.id))
+
+        // Model the end of the reminder delay without changing the system clock.
+        // The policy's actual seven-day and freshness rules are unit-tested.
+        Repo.updateSubscription(deferred.copy(healthDismissedAt = 0))
+        awaitText("بررسی حذف اشتراک")
+        clickText("حذف اشتراک")
+        val deletionDeadline = SystemClock.elapsedRealtime() + 5_000
+        while (Repo.subById(source.id) != null && SystemClock.elapsedRealtime() < deletionDeadline) SystemClock.sleep(50)
+        assertTrue("The confirmed subscription was not removed", Repo.subById(source.id) == null)
+        assertTrue("The confirmed source's profile was not removed", Repo.serverById(owned.id) == null)
+        assertNotNull("Deleting a subscription must not delete unrelated personal profiles", Repo.serverById(alpha.id))
+        assertNotNull(Repo.serverById(beta.id))
+        assertFalse("A cleanup prompt must not start a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running)
     }
 
     private fun grantNotificationsIfNeeded() {

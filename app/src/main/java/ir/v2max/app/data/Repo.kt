@@ -285,7 +285,9 @@ object Repo {
             list = list,
             builtInSubscriptionIds = _subs.value.filter { it.builtIn }.map { it.id }.toSet(),
             selectedId = _selectedId.value,
-            protectedIds = editingServerIds.keys + setOfNotNull(tunnel.value.serverId.takeIf { tunnel.value.isActive && it.isNotBlank() }),
+            protectedIds = editingServerIds.keys +
+                setOfNotNull(tunnel.value.serverId.takeIf { tunnel.value.isActive && it.isNotBlank() }) +
+                list.filter { it.realPing > 0 && it.testedUrl.isNotBlank() }.map { it.id },
             idOf = { it.id },
             subscriptionIdOf = { it.subId },
             isFavorite = { it.favorite },
@@ -324,7 +326,7 @@ object Repo {
      * کانفیگ‌های موجود (بر اساس اثر انگشت) با حفظ شناسه، علاقه‌مندی و نتیجه تست نگه داشته می‌شوند.
      */
     @Synchronized
-    fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>) {
+    fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>, deferBuiltInCap: Boolean = false) {
         if (isStorageReadOnly()) return
         // A delayed HTTP response must not resurrect a subscription removed by the user.
         if (_subs.value.none { it.id == subId }) return
@@ -343,7 +345,9 @@ object Repo {
             },
         )
         val others = _servers.value.filter { it.subId != subId }
-        _servers.value = capped(others + merged)
+        // During startup every received member must be available for its real
+        // health check before a global capacity limit can discard anything.
+        _servers.value = if (deferBuiltInCap) others + merged else capped(others + merged)
         persistServers()
         if (serverById(_selectedId.value) == null) {
             setSelected(_servers.value.firstOrNull()?.id.orEmpty())
@@ -648,14 +652,17 @@ object Repo {
         total: Long,
         expireAt: Long,
         expectedEpoch: Long? = null,
-        automaticPermit: AutomaticRefreshPermit? = null
+        automaticPermit: AutomaticRefreshPermit? = null,
+        deferBuiltInCap: Boolean = false,
+        startupToken: Long? = null
     ): Subscription? {
         if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (startupToken != null && startupToken != startupHealthEpoch) ||
             (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return null
         val current = subById(expected.id) ?: return null
         if (!sameRefreshSource(current, expected) || incoming.isEmpty()) return null
         val prepared = incoming.map { it.copy(subId = current.id) }
-        replaceSubscriptionServers(current.id, prepared)
+        replaceSubscriptionServers(current.id, prepared, deferBuiltInCap = deferBuiltInCap)
         val revision = current.copy(
             // Two successful responses in the same millisecond still have distinct revisions.
             updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1),
@@ -669,20 +676,27 @@ object Repo {
     @Synchronized
     fun recordSubscriptionRefreshError(
         expected: Subscription, message: String, expectedEpoch: Long? = null,
-        automaticPermit: AutomaticRefreshPermit? = null
+        automaticPermit: AutomaticRefreshPermit? = null, startupToken: Long? = null
     ) {
         if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
+            (startupToken != null && startupToken != startupHealthEpoch) ||
             (automaticPermit != null && !automaticRefreshIsCurrent(automaticPermit))) return
         val current = subById(expected.id) ?: return
         if (sameRefreshSource(current, expected)) updateSubscription(current.copy(lastError = message))
     }
 
-    /** A successful download's complete identity set, before deduplication/capping. */
-    data class StartupSourceSnapshot(val subscription: Subscription, val fingerprints: Set<String>)
+    /** Identities received before global deduplication/capping; incomplete feeds cannot prove total failure. */
+    data class StartupSourceSnapshot(
+        val subscription: Subscription,
+        val fingerprints: Set<String>,
+        val complete: Boolean = true
+    )
     data class StartupObservation(
         val server: ServerConfig,
         val tcpPing: Int,
-        val result: ir.v2max.app.net.ProbeResult?
+        val result: ir.v2max.app.net.ProbeResult?,
+        /** False when any unsuccessful variant had a setup/unknown error. */
+        val conclusive: Boolean = true
     )
     data class StartupHealthResult(
         val applied: Boolean = false,
@@ -725,7 +739,11 @@ object Repo {
         val fromCurrentSources = valid.filter { obs ->
             sourceById[obs.server.subId]?.fingerprints?.contains(obs.server.fingerprint()) == true
         }
-        val byFingerprint = fromCurrentSources.associateBy { it.server.fingerprint() }
+        // Never convert a failed local setup or an unfamiliar native error into
+        // a server failure, even if another profile succeeded in this pass.
+        val byFingerprint = fromCurrentSources.filter { obs ->
+            obs.conclusive || (obs.result?.let { it.delayMs > 0 && it.url.isNotBlank() } == true)
+        }.associateBy { it.server.fingerprint() }
         val networkProven = fromCurrentSources.any { it.result != null && it.result.delayMs > 0 && it.result.url.isNotBlank() }
         val flags = byFingerprint.mapValues { (_, obs) ->
             obs.result != null && obs.result.delayMs > 0 && obs.result.url.isNotBlank()
@@ -748,7 +766,8 @@ object Repo {
                 if (source == null || key !in source.fingerprints || obs == null ||
                     originalById[current.id] != current || current.id in editingServerIds) return@mapNotNull current
                 val success = obs.result?.takeIf { it.delayMs > 0 && it.url.isNotBlank() }
-                if (success == null && !current.favorite && current.id != _selectedId.value && current.id != liveId) {
+                if (success == null && _settings.value.dropDeadServers &&
+                    !current.favorite && current.id != _selectedId.value && current.id != liveId) {
                     removed++
                     changedServers = true
                     null
@@ -774,9 +793,13 @@ object Repo {
             val source = sourceById[sub.id] ?: return@map sub
             // Android's validation plus a successful subscription fetch may
             // support a cautious prompt, but never automatic profile deletion.
-            val check = ir.v2max.core.domain.SubscriptionHealthPolicy.classify(
+            val observed = ir.v2max.core.domain.SubscriptionHealthPolicy.classify(
                 source.fingerprints, evidenceFlags, networkProven || networkValidated
             )
+            // One positive response establishes health, but failure of an
+            // incomplete/truncated feed cannot describe its omitted members.
+            val check = if (!source.complete && observed == ir.v2max.core.domain.SubscriptionCheck.NO_RESPONSE)
+                ir.v2max.core.domain.SubscriptionCheck.UNKNOWN else observed
             if (check == ir.v2max.core.domain.SubscriptionCheck.UNKNOWN) unknown++
             val evidence = ir.v2max.core.domain.SubscriptionHealthPolicy.observe(sub.healthEvidence(), check, now, sub.updatedAt)
             val revised = sub.withHealthEvidence(evidence)
@@ -974,7 +997,8 @@ object Repo {
         val liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive }
         val removable = all
             .filter { it.subId in builtInIds && !it.favorite && it.id !in editingServerIds &&
-                it.id != _selectedId.value && it.id != liveId }
+                it.id != _selectedId.value && it.id != liveId &&
+                !(it.realPing > 0 && it.testedUrl.isNotBlank()) }
             .sortedWith(
                 compareBy<ServerConfig> { if (it.bestPing() > 0) 1 else 0 }
                     .thenByDescending { now - it.testedAt }

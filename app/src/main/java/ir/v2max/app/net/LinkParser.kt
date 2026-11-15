@@ -21,19 +21,37 @@ object LinkParser {
         else -> network
     }
 
+    internal data class ParsedLinks(val configs: List<ServerConfig>, val complete: Boolean)
+
     /** پارس یک متن چندخطی (محتویات اشتراک) */
-    fun parseAll(text: String, maxConfigs: Int = 0): List<ServerConfig> {
+    fun parseAll(text: String, maxConfigs: Int = 0): List<ServerConfig> = parseAllDetailed(text, maxConfigs).configs
+
+    /** Track omitted links so a partial feed can never prove an entire subscription dead. */
+    internal fun parseAllDetailed(text: String, maxConfigs: Int = 0): ParsedLinks {
         val result = ArrayList<ServerConfig>()
         val body = maybeBase64(text)
-        // Do not allocate thousands of ServerConfig objects only to discard them
-        // for a capped built-in feed. A personal subscription passes zero: no cap.
+        var complete = true
+        // At most one extra usable config is parsed past a public-feed cap, so
+        // an exactly full feed is distinguishable from an actually truncated one.
         for (line in body.lineSequence()) {
-            val cfg = parseLine(line) ?: continue
-            if (maxConfigs > 0 && !cfg.hasUsableEndpoint()) continue
+            val clean = line.trim()
+            if (clean.isEmpty() || clean.startsWith("#") || clean.startsWith("//")) continue
+            val cfg = parseLine(clean)
+            if (cfg == null) {
+                if (clean.contains("://")) complete = false
+                continue
+            }
+            if (!cfg.hasUsableEndpoint()) {
+                complete = false
+                if (maxConfigs > 0) continue // Preserve the existing capped-parser behavior.
+            }
+            if (maxConfigs > 0 && result.size >= maxConfigs) {
+                complete = false
+                break
+            }
             result.add(cfg)
-            if (maxConfigs > 0 && result.size >= maxConfigs) break
         }
-        return result
+        return ParsedLinks(result, complete)
     }
 
     /** اگر متن base64 باشد آن را رمزگشایی می‌کند */

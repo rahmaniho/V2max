@@ -207,10 +207,11 @@ object XrayCore {
     fun clearProbeProblem() { lastProbeProblem = "" }
     fun probeProblem(): String = lastProbeProblem
 
-    /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل). متن خطاها بدون اطلاعات محرمانه ذخیره می‌شود. */
+    /** تأخیر مستقل؛ خطای نامشخص، مدرک کافی برای حذف کانفیگ نیست. */
     fun measureOutboundDelay(config: String, url: String): Long {
         return try {
-            NativeDelay.normalize(Libv2ray.measureOutboundDelay(config, url))
+            val delay = Libv2ray.measureOutboundDelay(config, url)
+            if (delay < 0) NativeDelay.INDETERMINATE else NativeDelay.normalize(delay)
         } catch (t: Throwable) {
             val reason = t.message.orEmpty()
             val safe = when {
@@ -224,7 +225,7 @@ object XrayCore {
                 else -> ""
             }
             if (safe.isNotBlank()) lastProbeProblem = safe
-            -1L
+            NativeDelay.outboundFailure(reason)
         }
     }
 

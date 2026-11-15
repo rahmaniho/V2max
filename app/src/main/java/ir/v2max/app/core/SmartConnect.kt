@@ -88,6 +88,7 @@ object SmartConnect {
         manualFailure: String? = null
     ): VerifiedSelection? {
         val job = currentCoroutineContext()[Job]
+        var handedOff = false
         if (job != null) scanJobs.add(job)
         try {
             return scanMutex.withLock {
@@ -255,7 +256,10 @@ object SmartConnect {
                             keepCurrent -> Unit
                             else -> synchronized(scanJobs) {
                                 // Cancellation and receipt hand-off must not cross.
-                                if (job?.isActive != false) TunnelController.startVerified(context, selection)
+                                if (job?.isActive != false) {
+                                    TunnelController.startVerified(context, selection)
+                                    handedOff = true
+                                }
                             }
                         }
                     }
@@ -264,7 +268,9 @@ object SmartConnect {
                     selection
                 } finally {
                     if (activeScanJob === job) activeScanJob = null
-                    if (job?.isCancelled == true) {
+                    // The service intentionally cancels superseded startup work
+                    // after accepting its receipt; that is not a canceled test.
+                    if (job?.isCancelled == true && !handedOff) {
                         Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, message = "تست لغو شد")
                     }
                 }

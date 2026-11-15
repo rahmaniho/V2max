@@ -130,6 +130,33 @@ class HealthScannerTest {
         assertEquals(1, outcome.testedCount)
     }
 
+    @Test fun `setup failures remain indeterminate unless a later variant succeeds`() = runBlocking {
+        val calls = mutableMapOf<String, Int>()
+        val published = mutableSetOf<String>()
+        val unknown = mutableSetOf<String>()
+        val outcome = HealthScanner.scanPrepared(
+            (0..3).map { node(it) }, settings,
+            ops(real = { cfg, _, _ ->
+                val attempt = (calls[cfg.id] ?: 0) + 1
+                calls[cfg.id] = attempt
+                when (cfg.id) {
+                    "s0" -> 20
+                    "s1" -> -2
+                    "s2" -> if (attempt == 1) -1 else -2
+                    else -> if (attempt == 1) -2 else 30
+                }
+            }), exhaustive = true,
+            onReal = { cfg, _ -> published.add(cfg.id) },
+            onIndeterminate = { cfg -> unknown.add(cfg.id) }
+        )
+        assertEquals(4, outcome.testedCount)
+        assertEquals(setOf("s1", "s2"), outcome.indeterminateIds)
+        assertEquals(outcome.indeterminateIds, unknown)
+        assertEquals(setOf("s0", "s3"), published)
+        assertEquals(setOf("s0", "s3"), outcome.qualified.map { it.id }.toSet())
+        assertEquals(2, calls["s3"])
+    }
+
     @Test fun `all enabled extra tests finish before any results are published`() = runBlocking {
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()

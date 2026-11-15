@@ -158,12 +158,45 @@ class SubscriptionBootstrapTest {
             }
             assertTrue(result.error, result.ok)
             assertEquals(550, result.configs.size)
+            assertTrue("A complete personal feed must not be marked truncated", result.fullyParsed)
             assertEquals("سرور", result.configs.first().name)
             assertEquals("My Subscription", result.title)
             assertEquals(12L, result.upload)
             assertEquals(34L, result.download)
             assertEquals(100L, result.total)
             assertEquals(1893456000L, result.expireAt)
+        } finally {
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test fun `HTTP fetch exposes an actually truncated source`() = runBlocking {
+        val body = (0..2).joinToString("\n") { "vless://u@host$it.example.org:443?security=tls" }
+            .toByteArray(Charsets.UTF_8)
+        val server = ServerSocket(0)
+        val serverThread = thread(isDaemon = true) {
+            server.use {
+                it.accept().use { socket ->
+                    socket.soTimeout = 5_000
+                    val input = socket.getInputStream().bufferedReader()
+                    while (!input.readLine().isNullOrEmpty()) { }
+                    socket.getOutputStream().write(
+                        "HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
+                            .toByteArray(Charsets.US_ASCII)
+                    )
+                    socket.getOutputStream().write(body)
+                    socket.getOutputStream().flush()
+                }
+            }
+        }
+        try {
+            val result = withTimeout(5_000) {
+                SubscriptionFetcher.fetch("http://127.0.0.1:${server.localPort}/source", maxConfigs = 2)
+            }
+            assertTrue(result.error, result.ok)
+            assertEquals(2, result.configs.size)
+            assertFalse(result.fullyParsed)
         } finally {
             server.close()
             serverThread.join(1_000)

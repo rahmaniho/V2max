@@ -18,10 +18,17 @@ internal object StartupMaintenance {
     // Handover still waits for any already-started native calls at the barrier.
     private val jobs = HashSet<Job>()
 
-    suspend fun <T> track(block: suspend () -> T): T {
+    suspend fun <T> track(token: Long, block: suspend () -> T): T {
         val job = currentCoroutineContext()[Job]
-        if (job != null) synchronized(jobs) { jobs.add(job) }
+        // If cancelAll() races the initial registration, either the old token
+        // is rejected here or the registered job is included in cancellation.
+        // cancelAll releases Repo's lock before acquiring the jobs lock.
+        synchronized(jobs) {
+            if (!Repo.startupHealthIsCurrent(token)) throw CancellationException("startup superseded")
+            if (job != null) jobs.add(job)
+        }
         try {
+            currentCoroutineContext().ensureActive()
             return block()
         } finally {
             if (job != null) synchronized(jobs) { jobs.remove(job) }
@@ -55,31 +62,30 @@ internal object StartupMaintenance {
         }.distinctBy { it.fingerprint() }
         if (candidates.isEmpty()) return Result(Status.NO_PROFILES)
         val job = currentCoroutineContext()[Job]
-        try {
-            val tcp = HashMap<String, Int>()
-            val observations = ArrayList<Repo.StartupObservation>()
-            // Optional multi-destination/download tests are preflight tests, not
-            // health housekeeping. They still run in full before any connection.
-            val outcome = HealthScanner.scan(
-                context = context,
-                servers = candidates,
-                settings = settings.copy(multiPing = false, speedTest = false),
-                exhaustive = true,
-                onTcp = { cfg, ping -> tcp[cfg.id] = ping },
-                onReal = { cfg, result -> observations.add(Repo.StartupObservation(cfg, tcp[cfg.id] ?: -1, result)) },
-                onPhase = onPhase
-            )
-            currentCoroutineContext().ensureActive()
-            if (outcome.testedCount != candidates.size || observations.size != candidates.size) {
-                return Result(Status.INCOMPLETE)
-            }
-            val applied = Repo.applyStartupHealth(sources, snapshots, observations, permit, token, stillCurrent = {
-                job?.isActive != false && CarrierProbe.networkHandle(context) == network &&
-                    PreflightPolicy.from(Repo.settings.value) == policy
-            }, networkValidated = validatedAtStart && CarrierProbe.internetValidated(context))
-            return Result(if (applied.applied) Status.COMPLETE else Status.CHANGED, applied)
-        } catch (e: CancellationException) {
-            throw e
+        val tcp = HashMap<String, Int>()
+        val observations = ArrayList<Repo.StartupObservation>()
+        // Optional multi-destination/download tests are preflight tests, not
+        // health housekeeping. They still run in full before any connection.
+        val outcome = HealthScanner.scan(
+            context = context,
+            servers = candidates,
+            settings = settings.copy(multiPing = false, speedTest = false),
+            exhaustive = true,
+            onTcp = { cfg, ping -> tcp[cfg.id] = ping },
+            onReal = { cfg, result -> observations.add(Repo.StartupObservation(cfg, tcp[cfg.id] ?: -1, result)) },
+            onIndeterminate = { cfg ->
+                observations.add(Repo.StartupObservation(cfg, tcp[cfg.id] ?: -1, null, conclusive = false))
+            },
+            onPhase = onPhase
+        )
+        currentCoroutineContext().ensureActive()
+        if (outcome.testedCount != candidates.size || observations.size != candidates.size) {
+            return Result(Status.INCOMPLETE)
         }
+        val applied = Repo.applyStartupHealth(sources, snapshots, observations, permit, token, stillCurrent = {
+            job?.isActive != false && CarrierProbe.networkHandle(context) == network &&
+                PreflightPolicy.from(Repo.settings.value) == policy
+        }, networkValidated = validatedAtStart && CarrierProbe.internetValidated(context))
+        return Result(if (applied.applied) Status.COMPLETE else Status.CHANGED, applied)
     }
 }
