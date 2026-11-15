@@ -42,17 +42,20 @@ if [[ ! "$api" =~ ^[0-9]+$ ]]; then
   echo '::error title=Android UI connection smoke::Could not determine the emulator API level.'
   exit 1
 fi
-if (( api >= 33 )); then
-  stage='reset emulator notification permission'
-  if ! output=$(adb shell pm revoke "$pkg" android.permission.POST_NOTIFICATIONS 2>&1); then
-    echo "::error title=Android UI connection smoke::Could not revoke notification permission: $output"
+reset_permission() {
+  local permission=$1 output
+  stage="reset emulator permission $permission"
+  if ! output=$(adb shell pm revoke "$pkg" "$permission" 2>&1); then
+    echo "::error title=Android UI connection smoke::Could not revoke $permission: $output"
     exit 1
   fi
-  if ! output=$(adb shell pm clear-permission-flags "$pkg" android.permission.POST_NOTIFICATIONS user-set user-fixed 2>&1); then
-    echo "::error title=Android UI connection smoke::Could not reset notification permission flags: $output"
+  if ! output=$(adb shell pm clear-permission-flags "$pkg" "$permission" user-set user-fixed 2>&1); then
+    echo "::error title=Android UI connection smoke::Could not reset flags for $permission: $output"
     exit 1
   fi
-fi
+}
+reset_permission android.permission.CAMERA
+if (( api >= 33 )); then reset_permission android.permission.POST_NOTIFICATIONS; fi
 # Include a crash buffer in diagnostics if the runner dies before JUnit can
 # report a stack trace. The emulator contains only disposable fixture data.
 adb logcat -b crash -c || true
@@ -61,7 +64,7 @@ status=0
 adb shell am instrument -w -r -e enableUiVpnTests true \
   -e class ir.v2max.app.AndroidUiConnectionTest \
   "$pkg.test/androidx.test.runner.AndroidJUnitRunner" | tr -d '\r' | tee "$work/test.log" || status=$?
-if (( status != 0 )) || ! grep -Fq 'OK (4 tests)' "$work/test.log"; then
+if (( status != 0 )) || ! grep -Fq 'OK (6 tests)' "$work/test.log"; then
   adb logcat -b crash -d -v threadtime > "$work/crash.log" 2>&1 || true
   python3 - "$work/test.log" "$work/crash.log" <<'PY'
 import pathlib, re, sys
@@ -78,4 +81,4 @@ annotate('Android UI connection smoke', text[-3000:])
 PY
   exit 1
 fi
-echo "::notice title=Android UI connection smoke::$pkg exercised real VPN consent, selected profiles and local TUN traffic."
+echo "::notice title=Android UI connection smoke::$pkg exercised VPN consent, selected profiles, local TUN traffic, camera denial and the document picker."

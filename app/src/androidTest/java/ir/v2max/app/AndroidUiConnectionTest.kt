@@ -46,6 +46,8 @@ import java.util.ArrayDeque
  * Opt-in only: a disposable emulator and the local Xray/HTTP fixture are required.
  * Unlike the lower-level smoke test, these tests use the actual Compose controls,
  * the system VPN consent dialog and a traffic probe from outside the app UID.
+ * Camera permission and the document picker are also exercised because they
+ * share the Activity Result infrastructure involved in the consent regression.
  */
 @RunWith(AndroidJUnit4::class)
 // Notification permission is revoked by the shell before instrumentation.
@@ -96,7 +98,11 @@ class AndroidUiConnectionTest {
         runCatching { fixtureControl("hold-release") }
         // Close a system dialog before finishing its caller, including after an assertion failure.
         runCatching {
-            if (activePackage().contains("vpndialog", ignoreCase = true)) clickViewId("button2")
+            when {
+                activePackage().contains("vpndialog", ignoreCase = true) -> clickViewId("button2")
+                activePackage().contains("permissioncontroller", ignoreCase = true) ||
+                    activePackage().contains("documentsui", ignoreCase = true) -> shell("input keyevent 4")
+            }
         }
         instrumentation.runOnMainSync {
             val monitor = ActivityLifecycleMonitorRegistry.getInstance()
@@ -120,7 +126,7 @@ class AndroidUiConnectionTest {
         Repo.updateSettings { it.copy(delayTestUrl = "http://198.51.100.1:18081/hold-probe") }
         grantNotificationsIfNeeded()
         launchActivity()
-        clickText("سرورها")
+        openServers()
         clickText("UI Beta")
         awaitVpnDialog()
         assertEquals("The row did not select the requested profile", beta.id, Repo.selectedId.value)
@@ -177,7 +183,7 @@ class AndroidUiConnectionTest {
         Repo.updateServer(alpha.copy(method = "invalid-fixture-encryption"))
         grantNotificationsIfNeeded()
         launchActivity()
-        clickText("سرورها")
+        openServers()
         clickText("UI Alpha")
         awaitVpnDialog()
         clickViewId("button1")
@@ -221,8 +227,49 @@ class AndroidUiConnectionTest {
         assertTunTraffic()
     }
 
+    @Test fun cameraPermissionFromSubscriptionCanBeDeniedWithoutConnecting() {
+        assertEquals("The shell must reset camera permission before instrumentation starts",
+            PackageManager.PERMISSION_DENIED, ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA))
+        grantNotificationsIfNeeded()
+        launchActivity()
+        clickText("اشتراک")
+        awaitText("منبع کانفیگ‌های شما")
+        clickText("QR")
+        awaitPackage("permissioncontroller")
+        clickViewId("permission_deny_button")
+        awaitText("برای اسکن QR به دوربین نیاز است")
+        assertEquals(PackageManager.PERMISSION_DENIED,
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA))
+        assertNotNull("Opening QR must not authorize the VPN", VpnService.prepare(context))
+        assertFalse("Opening QR unexpectedly started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
+        clickText("بازگشت")
+        awaitText("منبع کانفیگ‌های شما")
+    }
+
+    @Test fun restoreOpensAndCancelsTheSystemDocumentPicker() {
+        grantNotificationsIfNeeded()
+        launchActivity()
+        clickText("تنظیمات")
+        awaitText("تنظیمات را با دقت تغییر دهید")
+        clickScrollableText("بازیابی")
+        awaitPackage("documentsui")
+        shell("input keyevent 4")
+        awaitPackage(context.packageName)
+        assertEquals("Canceling restore must keep the existing servers", setOf(alpha.id, beta.id),
+            Repo.servers.value.map { it.id }.toSet())
+        assertNotNull("Opening restore must not authorize the VPN", VpnService.prepare(context))
+        assertFalse("Opening restore unexpectedly started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
+    }
+
     private fun grantNotificationsIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33) shell("pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS")
+    }
+
+    private fun openServers() {
+        clickText("سرورها")
+        // The Home card also displays the selected server and only opens this
+        // tab. Wait for the actual server list before clicking a server row.
+        awaitText("برای اتصال، سرور موردنظر را لمس کنید")
     }
 
     private fun launchActivity() {
@@ -325,6 +372,20 @@ class AndroidUiConnectionTest {
             SystemClock.sleep(100)
         }
         throw AssertionError("Text not visible/clickable: $text; active=${activePackage()}; ${visibleSummary()}")
+    }
+
+    private fun clickScrollableText(text: String) {
+        val deadline = SystemClock.elapsedRealtime() + 30_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            val tree = nodes()
+            tree.filter { it.text?.toString() == text }.forEach { if (clickNode(it)) return }
+            val list = tree.firstOrNull { it.isScrollable && it.isEnabled }
+            if (list != null && !list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            }
+            SystemClock.sleep(250)
+        }
+        throw AssertionError("Scrollable action not visible/clickable: $text; active=${activePackage()}; ${visibleSummary()}")
     }
 
     private fun clickDescription(description: String) {

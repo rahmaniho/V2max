@@ -310,6 +310,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     /** Claim before launching so recreation does not launch a second system dialog. */
     internal fun claimVpnPermissionRequest(): Boolean {
         val claimed = vpnPermissions.claim()
+        if (claimed) lastVpnPermissionLaunchError = ""
         _vpnPermissionState.value = vpnPermissions.snapshot()
         return claimed
     }
