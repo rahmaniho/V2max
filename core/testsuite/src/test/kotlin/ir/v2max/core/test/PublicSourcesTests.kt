@@ -39,6 +39,15 @@ object PublicSourcesTests {
         T.ok("DEFAULT is smaller than the whole catalog", PublicSources.DEFAULT.size < all.size) {
             "${PublicSources.DEFAULT.size} of ${all.size}"
         }
+        val requestedFeeds = listOf(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix",
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        )
+        requestedFeeds.forEach { url ->
+            T.eq("requested feed occurs exactly once: $url", 1, all.count { it.url == url })
+            T.ok("requested feed is enabled by default: $url", PublicSources.DEFAULT.any { it.url == url })
+            T.eq("requested public feed is bounded: $url", 150, PublicSources.forUrl(url)?.maxConfigs)
+        }
 
         // ---- normalize
         T.eq("normalize trims whitespace", "https://a.test/x", PublicSources.normalize("  https://a.test/x  "))

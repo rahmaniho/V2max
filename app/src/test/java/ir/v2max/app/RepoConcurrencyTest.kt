@@ -63,6 +63,48 @@ class RepoConcurrencyTest {
         assertEquals(0, Repo.ensureBuiltInSources(includeAll = true))
     }
 
+    @Test fun `new default feeds are added once without replacing an existing subscription`() {
+        val iboxz = "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        val thomas = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        // Simulate an existing installation with the old defaults and an
+        // explicitly added Thomas subscription, including a saved profile.
+        PublicSources.DEFAULT.take(6).forEachIndexed { index, source ->
+            assertTrue(Repo.addSubscription(Subscription(id = "old-$index", url = source.url, builtIn = true)))
+        }
+        val previous = Subscription(id = "existing-thomas", name = "نام من", url = thomas, builtIn = true, updatedAt = 42)
+        assertTrue(Repo.addSubscription(previous))
+        val saved = server("saved", previous.id)
+        Repo.updateServer(saved)
+
+        assertEquals(1, Repo.ensureBuiltInSources(requireEnabled = true))
+        assertEquals(previous, Repo.subById(previous.id))
+        assertEquals(saved, Repo.serverById(saved.id))
+        assertEquals(1, Repo.subs.value.count { PublicSources.normalize(it.url) == thomas })
+        assertTrue(Repo.subs.value.single { it.url == iboxz }.builtIn)
+        assertEquals(0, Repo.ensureBuiltInSources(requireEnabled = true))
+    }
+
+    @Test fun `new defaults respect free source opt out personal imports and explicit deletion`() {
+        val iboxz = "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        val thomas = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        assertTrue(Repo.updateSettings { it.copy(useFreeSources = false) })
+        assertEquals(0, Repo.ensureBuiltInSources(requireEnabled = true))
+        assertTrue(Repo.subs.value.isEmpty())
+
+        val personal = Subscription(id = "personal-thomas", url = "$thomas/", builtIn = false)
+        assertTrue(Repo.addSubscription(personal))
+        assertTrue(Repo.updateSettings { it.copy(useFreeSources = true) })
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertEquals(personal, Repo.subById(personal.id))
+        assertEquals(1, Repo.subs.value.count { PublicSources.normalize(it.url) == thomas })
+        val removed = Repo.subs.value.single { it.url == iboxz }
+        Repo.removeSubscription(removed.id)
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertFalse("A source explicitly removed by the user must stay removed", Repo.subs.value.any { it.url == iboxz })
+        assertNotNull("The source picker can deliberately restore it", Repo.addBuiltInSource(iboxz))
+        assertEquals(1, Repo.subs.value.count { it.url == iboxz })
+    }
+
     @Test fun `editor preserves newer health on rename and clears it for a different connection`() {
         val original = server("edit", "personal").copy(
             tcpPing = 20, realPing = 30, googlePing = 30, instagramPing = 40, youtubePing = 50,

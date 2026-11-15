@@ -99,6 +99,28 @@ class SubscriptionBootstrapTest {
         assertFalse(SubscriptionPolicy.isComplete(capped, SubscriptionPolicy.candidates(builtIn, capped.configs)))
     }
 
+    @Test fun `requested feeds use bounded public policy and only exact public mirror URLs`() {
+        val feeds = listOf(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix" to
+                "https://cdn.jsdelivr.net/gh/iboxz/free-v2ray-collector@main/main/mix",
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt" to
+                "https://cdn.jsdelivr.net/gh/ThomasJasperthecat/sub@main/sublist1.txt"
+        )
+        val profiles = (0..150).map { ServerConfig(address = "host$it.example.org") }
+        feeds.forEach { (url, cdn) ->
+            val builtIn = Subscription(url = url, builtIn = true)
+            val personal = Subscription(url = url, builtIn = false)
+            assertTrue(SubscriptionPolicy.allowPublicMirrors(builtIn))
+            assertEquals(listOf(url, cdn, "https://ghproxy.net/$url"), SubscriptionFetcher.mirrorsFor(url, true))
+            assertFalse(SubscriptionPolicy.allowPublicMirrors(personal))
+            assertFalse(SubscriptionPolicy.allowPublicMirrors(builtIn.copy(url = "$url?private=token")))
+            assertEquals(150, SubscriptionPolicy.candidates(builtIn, profiles).size)
+            assertEquals(151, SubscriptionPolicy.candidates(personal, profiles).size)
+            val result = SubscriptionFetcher.Result(configs = profiles)
+            assertFalse(SubscriptionPolicy.isComplete(result, SubscriptionPolicy.candidates(builtIn, profiles)))
+        }
+    }
+
     @Test fun `personal subscriptions and unknown URLs never go to third party mirrors`() {
         val known = PublicSources.DEFAULT.first().url
         val privateUrl = "https://raw.githubusercontent.com/me/private/main/secret-token/sub.txt?token=secret"

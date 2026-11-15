@@ -171,8 +171,9 @@ jobs:
               'ir.v2max.app.NativeDelayTest': 2,
               'ir.v2max.app.NetworkProbeSummaryTest': 1,
               'ir.v2max.app.ServerFingerprintTest': 2,
-              'ir.v2max.app.LinkParserCompletenessTest': 1,
-              'ir.v2max.app.SubscriptionBootstrapTest': 14,
+              'ir.v2max.app.RepoConcurrencyTest': 20,
+              'ir.v2max.app.LinkParserCompletenessTest': 2,
+              'ir.v2max.app.SubscriptionBootstrapTest': 15,
               'ir.v2max.app.PreflightTest': 1,
               'ir.v2max.app.VpnPermissionQueueTest': 1,
           }
