@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Instrumentation
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Rect
 import android.net.VpnService
 import android.os.Build
 import android.os.SystemClock
@@ -247,6 +248,7 @@ class AndroidUiConnectionTest {
     }
 
     @Test fun restoreOpensAndCancelsTheSystemDocumentPicker() {
+        val settingsBefore = Repo.settings.value.copy()
         grantNotificationsIfNeeded()
         launchActivity()
         clickText("تنظیمات")
@@ -257,6 +259,7 @@ class AndroidUiConnectionTest {
         awaitPackage(context.packageName)
         assertEquals("Canceling restore must keep the existing servers", setOf(alpha.id, beta.id),
             Repo.servers.value.map { it.id }.toSet())
+        assertEquals("Scrolling and canceling restore must not change settings", settingsBefore, Repo.settings.value)
         assertNotNull("Opening restore must not authorize the VPN", VpnService.prepare(context))
         assertFalse("Opening restore unexpectedly started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
     }
@@ -376,16 +379,31 @@ class AndroidUiConnectionTest {
 
     private fun clickScrollableText(text: String) {
         val deadline = SystemClock.elapsedRealtime() + 30_000
+        var swipes = 0
+        val seenMatches = linkedSetOf<String>()
         while (SystemClock.elapsedRealtime() < deadline) {
             val tree = nodes()
-            tree.filter { it.text?.toString() == text }.forEach { if (clickNode(it)) return }
-            val list = tree.firstOrNull { it.isScrollable && it.isEnabled }
-            if (list != null && !list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
-                list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            tree.filter { it.text?.toString()?.contains(text) == true }.forEach {
+                seenMatches.add("${it.text}:${it.isClickable}:${it.isEnabled}")
+                if (it.text?.toString() == text && clickNode(it)) return
             }
-            SystemClock.sleep(250)
+            val list = tree.firstOrNull { it.isScrollable && it.isEnabled }
+            val bounds = Rect()
+            list?.getBoundsInScreen(bounds)
+            if (bounds.height() > 100 && bounds.width() > 100) {
+                // Accessibility page-scroll can skip a short item at a viewport
+                // boundary. Swipe a fraction of the visible list like a user.
+                val down = (swipes / 20) % 2 == 0
+                val high = bounds.top + bounds.height() * 3 / 4
+                val low = bounds.top + bounds.height() * 2 / 5
+                val from = if (down) high else low
+                val to = if (down) low else high
+                shell("input swipe ${bounds.centerX()} $from ${bounds.centerX()} $to 300")
+                swipes++
+            }
+            SystemClock.sleep(150)
         }
-        throw AssertionError("Scrollable action not visible/clickable: $text; active=${activePackage()}; ${visibleSummary()}")
+        throw AssertionError("Scrollable action not visible/clickable: $text; seen=$seenMatches; active=${activePackage()}; ${visibleSummary()}")
     }
 
     private fun clickDescription(description: String) {
