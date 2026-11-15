@@ -49,9 +49,13 @@ reset_permission() {
     echo "::error title=Android UI connection smoke::Could not revoke $permission: $output"
     exit 1
   fi
-  if ! output=$(adb shell pm clear-permission-flags "$pkg" "$permission" user-set user-fixed 2>&1); then
-    echo "::error title=Android UI connection smoke::Could not reset flags for $permission: $output"
-    exit 1
+  # Android 30's pm shell lacks clear-permission-flags. Its UI tests run on a
+  # fresh installation and still assert that the permission dialog appears.
+  if (( api >= 33 )); then
+    if ! output=$(adb shell pm clear-permission-flags "$pkg" "$permission" user-set user-fixed 2>&1); then
+      echo "::error title=Android UI connection smoke::Could not reset flags for $permission: $output"
+      exit 1
+    fi
   fi
 }
 reset_permission android.permission.CAMERA

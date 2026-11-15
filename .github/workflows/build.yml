@@ -64,6 +64,7 @@ jobs:
           python3 scripts/test-release-gates.py
           python3 scripts/test-preview-apk.py
           python3 scripts/test-preview-release.py
+          python3 scripts/test-android-ui-connect-smoke.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
