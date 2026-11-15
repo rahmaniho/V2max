@@ -164,14 +164,14 @@ jobs:
           cases = [tc for p in paths for tc in ET.parse(p).iter('testcase')]
           required = {
               'ir.v2max.app.ConfigGeneratorTest': 1,
-              'ir.v2max.app.StartupHealthTest': 18,
+              'ir.v2max.app.StartupHealthTest': 20,
               'ir.v2max.app.StartupMaintenanceTest': 2,
               'ir.v2max.app.ConnectionTestBarrierTest': 3,
               'ir.v2max.app.HealthScannerTest': 18,
               'ir.v2max.app.NativeDelayTest': 2,
               'ir.v2max.app.ServerFingerprintTest': 1,
               'ir.v2max.app.LinkParserCompletenessTest': 1,
-              'ir.v2max.app.SubscriptionBootstrapTest': 13,
+              'ir.v2max.app.SubscriptionBootstrapTest': 14,
               'ir.v2max.app.PreflightTest': 1,
               'ir.v2max.app.VpnPermissionQueueTest': 1,
           }

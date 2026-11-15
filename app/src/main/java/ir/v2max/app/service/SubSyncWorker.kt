@@ -65,7 +65,7 @@ class SubSyncWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                         val trimmed = if (result.ok) SubscriptionPolicy.candidates(sub, result.configs) else emptyList()
                         if (trimmed.isNotEmpty() && Repo.commitSubscriptionRefresh(
                                 sub, trimmed, result.upload, result.download, result.total, result.expireAt,
-                                automaticPermit = permit
+                                automaticPermit = permit, preserveOmitted = !SubscriptionPolicy.isComplete(result, trimmed)
                             )) {
                             updated.incrementAndGet()
                         } else if (trimmed.isEmpty()) {

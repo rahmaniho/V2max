@@ -24,6 +24,9 @@ class NativeDelayTest {
         assertEquals(NativeDelay.NO_RESPONSE, NativeDelay.outboundFailure("Get \"https://example.org/\": context deadline exceeded"))
         assertEquals(NativeDelay.NO_RESPONSE, NativeDelay.outboundFailure("Get \"https://example.org/\": EOF"))
         assertEquals(NativeDelay.NO_RESPONSE, NativeDelay.outboundFailure("Get \"https://example.org/\": connection refused"))
+        assertEquals(NativeDelay.NO_RESPONSE, NativeDelay.outboundFailure("Get \"https://example.org/\": io: read/write on closed pipe"))
+        assertEquals(NativeDelay.INDETERMINATE, NativeDelay.outboundFailure("config load error: io: read/write on closed pipe"))
+        assertEquals(NativeDelay.INDETERMINATE, NativeDelay.outboundFailure("Get \"https://example.org/\": setup failed: io: read/write on closed pipe"))
         // A URL itself containing a marker must not turn an unknown failure into proof.
         assertEquals(NativeDelay.INDETERMINATE, NativeDelay.outboundFailure("Get \"https://example.org/connection%20refused\": unsupported protocol"))
     }

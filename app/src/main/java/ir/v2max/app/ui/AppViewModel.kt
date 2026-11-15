@@ -185,6 +185,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         when (checked.status) {
                             StartupMaintenance.Status.COMPLETE -> {
                                 when {
+                                    checked.health.healthy == 0 && checked.health.unknownSources > 0 -> showMessage(
+                                        "هیچ تستی موفق نشد و نتیجهٔ برخی بررسی‌ها نامشخص بود؛ کانفیگ‌ها حفظ شدند"
+                                    )
                                     checked.health.healthy == 0 -> showMessage(
                                         "هیچ سروری در این نوبت پاسخ نداد؛ مشکل ممکن است از شبکه یا مقصد تست باشد و کانفیگ‌ها حفظ شدند"
                                     )
@@ -548,15 +551,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!result.ok) return 0
         val configs = SubscriptionPolicy.candidates(sub, result.configs)
         if (configs.isEmpty()) return 0
+        val complete = SubscriptionPolicy.isComplete(result, configs)
         val revision = Repo.commitSubscriptionRefreshSnapshot(
             sub, configs, result.upload, result.download, result.total, result.expireAt,
             expectedEpoch = epoch, automaticPermit = automaticPermit, deferBuiltInCap = onCommitted != null,
-            startupToken = startupToken
+            startupToken = startupToken, preserveOmitted = !complete
         ) ?: return 0
         if (onCommitted != null) {
             onCommitted(Repo.StartupSourceSnapshot(
-                revision, configs.mapTo(HashSet()) { it.fingerprint() },
-                complete = result.fullyParsed && configs.size == result.configs.size
+                revision, configs.mapTo(HashSet()) { it.fingerprint() }, complete = complete
             ))
         }
         return configs.size

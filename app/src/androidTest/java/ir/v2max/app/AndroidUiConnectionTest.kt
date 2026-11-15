@@ -444,6 +444,32 @@ class AndroidUiConnectionTest {
         assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
     }
 
+    @Test fun partialStartupFeedRetainsAnOmittedPersonalProfile() {
+        grantNotificationsIfNeeded()
+        val before = System.currentTimeMillis()
+        val source = Subscription(
+            id = "startup-ui-source", name = "Partial fixture", updatedAt = before,
+            url = "http://10.0.2.2:18081/subscription-partial"
+        )
+        val previous = fixture("old-personal-profile", "Previously healthy", "33333333-3333-4333-8333-333333333333")
+            .copy(subId = source.id, realPing = 17, testedAt = before - 1_000,
+                testedUrl = "http://198.51.100.1:18081/probe")
+        assertTrue(Repo.addSubscription(source))
+        Repo.updateServer(previous)
+        assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = true, autoConnectOnOpen = false) })
+        launchActivity()
+        val deadline = SystemClock.elapsedRealtime() + 45_000
+        while (((Repo.subById(source.id)?.updatedAt ?: 0) <= before || Repo.sync.value.running) &&
+            SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+        assertTrue("The partial source was not refreshed", (Repo.subById(source.id)?.updatedAt ?: 0) > before)
+        assertFalse("Startup health did not finish", Repo.sync.value.running)
+        assertEquals("A partial refresh discarded a previously healthy profile", 17, Repo.serverById(previous.id)?.realPing)
+        val received = Repo.servers.value.firstOrNull { it.subId == source.id && it.id != previous.id }
+        assertNotNull("The received profile was not added", received)
+        assertTrue("The received profile did not pass the real protocol test", (received?.realPing ?: -1) > 0)
+        assertFalse(Repo.tunnel.value.isActive || V2maxVpnService.running)
+    }
+
     @Test fun unhealthySubscriptionRequiresExplicitConfirmationAndCanBeDeferred() {
         grantNotificationsIfNeeded()
         val now = System.currentTimeMillis()

@@ -54,11 +54,13 @@ class Fixture(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the caller canceled while the slow response was pending
-        elif self.path in ('/subscription', '/subscription-mixed'):
+        elif self.path in ('/subscription', '/subscription-mixed', '/subscription-partial'):
             body = b'vless://22222222-3333-4444-5555-666666666666@10.0.2.2:18080?type=tcp&security=none#QR-fixture'
             if self.path == '/subscription-mixed':
                 body += b'\nvless://11111111-2222-3333-4444-555555555555@10.0.2.2:18080?type=tcp&security=none&encryption=invalid-fixture-encryption#Unknown-fixture'
                 body += b'\nvless://11111111-2222-3333-4444-555555555555@10.0.2.2:18082?type=tcp&security=none#No-response-fixture'
+            elif self.path == '/subscription-partial':
+                body += b'\nopaque unsupported profile'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()

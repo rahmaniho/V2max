@@ -23,7 +23,10 @@ internal object NativeDelay {
         if (!reason.startsWith("Get \"")) return INDETERMINATE
         val detail = reason.substringAfter("\": ", "").lowercase(java.util.Locale.ROOT)
         if (detail.isEmpty()) return INDETERMINATE
-        val noResponse = detail == "eof" || listOf(
+        // Xray's in-process dispatcher reports a closed proxy pipe when the
+        // remote outbound cannot be reached. Android's real native fixture
+        // produces this exact GET error for a refused server endpoint.
+        val noResponse = detail == "eof" || detail == "io: read/write on closed pipe" || listOf(
             "unexpected eof", "i/o timeout", "deadline exceeded", "connection refused",
             "connection reset", "broken pipe", "no such host", "network is unreachable",
             "no route to host", "connection timed out", "host is down"

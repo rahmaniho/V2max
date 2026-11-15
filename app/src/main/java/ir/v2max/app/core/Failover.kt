@@ -80,7 +80,7 @@ object Failover {
                 if (configs.isEmpty()) continue
                 if (Repo.commitSubscriptionRefresh(
                         sub, configs, result.upload, result.download, result.total, result.expireAt,
-                        automaticPermit = permit
+                        automaticPermit = permit, preserveOmitted = !SubscriptionPolicy.isComplete(result, configs)
                     )) refreshed = true
             }
             // A user who turns refresh back on can retry without waiting for an

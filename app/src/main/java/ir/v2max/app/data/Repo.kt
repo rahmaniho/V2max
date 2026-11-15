@@ -326,17 +326,26 @@ object Repo {
      * کانفیگ‌های موجود (بر اساس اثر انگشت) با حفظ شناسه، علاقه‌مندی و نتیجه تست نگه داشته می‌شوند.
      */
     @Synchronized
-    fun replaceSubscriptionServers(subId: String, incoming: List<ServerConfig>, deferBuiltInCap: Boolean = false) {
+    fun replaceSubscriptionServers(
+        subId: String, incoming: List<ServerConfig>, deferBuiltInCap: Boolean = false,
+        preserveOmitted: Boolean = false
+    ) {
         if (isStorageReadOnly()) return
         // A delayed HTTP response must not resurrect a subscription removed by the user.
-        if (_subs.value.none { it.id == subId }) return
+        val source = _subs.value.firstOrNull { it.id == subId } ?: return
         val existing = _servers.value.filter { it.subId == subId }
+        // A partial response cannot prove its omitted members disappeared. Keep
+        // the existing personal list; for public feeds bound the old unverified
+        // history by its capacity policy while protecting verified profiles.
+        // This per-source cap does not touch newly received profiles that are
+        // waiting for startup's health test, even across multiple sources.
+        val retained = if (!preserveOmitted) emptyList() else if (source.builtIn) capped(existing) else existing
         val merged = SubscriptionMerger.merge(
             existing = existing,
             incoming = incoming,
             liveId = tunnel.value.serverId.takeIf { tunnel.value.isActive },
             protectedIds = editingServerIds.keys + existing.filter { it.favorite }.map { it.id } +
-                setOf(_selectedId.value).filter { it.isNotBlank() },
+                retained.map { it.id } + setOf(_selectedId.value).filter { it.isNotBlank() },
             fingerprintOf = { it.fingerprint() },
             isUsable = { it.hasUsableEndpoint() },
             idOf = { it.id },
@@ -637,9 +646,11 @@ object Repo {
         total: Long,
         expireAt: Long,
         expectedEpoch: Long? = null,
-        automaticPermit: AutomaticRefreshPermit? = null
+        automaticPermit: AutomaticRefreshPermit? = null,
+        preserveOmitted: Boolean = false
     ): Boolean = commitSubscriptionRefreshSnapshot(
-        expected, incoming, upload, download, total, expireAt, expectedEpoch, automaticPermit
+        expected, incoming, upload, download, total, expireAt, expectedEpoch, automaticPermit,
+        preserveOmitted = preserveOmitted
     ) != null
 
     /** Return the actual committed revision atomically, not a later concurrent refresh. */
@@ -654,7 +665,8 @@ object Repo {
         expectedEpoch: Long? = null,
         automaticPermit: AutomaticRefreshPermit? = null,
         deferBuiltInCap: Boolean = false,
-        startupToken: Long? = null
+        startupToken: Long? = null,
+        preserveOmitted: Boolean = false
     ): Subscription? {
         if (isStorageReadOnly() || (expectedEpoch != null && expectedEpoch != dataEpoch) ||
             (startupToken != null && startupToken != startupHealthEpoch) ||
@@ -662,7 +674,9 @@ object Repo {
         val current = subById(expected.id) ?: return null
         if (!sameRefreshSource(current, expected) || incoming.isEmpty()) return null
         val prepared = incoming.map { it.copy(subId = current.id) }
-        replaceSubscriptionServers(current.id, prepared, deferBuiltInCap = deferBuiltInCap)
+        replaceSubscriptionServers(
+            current.id, prepared, deferBuiltInCap = deferBuiltInCap, preserveOmitted = preserveOmitted
+        )
         val revision = current.copy(
             // Two successful responses in the same millisecond still have distinct revisions.
             updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1),

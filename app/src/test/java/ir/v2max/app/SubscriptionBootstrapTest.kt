@@ -80,6 +80,25 @@ class SubscriptionBootstrapTest {
         assertEquals(public.maxConfigs, SubscriptionPolicy.candidates(Subscription(builtIn = true, url = public.url), invalidFirst).size)
     }
 
+    @Test fun `completeness requires a fully parsed and unfiltered successful feed`() {
+        val sub = Subscription(url = "https://example.org/sub")
+        val valid = ServerConfig(address = "valid.example.org")
+        val invalid = ServerConfig(address = "127.0.0.1")
+        val complete = SubscriptionFetcher.Result(configs = listOf(valid))
+        assertTrue(SubscriptionPolicy.isComplete(complete, SubscriptionPolicy.candidates(sub, complete.configs)))
+        val filtered = SubscriptionFetcher.Result(configs = listOf(valid, invalid))
+        assertFalse(SubscriptionPolicy.isComplete(filtered, SubscriptionPolicy.candidates(sub, filtered.configs)))
+        assertFalse(SubscriptionPolicy.isComplete(complete.copy(fullyParsed = false), listOf(valid)))
+        assertFalse(SubscriptionPolicy.isComplete(complete.copy(error = "failed"), listOf(valid)))
+
+        val public = PublicSources.DEFAULT.first()
+        val capped = SubscriptionFetcher.Result(configs = (0..public.maxConfigs).map {
+            ServerConfig(address = "host$it.example.org")
+        })
+        val builtIn = Subscription(builtIn = true, url = public.url)
+        assertFalse(SubscriptionPolicy.isComplete(capped, SubscriptionPolicy.candidates(builtIn, capped.configs)))
+    }
+
     @Test fun `personal subscriptions and unknown URLs never go to third party mirrors`() {
         val known = PublicSources.DEFAULT.first().url
         val privateUrl = "https://raw.githubusercontent.com/me/private/main/secret-token/sub.txt?token=secret"

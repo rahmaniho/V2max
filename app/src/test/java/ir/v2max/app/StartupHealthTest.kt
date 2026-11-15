@@ -151,6 +151,48 @@ class StartupHealthTest {
         assertEquals(0, Repo.subById(unknownSource.id)?.healthFailureChecks)
     }
 
+    @Test fun `partial refresh retains omitted personal profiles but a complete refresh can retire them`() {
+        val source = sub()
+        val healthy = server("previous-healthy").copy(realPing = 42, testedUrl = ping.url, testedAt = start)
+        val unknown = server("previous-unknown")
+        val selected = server("standalone", "")
+        val received = server("received")
+        assertTrue(Repo.addSubscription(source))
+        listOf(healthy, unknown, selected).forEach(Repo::updateServer)
+        Repo.setSelected(selected.id)
+
+        val partial = Repo.commitSubscriptionRefreshSnapshot(
+            source, listOf(received), 0, 0, 0, 0, preserveOmitted = true
+        )
+        assertNotNull(partial)
+        assertEquals(42, Repo.serverById(healthy.id)?.realPing)
+        assertNotNull("An omitted, unmeasured personal profile is not proof of removal", Repo.serverById(unknown.id))
+        assertNotNull(Repo.serverById(received.id))
+        assertEquals(1, partial?.count) // Metadata counts received members, not retained history.
+
+        assertNotNull(Repo.commitSubscriptionRefreshSnapshot(
+            requireNotNull(partial), listOf(received.copy(name = "updated")), 0, 0, 0, 0
+        ))
+        assertNull("A complete feed may retire an unprotected omitted profile", Repo.serverById(healthy.id))
+        assertNull(Repo.serverById(unknown.id))
+        assertEquals("updated", Repo.serverById(received.id)?.name)
+        assertNotNull(Repo.serverById(selected.id))
+    }
+
+    @Test fun `partial public refresh bounds unverified history without losing successful profiles`() {
+        val source = requireNotNull(Repo.addBuiltInSource(PublicSources.DEFAULT.first().url))
+        val old = (0..710).map { server("old-$it", source.id) }
+        val healthy = server("previous-healthy", source.id).copy(realPing = 42, testedUrl = ping.url, testedAt = start)
+        (old + healthy).forEach(Repo::updateServer)
+        val received = server("received", source.id)
+        assertNotNull(Repo.commitSubscriptionRefreshSnapshot(
+            source, listOf(received), 0, 0, 0, 0, deferBuiltInCap = true, preserveOmitted = true
+        ))
+        assertEquals("History is bounded before adding newly received profiles", 701, Repo.servers.value.size)
+        assertNotNull("A verified old public profile is protected from the history cap", Repo.serverById(healthy.id))
+        assertNotNull("Newly received profiles must remain available for the startup test", Repo.serverById(received.id))
+    }
+
     @Test fun `a truncated source cannot accrue negative evidence even when every returned member fails`() {
         val source = sub()
         val profile = server("only-received")

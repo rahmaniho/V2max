@@ -28,7 +28,7 @@ elif args[:3] == ['shell', 'pm', 'clear-permission-flags'] and int(os.environ.ge
     print('Unknown command: clear-permission-flags')
     sys.exit(1)
 elif args[:3] == ['shell', 'am', 'instrument']:
-    print(os.environ.get('MOCK_RESULT', 'OK (11 tests)'))
+    print(os.environ.get('MOCK_RESULT', 'OK (12 tests)'))
     sys.exit(int(os.environ.get('MOCK_INSTRUMENT_EXIT', '0')))
 elif args[:4] == ['logcat', '-b', 'crash', '-d']:
     print(os.environ.get('MOCK_CRASH', ''))
@@ -83,7 +83,7 @@ class AndroidUiSmokeRunnerTest(unittest.TestCase):
         self.assertFalse(any(c[:3] == ['shell', 'am', 'instrument'] for c in commands))
 
     def test_incomplete_run_and_crash_do_not_pass(self):
-        result, commands = self.run_smoke(result='OK (10 tests)', crash='FATAL EXCEPTION: main\nexample crash')
+        result, commands = self.run_smoke(result='OK (11 tests)', crash='FATAL EXCEPTION: main\nexample crash')
         self.assertNotEqual(0, result.returncode)
         self.assertIn('Android UI process crash', result.stdout)
         self.assertFalse('::notice title=Android UI connection smoke' in result.stdout)
