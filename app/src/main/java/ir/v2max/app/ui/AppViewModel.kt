@@ -17,26 +17,21 @@ import ir.v2max.app.net.UpdateCoordinator
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.net.StartupMaintenance
 import ir.v2max.app.net.SubscriptionPolicy
+import ir.v2max.app.net.SubscriptionRefresh
 import ir.v2max.app.net.SubscriptionSyncGate
 import ir.v2max.core.format.Format
-import ir.v2max.core.model.PublicSources
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -92,9 +87,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Importing data does not cancel an unrelated VPN or its recovery. */
     private fun cancelStartup() {
-        // Invalidation and cleanup publication share Repo's lock, so a user
-        // action cannot race an obsolete result into deleting a profile.
-        Repo.invalidateStartupHealth()
+        // Invalidate and cancel all housekeeping (including a periodic or manual
+        // refresh) so a newer user action or recovery does not wait behind it.
+        // An unrelated live VPN itself is not stopped.
+        StartupMaintenance.cancelAll()
         startupJob?.cancel()
         startupJob = null
     }
@@ -155,9 +151,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         // A service action may have invalidated startup just
                         // before this job registered or acquired the gate.
                         if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
-                        val refreshed = syncAllLocked(
-                            announce = false, automaticPermit = permit, collectSources = true, startupToken = token
-                        )
+                        val refreshed = refreshLocked(Repo.subs.value, permit.dataEpoch, token, permit)
                         currentCoroutineContext().ensureActive()
                         if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
                         if (refreshed.sources.isEmpty()) {
@@ -167,7 +161,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                         Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
                         val checked = try {
                             withContext(Dispatchers.IO) {
-                                StartupMaintenance.check(app, refreshed.sources, permit, token) { phase, done, total ->
+                                StartupMaintenance.finish(app, refreshed.sources, permit.dataEpoch, permit, token) { phase, done, total ->
                                     Repo.sync.value = Repo.sync.value.copy(
                                         done = done, total = total,
                                         message = if (phase.startsWith("پیش")) "پیش‌بررسی سرورهای اشتراک…"
@@ -507,7 +501,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             showMessage("آدرس اشتراک را وارد کنید")
             return
         }
+        val existing = Repo.subs.value.firstOrNull { it.url.trim() == cleanUrl }
+        if (existing != null) {
+            showMessage("این اشتراک قبلاً اضافه شده است؛ در حال به‌روزرسانی…")
+            refreshSubscription(existing.id)
+            return
+        }
         val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
             _busy.value = true
             val result = try {
@@ -515,8 +516,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _busy.value = false
             }
+            currentCoroutineContext().ensureActive()
             if (!result.ok) {
                 showMessage(result.error)
+                return@launch
+            }
+            val configs = result.configs.filter { it.hasUsableEndpoint() }
+            if (configs.isEmpty()) {
+                showMessage("کانفیگ قابل استفاده‌ای در اشتراک یافت نشد")
                 return@launch
             }
             val title = name.trim().ifBlank {
@@ -526,68 +533,134 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 name = title,
                 url = cleanUrl,
                 updatedAt = System.currentTimeMillis(),
-                count = result.configs.size,
+                count = configs.size,
                 upload = result.upload,
                 download = result.download,
                 total = result.total,
                 expireAt = result.expireAt
             )
-            if (!Repo.addFetchedSubscription(sub, result.configs, epoch)) {
-                if (requireWritableData()) showMessage("داده‌ها هنگام دریافت تغییر کردند؛ دوباره تلاش کنید")
+            // Commit the import immediately, even while an unrelated VPN is
+            // recovering. A racing identical import cannot add a second source.
+            if (!Repo.addFetchedSubscription(sub, configs, epoch, deferBuiltInCap = true)) {
+                if (Repo.subs.value.any { it.url.trim() == cleanUrl }) showMessage("این اشتراک قبلاً اضافه شده است")
+                else if (requireWritableData()) showMessage("داده‌ها هنگام دریافت تغییر کردند؛ دوباره تلاش کنید")
                 return@launch
             }
-            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد؛ برای اتصال، سرور را انتخاب کنید")
-            // A completed download is not permission to replace a live or recovering tunnel.
+            showMessage("${Format.number(configs.size)} کانفیگ دریافت شد؛ موارد نامشخص تا سنجش حفظ می‌شوند")
+            // A later user action may supersede housekeeping, but not the import
+            // or the live/recovering tunnel. Never start a late scan in that case.
+            if (!Repo.startupHealthIsCurrent(token) || epoch != Repo.currentDataEpoch()) return@launch
+            val source = Repo.StartupSourceSnapshot(
+                sub.copy(), configs.mapTo(HashSet()) { it.fingerprint() }, SubscriptionPolicy.isComplete(result, configs)
+            )
+            StartupMaintenance.track(token) {
+                SubscriptionSyncGate.mutex.withLock {
+                    if (!Repo.startupHealthIsCurrent(token)) return@withLock
+                    Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                    try {
+                        val checked = withContext(Dispatchers.IO) {
+                            StartupMaintenance.finish(getApplication(), listOf(source), epoch, null, token)
+                        }
+                        currentCoroutineContext().ensureActive()
+                        showMessage(refreshSummary(SyncResult(1, Repo.servers.value.size, configs.size, health = checked)))
+                    } finally {
+                        Repo.sync.value = Repo.sync.value.copy(running = false)
+                    }
+                }
+            }
+            // A completed download or health check is never permission to connect.
         })
     }
 
-    /** Apply only a still-existing source and preserve user subscriptions without a count cap. */
-    private fun applyFetchedSubscription(
-        sub: Subscription, result: SubscriptionFetcher.Result, epoch: Long,
-        automaticPermit: Repo.AutomaticRefreshPermit? = null,
-        onCommitted: ((Repo.StartupSourceSnapshot) -> Unit)? = null,
-        startupToken: Long? = null
-    ): Int {
-        if (!result.ok) return 0
-        val configs = SubscriptionPolicy.candidates(sub, result.configs)
-        if (configs.isEmpty()) return 0
-        val complete = SubscriptionPolicy.isComplete(result, configs)
-        val revision = Repo.commitSubscriptionRefreshSnapshot(
-            sub, configs, result.upload, result.download, result.total, result.expireAt,
-            expectedEpoch = epoch, automaticPermit = automaticPermit, deferBuiltInCap = onCommitted != null,
-            startupToken = startupToken, preserveOmitted = !complete
-        ) ?: return 0
-        if (onCommitted != null) {
-            onCommitted(Repo.StartupSourceSnapshot(
-                revision, configs.mapTo(HashSet()) { it.fingerprint() }, complete = complete
-            ))
+    private data class SyncResult(
+        val updated: Int = 0,
+        val total: Int = 0,
+        val received: Int = 0,
+        val firstError: String = "",
+        val health: StartupMaintenance.Result? = null
+    )
+
+    /** The caller owns SubscriptionSyncGate through the later health pass. */
+    private suspend fun refreshLocked(
+        targets: List<Subscription>, epoch: Long, token: Long,
+        permit: Repo.AutomaticRefreshPermit? = null
+    ): SubscriptionRefresh.Result {
+        Repo.sync.value = ir.v2max.app.data.SyncState(
+            running = true, total = targets.size,
+            message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
+        )
+        return SubscriptionRefresh.run(targets, epoch, token, permit) { done, total ->
+            Repo.sync.value = Repo.sync.value.copy(
+                done = done, total = total,
+                message = "دریافت منابع (${Format.number(done)}/${Format.number(total)})"
+            )
         }
-        return configs.size
+    }
+
+    private suspend fun refreshManually(
+        targets: List<Subscription>, epoch: Long, token: Long
+    ): SyncResult = StartupMaintenance.track(token) {
+        SubscriptionSyncGate.mutex.withLock {
+            try {
+                val fetched = refreshLocked(targets, epoch, token)
+                currentCoroutineContext().ensureActive()
+                if (fetched.sources.isEmpty()) {
+                    return@withLock SyncResult(total = Repo.servers.value.size, firstError = fetched.firstError)
+                }
+                Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                val checked = withContext(Dispatchers.IO) {
+                    StartupMaintenance.finish(getApplication(), fetched.sources, epoch, null, token) { phase, done, total ->
+                        Repo.sync.value = Repo.sync.value.copy(
+                            done = done, total = total,
+                            message = if (phase.startsWith("پیش")) "پیش‌بررسی سرورهای اشتراک…"
+                                else "سنجش واقعی سرورهای اشتراک…"
+                        )
+                    }
+                }
+                SyncResult(fetched.updated, Repo.servers.value.size, fetched.received, fetched.firstError, checked)
+            } finally {
+                // The gate owner alone can clear its indicator; cancellation of an
+                // older refresh cannot hide a newer one.
+                Repo.sync.value = Repo.sync.value.copy(running = false)
+            }
+        }
+    }
+
+    private fun refreshSummary(result: SyncResult): String {
+        if (result.updated == 0) return result.firstError.ifBlank {
+            "به‌روزرسانی انجام نشد یا اشتراک تغییر کرده است؛ فهرست فعلی حفظ شد"
+        }
+        val prefix = "${Format.number(result.updated)} منبع به‌روزرسانی شد · ${Format.number(result.total)} کانفیگ"
+        val checked = result.health ?: return "$prefix؛ سنجش انجام نشد"
+        val duplicates = if (checked.duplicatesRemoved > 0)
+            " · ${Format.number(checked.duplicatesRemoved)} تکراری حذف شد" else ""
+        val detail = when (checked.status) {
+            StartupMaintenance.Status.COMPLETE -> when {
+                checked.health.healthy == 0 -> "؛ هیچ تست واقعی موفق نشد و سرورهای نامطمئن حفظ شدند"
+                checked.health.unknownSources > 0 -> "؛ نتیجهٔ برخی تست‌ها نامشخص بود و حفظ شدند"
+                checked.health.removed > 0 -> " · ${Format.number(checked.health.removed)} کانفیگ بی‌پاسخ حذف شد"
+                else -> ""
+            }
+            StartupMaintenance.Status.NO_NETWORK -> "؛ شبکه برای سنجش در دسترس نبود و کانفیگ‌ها حفظ شدند"
+            StartupMaintenance.Status.NO_PROFILES -> "؛ کانفیگی برای سنجش در دسترس نبود"
+            StartupMaintenance.Status.INCOMPLETE, StartupMaintenance.Status.CHANGED ->
+                "؛ سنجش کامل نشد و نتایج نامطمئن حفظ شدند"
+        }
+        return prefix + duplicates + detail
     }
 
     fun refreshSubscription(id: String) {
         if (!requireWritableData()) return
         cancelStartup()
         val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         val sub = Repo.subById(id) ?: return
         trackDataJob(viewModelScope.launch(errorHandler) {
             _busy.value = true
-            val result = try {
-                withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
+            try {
+                showMessage(refreshSummary(refreshManually(listOf(sub), epoch, token)))
             } finally {
                 _busy.value = false
-            }
-            if (!result.ok) {
-                Repo.recordSubscriptionRefreshError(sub, result.error, expectedEpoch = epoch)
-                showMessage(result.error)
-                return@launch
-            }
-            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result, epoch) }
-            if (count == 0) {
-                Repo.recordSubscriptionRefreshError(sub, "کانفیگ قابل استفاده‌ای دریافت نشد", expectedEpoch = epoch)
-                showMessage("کانفیگ قابل استفاده‌ای دریافت نشد یا اشتراک هم‌زمان تغییر کرد؛ فهرست فعلی حفظ شد")
-            } else {
-                showMessage("اشتراک به‌روزرسانی شد؛ ${Format.number(count)} کانفیگ دریافت شد")
             }
         })
     }
@@ -599,116 +672,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
         }
+        // Capture both before scheduling so a newer user/service action wins.
+        val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val (updated, configs) = syncAll(announce = !silent)
-            if (!silent) {
-                showMessage(
-                    if (updated == 0) "به‌روزرسانی ناموفق بود؛ اتصال اینترنت را بررسی کنید"
-                    else "${Format.number(updated)} منبع به‌روزرسانی شد · ${Format.number(configs)} کانفیگ"
-                )
-            }
+            syncAll(announce = !silent, epoch = epoch, token = token)
         })
     }
 
-    /**
-     * دریافت موازی همه‌ی اشتراک‌ها (حداکثر ۶ درخواست همزمان)، حذف تکراری‌ها
-     * و ذخیره‌ی نتیجه.
-     * @return (تعداد منابع موفق، تعداد کل کانفیگ‌ها)
-     */
-    private data class SyncResult(
-        val updated: Int, val total: Int, val sources: List<Repo.StartupSourceSnapshot> = emptyList()
-    )
-
-    private suspend fun syncAll(
-        announce: Boolean, automaticPermit: Repo.AutomaticRefreshPermit? = null
-    ): SyncResult = SubscriptionSyncGate.mutex.withLock {
-        syncAllLocked(announce, automaticPermit)
-    }
-
-    /** Caller owns SubscriptionSyncGate through the subsequent startup health check. */
-    private suspend fun syncAllLocked(
-        announce: Boolean, automaticPermit: Repo.AutomaticRefreshPermit? = null,
-        collectSources: Boolean = false, startupToken: Long? = null
-    ): SyncResult {
-        if (Repo.isStorageReadOnly() || (startupToken != null && !Repo.startupHealthIsCurrent(startupToken)) ||
-            (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit))) {
-            return SyncResult(0, Repo.servers.value.size)
-        }
-        val epoch = automaticPermit?.dataEpoch ?: Repo.currentDataEpoch()
-        val targets = Repo.subs.value.filter { !it.builtIn || PublicSources.forUrl(it.url) != null }
-        if (targets.isEmpty()) return SyncResult(0, Repo.servers.value.size)
-
-        Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = true, done = 0, total = targets.size,
-            message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
-        )
-        val semaphore = Semaphore(6)
-        val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val okCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val sourceSnapshots = java.util.concurrent.ConcurrentHashMap<String, Repo.StartupSourceSnapshot>()
-        Repo.suspendPersist(true)
-        try {
-            coroutineScope {
-                targets.map { sub ->
-                    async(Dispatchers.IO) {
-                        val result = semaphore.withPermit {
-                            if ((startupToken != null && !Repo.startupHealthIsCurrent(startupToken)) ||
-                                (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit))) return@async
-                            SubscriptionPolicy.fetch(sub)
-                        }
-                        currentCoroutineContext().ensureActive()
-                        if ((startupToken != null && !Repo.startupHealthIsCurrent(startupToken)) ||
-                            (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit))) return@async
-                        val capture: ((Repo.StartupSourceSnapshot) -> Unit)? = if (collectSources) {
-                            { snapshot -> sourceSnapshots[sub.id] = snapshot }
-                        } else null
-                        val count = if (result.ok) {
-                            applyFetchedSubscription(sub, result, epoch, automaticPermit, capture, startupToken)
-                        } else 0
-                        if (count > 0) {
-                            okCount.incrementAndGet()
-                        } else {
-                            val error = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }
-                            Repo.recordSubscriptionRefreshError(
-                                sub, error, expectedEpoch = epoch, automaticPermit = automaticPermit, startupToken = startupToken
-                            )
-                        }
-                        val done = doneCount.incrementAndGet()
-                        Repo.sync.value = Repo.sync.value.copy(
-                            done = done,
-                            message = "دریافت منابع (${Format.number(done)}/${Format.number(targets.size)})"
-                        )
-                    }
-                }.awaitAll()
-            }
-        } finally {
-            Repo.suspendPersist(false)
-            // A cancellation must not lose results already applied in memory.
-            withContext(NonCancellable + Dispatchers.IO) { Repo.persistNow() }
-            // Startup owns this indicator through its health pass and clears it
-            // in its outer finally, including on cancellation or exceptions.
-            if (!collectSources) Repo.sync.value = Repo.sync.value.copy(running = false)
-        }
-
-        val removed = withContext(Dispatchers.IO) {
-            // Keep a representative owned by every just-refreshed source until
-            // its health is checked. Global dedupe could otherwise leave only a
-            // standalone or old-source duplicate and make the scan impossible.
-            if (okCount.get() == 0 || collectSources) 0 else {
-                val n = Repo.dedupeAllServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-                Repo.trimBuiltInServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-                Repo.persistNow()
-                n
-            }
-        }
-        val total = Repo.servers.value.size
-        Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = collectSources, done = targets.size, total = targets.size,
-            message = "${Format.number(okCount.get())} منبع به‌روزرسانی شد · ${Format.number(total)} کانفیگ" +
-                if (removed > 0) " (${Format.number(removed)} تکراری حذف شد)" else ""
-        )
-        if (announce) showMessage(Repo.sync.value.message)
-        return SyncResult(okCount.get(), total, sourceSnapshots.values.toList())
+    private suspend fun syncAll(announce: Boolean, epoch: Long, token: Long): SyncResult {
+        val result = refreshManually(Repo.subs.value, epoch, token)
+        if (announce) showMessage(refreshSummary(result))
+        return result
     }
 
     // ------------------------------------------------------- منابع رایگان
@@ -724,15 +699,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         showMessage("منبع اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val result = withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
-            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result, epoch) }
-            if (count == 0) {
-                if (!result.ok) Repo.recordSubscriptionRefreshError(sub, result.error, expectedEpoch = epoch)
-                showMessage(if (!result.ok) result.error else "کانفیگ قابل استفاده‌ای دریافت نشد یا منبع تغییر کرده است")
-            } else {
-                showMessage("${Format.number(count)} کانفیگ دریافت شد؛ برای اتصال، سرور را انتخاب کنید")
-            }
+            showMessage(refreshSummary(refreshManually(listOf(sub), epoch, token)))
         })
     }
 
@@ -746,10 +715,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val (updated, _) = syncAll(announce = false)
-            showMessage(if (updated > 0) "${Format.number(updated)} منبع به‌روزرسانی شد؛ سرور دلخواه را انتخاب کنید"
-                else "دریافت منابع ناموفق بود؛ برای تلاش مجدد، اشتراک‌ها را به‌روزرسانی کنید")
+            showMessage(refreshSummary(syncAll(announce = false, epoch = epoch, token = token)))
         })
     }
 
@@ -758,7 +727,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!updateSettings { it.copy(useFreeSources = enabled) }) return
         if (enabled) {
             val added = Repo.ensureBuiltInSources(requireEnabled = true)
-            if (added > 0) trackDataJob(viewModelScope.launch(errorHandler) { syncAll(announce = false) })
+            if (added > 0) {
+                cancelStartup()
+                val epoch = Repo.currentDataEpoch()
+                val token = Repo.startupHealthToken()
+                trackDataJob(viewModelScope.launch(errorHandler) { syncAll(announce = false, epoch = epoch, token = token) })
+            }
             showMessage(if (added > 0) "${Format.number(added)} منبع رایگان فعال شد" else "منابع رایگان فعال است")
         } else {
             Repo.removeBuiltInSources()

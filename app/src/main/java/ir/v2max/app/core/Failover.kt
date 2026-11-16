@@ -5,7 +5,7 @@ import ir.v2max.app.data.Repo
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.StartupMaintenance
-import ir.v2max.app.net.SubscriptionPolicy
+import ir.v2max.app.net.SubscriptionRefresh
 import ir.v2max.app.net.SubscriptionSyncGate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -59,40 +59,38 @@ object Failover {
         }
 
     /** Refresh stale subscriptions once if no existing configuration succeeds. */
-    private suspend fun refreshSubscriptions(): Boolean {
+    private suspend fun refreshSubscriptions(context: Context): Boolean {
         StartupMaintenance.cancelAll()
+        val token = Repo.startupHealthToken()
         return SubscriptionSyncGate.mutex.withLock {
             val now = System.currentTimeMillis()
-            if (now - lastRefreshAt < REFRESH_INTERVAL_MS) return@withLock false
+            if (!Repo.startupHealthIsCurrent(token) || now - lastRefreshAt < REFRESH_INTERVAL_MS) return@withLock false
             val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.FAILOVER) ?: return@withLock false
             lastRefreshAt = now
-            val sources = Repo.subs.value.filter { now - it.updatedAt > REFRESH_INTERVAL_MS }
-                .sortedBy { it.builtIn }.take(6)
-            var refreshed = false
-            for (sub in sources) {
+            try {
+                val sources = Repo.subs.value.filter { now - it.updatedAt > REFRESH_INTERVAL_MS }
+                    .sortedBy { it.builtIn }.take(6)
+                val fetched = SubscriptionRefresh.run(sources, permit.dataEpoch, token, permit, parallelism = 4)
                 currentCoroutineContext().ensureActive()
-                if (!Repo.automaticRefreshIsCurrent(permit)) break
-                val result = SubscriptionPolicy.fetch(sub)
-                currentCoroutineContext().ensureActive()
-                if (!Repo.automaticRefreshIsCurrent(permit)) break
-                if (!result.ok) continue
-                val configs = SubscriptionPolicy.candidates(sub, result.configs)
-                if (configs.isEmpty()) continue
-                if (Repo.commitSubscriptionRefresh(
-                        sub, configs, result.upload, result.download, result.total, result.expireAt,
-                        automaticPermit = permit, preserveOmitted = !SubscriptionPolicy.isComplete(result, configs)
-                    )) refreshed = true
+                if (fetched.sources.isNotEmpty() && Repo.startupHealthIsCurrent(token) &&
+                    Repo.automaticRefreshIsCurrent(permit)) {
+                    // Cleanup is guarded and never interrupts the existing TUN.
+                    // A separate preflight below still verifies all requested
+                    // connection tests before any handover is attempted.
+                    StartupMaintenance.finish(context, fetched.sources, permit.dataEpoch, permit, token)
+                }
+                fetched.sources.isNotEmpty() && Repo.automaticRefreshIsCurrent(permit)
+            } finally {
+                // A user who turns refresh back on can retry without waiting for
+                // an obsolete attempt's ten-minute throttle.
+                if (!Repo.automaticRefreshIsCurrent(permit) || !Repo.startupHealthIsCurrent(token)) lastRefreshAt = 0L
             }
-            // A user who turns refresh back on can retry without waiting for an
-            // obsolete, cancelled attempt's ten-minute throttle.
-            if (!Repo.automaticRefreshIsCurrent(permit)) lastRefreshAt = 0L
-            refreshed
         }
     }
 
     internal suspend fun findReplacement(context: Context, currentId: String?): VerifiedSelection? {
         probeAsync(context, currentId = currentId)?.let { return it }
-        if (refreshSubscriptions()) return probeAsync(context, currentId = currentId)
+        if (refreshSubscriptions(context)) return probeAsync(context, currentId = currentId)
         return null
     }
 }

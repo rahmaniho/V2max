@@ -12,6 +12,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import ir.v2max.app.core.Failover
 import ir.v2max.app.core.PreflightTickets
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
@@ -27,9 +31,11 @@ import ir.v2max.app.data.UpdateInfo
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbeResult
 import ir.v2max.app.net.CarrierProbe
+import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.SpeedTester
 import ir.v2max.app.net.UpdateInstaller
 import ir.v2max.app.service.Notifier
+import ir.v2max.app.service.SubSyncWorker
 import ir.v2max.app.service.V2maxVpnService
 import ir.v2max.app.service.V2maxWidget
 import ir.v2max.app.service.WidgetActionReceiver
@@ -48,6 +54,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.TimeUnit
 
 /**
  * CI runs an isolated Xray server on the emulator host. 198.51.100.1 has no direct
@@ -224,6 +231,129 @@ class AndroidVpnSmokeTest {
             Repo.tunnel.value = previousTunnel
             Repo.removeSubscription(sub.id)
             if (previousSelection.isBlank() || Repo.serverById(previousSelection) != null) Repo.setSelected(previousSelection)
+        }
+    }
+
+    @Test fun manualBulkAndWorkerRefreshUseRealHealthBeforeDeduplication() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        Repo.init(context)
+        assertTrue("Fixture requires no active VPN", !Repo.tunnel.value.isActive && !V2maxVpnService.running)
+        val previousSettings = Repo.settings.value.copy()
+        val previousSelection = Repo.selectedId.value
+        val previousSources = Repo.subs.value.map { it.copy() }
+        val previousServers = Repo.servers.value.map { it.copy() }
+        val source = Subscription(
+            id = "refresh-health-fixture", name = "Mixed local fixture", updatedAt = System.currentTimeMillis(),
+            url = "http://10.0.2.2:18081/subscription-mixed"
+        )
+        // This is intentionally identical to the good feed member. A selected
+        // personal copy must survive dedupe and receive the real measurement.
+        val personal = LinkParser.parseAll(
+            "vless://22222222-3333-4444-5555-666666666666@10.0.2.2:18080?type=tcp&security=none#personal"
+        ).single().copy(id = "refresh-personal-fixture", subId = "")
+        val store = ViewModelStore()
+        lateinit var vm: AppViewModel
+
+        fun awaitUiRefresh(previousRevision: Long) {
+            val deadline = SystemClock.elapsedRealtime() + 95_000
+            while (((Repo.subById(source.id)?.updatedAt ?: 0L) <= previousRevision || Repo.sync.value.running) &&
+                SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+            assertTrue("The subscription did not refresh", (Repo.subById(source.id)?.updatedAt ?: 0L) > previousRevision)
+            assertTrue("Subscription health did not finish", !Repo.sync.value.running)
+        }
+
+        fun assertCleaned(stage: String) {
+            val kept = requireNotNull(Repo.serverById(personal.id))
+            assertEquals("$stage changed the user's selected server", personal.id, Repo.selectedId.value)
+            assertTrue("$stage did not publish a fresh real Xray result", kept.recordedRealPing() > 0)
+            assertEquals("$stage did not collapse the duplicate", 1,
+                Repo.servers.value.count { it.fingerprint() == personal.fingerprint() })
+            val fromFeed = Repo.servers.value.filter { it.subId == source.id }
+            assertTrue("$stage removed an indeterminate native setup failure",
+                fromFeed.any { it.method == "invalid-fixture-encryption" })
+            assertTrue("$stage retained a confirmed unanswered server", fromFeed.none { it.port == 18082 })
+            assertTrue("$stage unexpectedly started a VPN", !Repo.tunnel.value.isActive && !V2maxVpnService.running)
+        }
+
+        fun clearMeasurement() {
+            val current = requireNotNull(Repo.serverById(personal.id))
+            Repo.updateServer(current.copy(realPing = -1, googlePing = -1, instagramPing = -1,
+                youtubePing = -1, testedAt = 0L, testedUrl = ""))
+        }
+
+        try {
+            assertTrue(Repo.updateSettings {
+                it.copy(autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false,
+                    autoUpdateCheck = false, useFreeSources = false, deepProbe = false, fragment = false,
+                    balancer = false, multiPing = false, speedTest = false, geoAssets = false,
+                    dropDeadServers = true, routingMode = RoutingMode.GLOBAL,
+                    delayTestUrl = "http://198.51.100.1:18081/probe")
+            })
+            // Isolate the worker's all-source pass without losing the emulator's
+            // prior fixtures; everything is restored in finally.
+            previousSources.forEach { Repo.removeSubscription(it.id) }
+            Repo.removeServers(Repo.servers.value.map { it.id })
+            assertTrue(Repo.addSubscription(source))
+            Repo.updateServer(personal)
+            Repo.setSelected(personal.id)
+            instrumentation.runOnMainSync {
+                val app = context.applicationContext as Application
+                vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
+                vm.refreshSubscription(source.id)
+            }
+            awaitUiRefresh(source.updatedAt)
+            assertCleaned("single")
+
+            clearMeasurement()
+            val beforeBulk = requireNotNull(Repo.subById(source.id)).updatedAt
+            instrumentation.runOnMainSync { vm.refreshAllSubscriptions() }
+            awaitUiRefresh(beforeBulk)
+            assertCleaned("bulk")
+
+            clearMeasurement()
+            val beforeWorker = requireNotNull(Repo.subById(source.id)).updatedAt
+            assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = true) })
+            val request = OneTimeWorkRequestBuilder<SubSyncWorker>().build()
+            val manager = WorkManager.getInstance(context)
+            manager.enqueue(request).result.get(10, TimeUnit.SECONDS)
+            val deadline = SystemClock.elapsedRealtime() + 95_000
+            var info: WorkInfo? = null
+            while (SystemClock.elapsedRealtime() < deadline) {
+                info = manager.getWorkInfoById(request.id).get(5, TimeUnit.SECONDS)
+                if (info?.state?.isFinished == true) break
+                SystemClock.sleep(100)
+            }
+            assertEquals("The periodic refresh worker did not complete", WorkInfo.State.SUCCEEDED, info?.state)
+            assertTrue("The worker did not refresh the source", (Repo.subById(source.id)?.updatedAt ?: 0L) > beforeWorker)
+            assertCleaned("worker")
+
+            // With no working replacement already stored, the real failover
+            // path must refresh, clean, and then perform its own preflight.
+            Repo.removeServer(personal.id)
+            val current = fixture("refresh-current-fixture", 18082)
+            Repo.updateServer(current)
+            Repo.setSelected(current.id)
+            Repo.updateSubscription(requireNotNull(Repo.subById(source.id)).copy(updatedAt = 0L))
+            assertTrue(Repo.updateSettings { it.copy(autoRefreshOnOpen = false, autoUpdateSubs = true) })
+            val replacement = runBlocking { withTimeout(95_000) { Failover.findReplacement(context, current.id) } }
+            assertNotNull("Failover did not obtain a newly verified replacement", replacement)
+            assertTrue("Failover returned no real protocol measurement", requireNotNull(replacement).server().recordedRealPing() > 0)
+            assertTrue("Failover did not refresh the stale source", (Repo.subById(source.id)?.updatedAt ?: 0L) > 0)
+            assertTrue("Failover retained a confirmed unanswered feed member",
+                Repo.servers.value.none { it.subId == source.id && it.port == 18082 })
+            assertTrue("Failover removed an indeterminate setup failure",
+                Repo.servers.value.any { it.subId == source.id && it.method == "invalid-fixture-encryption" })
+            assertTrue("Failover preflight unexpectedly started a VPN", !Repo.tunnel.value.isActive && !V2maxVpnService.running)
+        } finally {
+            instrumentation.runOnMainSync { store.clear() }
+            Repo.removeSubscription(source.id)
+            Repo.removeServer(personal.id)
+            Repo.removeServer("refresh-current-fixture")
+            previousSources.forEach { if (Repo.subById(it.id) == null) Repo.addSubscription(it) }
+            previousServers.forEach(Repo::updateServer)
+            Repo.setSelected(previousSelection)
+            Repo.saveSettings(previousSettings)
         }
     }
 
@@ -636,6 +766,17 @@ class AndroidVpnSmokeTest {
             }
             assertTrue("QR subscription was not imported: ${vm.message.value}",
                 Repo.subs.value.any { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } })
+            val sourceId = requireNotNull(Repo.subs.value.firstOrNull { it.url == url }).id
+            val healthDeadline = SystemClock.elapsedRealtime() + 95_000
+            while (SystemClock.elapsedRealtime() < healthDeadline &&
+                (Repo.sync.value.running || Repo.servers.value.none { it.subId == sourceId && it.recordedRealPing() > 0 })) {
+                assertEquals("Initial subscription health interrupted the VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+                SystemClock.sleep(50)
+            }
+            assertTrue("The imported subscription was not actually checked: ${vm.message.value}",
+                Repo.servers.value.any { it.subId == sourceId && it.recordedRealPing() > 0 } && !Repo.sync.value.running)
+            assertEquals("Subscription health changed the VPN generation", generation, V2maxVpnService.currentActionGeneration())
+            assertTunTraffic(instrumentation)
             instrumentation.runOnMainSync {
                 vm.onQrScanned("vless://11111111-2222-3333-4444-555555555555@$qrHost:443?security=tls#QR")
             }

@@ -8,12 +8,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
-/** Refresh comes first; this is a protocol health check, not permission to connect. */
+/** Refresh comes first; a protocol health check is not permission to connect. */
 internal object StartupMaintenance {
     enum class Status { COMPLETE, NO_NETWORK, NO_PROFILES, INCOMPLETE, CHANGED }
-    data class Result(val status: Status, val health: Repo.StartupHealthResult = Repo.StartupHealthResult())
+    data class Result(
+        val status: Status,
+        val health: Repo.StartupHealthResult = Repo.StartupHealthResult(),
+        val duplicatesRemoved: Int = 0
+    )
 
-    // Register the full refresh + health phase, including time waiting for the
+    // Register every refresh + health phase, including time waiting for the
     // shared sync gate. Recovery must not wait behind thousands of old probes.
     // Handover still waits for any already-started native calls at the barrier.
     private val jobs = HashSet<Job>()
@@ -42,10 +46,45 @@ internal object StartupMaintenance {
         synchronized(jobs) { jobs.toList().forEach { it.cancel() } }
     }
 
-    suspend fun check(
+    /** Finish every successful refresh the same way, even when probing is unavailable. */
+    suspend fun finish(
         context: Context,
         sources: List<Repo.StartupSourceSnapshot>,
-        permit: Repo.AutomaticRefreshPermit,
+        epoch: Long,
+        permit: Repo.AutomaticRefreshPermit?,
+        token: Long,
+        onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> }
+    ): Result = finishPrepared(sources, epoch, permit, token) {
+        check(context, sources, permit, token, onPhase)
+    }
+
+    /** Injectable boundary: tests can exercise finalization without Android networking. */
+    internal suspend fun finishPrepared(
+        sources: List<Repo.StartupSourceSnapshot>,
+        epoch: Long,
+        permit: Repo.AutomaticRefreshPermit?,
+        token: Long,
+        check: suspend () -> Result
+    ): Result {
+        if (sources.isEmpty()) return Result(Status.NO_PROFILES)
+        val checked = try {
+            check()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A broken probe is indeterminate, never proof that a server is dead.
+            Result(Status.INCOMPLETE)
+        }
+        currentCoroutineContext().ensureActive()
+        val finalized = Repo.finalizeSubscriptionRefresh(sources, epoch, token, permit)
+        return if (finalized.applied) checked.copy(duplicatesRemoved = finalized.duplicatesRemoved)
+        else Result(Status.CHANGED)
+    }
+
+    private suspend fun check(
+        context: Context,
+        sources: List<Repo.StartupSourceSnapshot>,
+        permit: Repo.AutomaticRefreshPermit?,
         token: Long,
         onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> }
     ): Result {

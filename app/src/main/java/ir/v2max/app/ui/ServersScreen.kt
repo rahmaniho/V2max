@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.app.data.ServerDisplayOrder
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
 import ir.v2max.core.format.Format
@@ -105,9 +106,7 @@ fun ServersScreen(
             }
             .sortedWith(
                 when (sort) {
-                    SortMode.FASTEST -> compareBy<ServerConfig> {
-                        it.recordedRealPing().takeIf { ping -> ping > 0 } ?: Int.MAX_VALUE
-                    }
+                    SortMode.FASTEST -> ServerDisplayOrder.fastest
                     SortMode.SPEED -> compareByDescending<ServerConfig> { it.speedKbps }
                     SortMode.STABLE -> compareByDescending<ServerConfig> { it.stability() }
                     SortMode.NAME -> compareBy<ServerConfig> { it.displayName() }
