@@ -44,9 +44,9 @@ object PrivateDiagnosticReport {
         }
         appendLine("فایل‌های جغرافیایی: ${when {
             !observation.geoRequired -> "برای مسیریابی فعلی لازم نیست"
-            observation.geoReady == true -> "آماده"
-            observation.geoReady == false -> "آماده نیست"
-            else -> "نامشخص؛ فایل‌ها هنوز بررسی نشده‌اند"
+            observation.geoReady == true -> "برچسب‌های لازم یافت شدند؛ سازگاری کامل تأیید نشده"
+            observation.geoReady == false -> "برچسب‌های لازم همهٔ فایل‌ها یافت نشدند"
+            else -> "نامشخص؛ بررسی کامل نشده یا در حال انجام است"
         }}")
         appendLine("خطای محلی ثبت‌شده: ${snapshot.localError?.let(PrivateErrorRecord::format) ?: "گزارش نشده"}")
         append("نام سرور، IP، نشانی‌ها، جزئیات DNS، لینک‌ها و متن خام خطا یا لاگ در این گزارش نیستند.")

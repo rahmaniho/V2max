@@ -19,7 +19,14 @@ import java.util.Locale
  * because the app calls it across a module boundary.
  */
 object GeoDataTags {
-    fun find(file: File, candidates: List<String>): String? = runCatching {
+    /** Preserve the legacy conservative lookup used when building Xray rules. */
+    fun find(file: File, candidates: List<String>): String? = inspect(file, candidates).getOrNull()
+
+    /**
+     * A successful null means the file was read and no candidate was present.
+     * A failed read/parse is different: callers must not report it as absence.
+     */
+    fun inspect(file: File, candidates: List<String>): Result<String?> = runCatching {
         val found = mutableSetOf<String>()
         BufferedInputStream(file.inputStream()).use { input ->
             var remaining = file.length()
@@ -36,7 +43,7 @@ object GeoDataTags {
             }
         }
         candidates.firstOrNull { it.lowercase(Locale.ROOT) in found }
-    }.getOrNull()
+    }
 
     private fun readEntry(input: InputStream, size: Long): String? {
         var remaining = size

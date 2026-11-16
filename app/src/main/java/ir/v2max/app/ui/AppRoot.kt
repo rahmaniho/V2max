@@ -72,6 +72,7 @@ fun AppRoot(vm: AppViewModel) {
     var qrDialogContent by remember { mutableStateOf("") }
     var showRouting by rememberSaveable { mutableStateOf(false) }
     var showDiag by rememberSaveable { mutableStateOf(false) }
+    var geoSyncPending by remember { mutableStateOf(false) }
     var crashReportPreview by remember { mutableStateOf<String?>(null) }
     var editingId by rememberSaveable { mutableStateOf("") }
     var backupPassword by remember { mutableStateOf("") }
@@ -140,18 +141,27 @@ fun AppRoot(vm: AppViewModel) {
             ir.v2max.core.domain.ConnectionAdvice.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
             ir.v2max.core.domain.ConnectionAdvice.Action.TEST_SERVERS -> vm.testAll()
             ir.v2max.core.domain.ConnectionAdvice.Action.SYNC_GEO -> {
-                scope.launch {
-                    vm.showMessage("در حال دانلود فایل‌های مسیریابی…")
-                    try {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                            ir.v2max.app.core.GeoAssets.syncIfNeeded(context, force = true)
+                if (!geoSyncPending) {
+                    geoSyncPending = true
+                    scope.launch {
+                        vm.showMessage("در حال بررسی فایل‌های مسیریابی…")
+                        try {
+                            // Reuse a successful refresh already in progress;
+                            // retry if the files are still stale or unknown.
+                            ir.v2max.app.core.GeoAssets.syncIfNeeded(context)
+                            val message = when (ir.v2max.app.core.GeoAssets.diagnosticReadiness.value) {
+                                true -> "برچسب‌های لازم فایل‌های مسیریابی پیدا شدند"
+                                false -> "برچسب‌های لازم همهٔ فایل‌های مسیریابی پیدا نشدند"
+                                null -> "وضعیت فایل‌های مسیریابی مشخص نشد؛ دوباره تلاش کنید"
+                            }
+                            vm.showMessage(message)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            vm.showMessage("بررسی فایل‌های مسیریابی کامل نشد؛ دوباره تلاش کنید")
+                        } finally {
+                            geoSyncPending = false
                         }
-                        val ready = ir.v2max.app.core.GeoAssets.diagnosticReadiness.value == true
-                        vm.showMessage(if (ready) "فایل‌های مسیریابی آماده‌اند" else "همهٔ فایل‌های مسیریابی آماده نشدند؛ اتصال اینترنت را بررسی کنید")
-                    } catch (e: kotlinx.coroutines.CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        vm.showMessage("بررسی فایل‌های مسیریابی کامل نشد؛ دوباره تلاش کنید")
                     }
                 }
             }

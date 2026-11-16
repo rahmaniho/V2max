@@ -57,6 +57,18 @@ class DiagnosticPrivacyGuards(unittest.TestCase):
         self.assertNotIn('Log.i(TAG, "core: $message")', core)
         self.assertNotIn("log(message)", core)
 
+    def test_geo_refresh_is_serialized_and_never_deletes_the_old_asset_first(self):
+        geo = read(APP / "core/GeoAssets.kt")
+        report = read(DOMAIN / "PrivateDiagnosticReport.kt")
+        self.assertIn("syncMutex.withLock", geo)
+        self.assertIn("_diagnosticReadiness.value = null", geo)
+        self.assertIn("GeoAssetStatus.readiness(ip, site)", geo)
+        self.assertIn("ConnectionTestBarrier.connection", geo)
+        self.assertIn("GeoAssetInstaller.install(ipTemp, ipFile, GEOIP_TAGS)", geo)
+        self.assertIn("GeoAssetInstaller.install(siteTemp, siteFile, GEOSITE_TAGS)", geo)
+        self.assertNotIn("target.delete()", geo)
+        self.assertIn("نامشخص؛ بررسی کامل نشده یا در حال انجام است", report)
+
     def test_canceled_scan_does_not_leave_a_completed_summary(self):
         smart = read(APP / "core/SmartConnect.kt")
         self.assertGreaterEqual(smart.count('diagnosticCounts = null, message = "تست لغو شد"'), 2)

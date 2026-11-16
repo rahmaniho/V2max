@@ -52,8 +52,12 @@ object ConnectionAdviceTests {
             ConnectionAdvice.advise(observation(geoRequired = true)).any { it.actionId == ConnectionAdvice.Action.SYNC_GEO })
         T.ok("ready geo does not offer sync",
             ConnectionAdvice.advise(observation(geoRequired = true, geoReady = true)).none { it.actionId == ConnectionAdvice.Action.SYNC_GEO })
-        T.ok("uninspected geo is not treated as missing",
-            ConnectionAdvice.advise(observation(geoRequired = true, geoReady = null)).none { it.actionId == ConnectionAdvice.Action.SYNC_GEO })
+        val unknownGeo = ConnectionAdvice.advise(observation(geoRequired = true, geoReady = null))
+        T.ok("uninspected geo is reported as unknown, not missing",
+            unknownGeo.any { it.title.contains("نامشخص") && it.actionId == ConnectionAdvice.Action.SYNC_GEO } &&
+                unknownGeo.none { it.title.contains("پیدا نشدند") || it.severity == ConnectionAdvice.Severity.CRITICAL })
+        T.ok("geo refresh warns about the network address",
+            unknownGeo.any { it.detail.contains("IP شبکه") && it.detail.contains("GitHub") })
 
         T.eq("untested and TCP-only candidates are unknown", ServerProbeCounts(0, 0, 3),
             ServerDiagnostics.summarize(3, emptyList()))

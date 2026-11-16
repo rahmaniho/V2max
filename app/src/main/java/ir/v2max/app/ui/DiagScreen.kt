@@ -193,8 +193,8 @@ fun DiagScreen(
                     GhostButton(text = if (scan.running) "در حال تست سرورها" else "تست همهٔ سرورها", modifier = Modifier.fillMaxWidth()) {
                         if (!scan.running) onAction(ConnectionAdvice.Action.TEST_SERVERS)
                     }
-                    Text("این تست به سرورها و مقصدهای آزمون درخواست می‌فرستد؛ اتصال جدیدی شروع نمی‌کند. " +
-                        "اگر بررسی عمیق فعال باشد، نمونه‌های شبکه مستقیم بررسی می‌شوند و مقصدها ممکن است IP شبکه را ببینند.",
+                    Text("این تست اتصال جدیدی شروع نمی‌کند، اما به سرورها درخواست می‌فرستد و آنها ممکن است IP شبکه را ببینند. " +
+                        "اگر بررسی عمیق فعال باشد، نمونه‌های DNS و TCP/TLS نیز مستقیماً سنجیده می‌شوند.",
                         fontSize = 10.sp, color = V2.TextMuted, modifier = Modifier.padding(top = 6.dp))
                 }
             }

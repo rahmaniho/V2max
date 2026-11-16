@@ -92,13 +92,16 @@ object ConnectionAdvice {
             )
         }
 
-        if (observation.geoRequired && observation.geoReady == false) {
+        if (observation.geoRequired && observation.geoReady != true) {
             out += Finding(
-                title = "فایل‌های مسیریابی جغرافیایی آماده نیستند",
-                detail = "برای قوانین جغرافیایی فعال، فایل‌های geoip و geosite لازم‌اند.",
+                title = if (observation.geoReady == false) "برچسب‌های لازم همهٔ فایل‌ها پیدا نشدند"
+                    else "وضعیت فایل‌های مسیریابی نامشخص است",
+                detail = (if (observation.geoReady == false) "برای قواعد جغرافیایی فعال، geoip و geosite لازم‌اند. "
+                    else "بررسی ممکن است هنوز در حال انجام باشد یا کامل نشده باشد. ") +
+                    "دریافت احتمالی از GitHub خارج از تونل همین برنامه انجام می‌شود و ممکن است IP شبکه را نشان دهد.",
                 severity = Severity.INFO,
                 actionId = Action.SYNC_GEO,
-                actionLabel = "دریافت فایل‌ها",
+                actionLabel = "بررسی فایل‌ها",
             )
         }
         return out

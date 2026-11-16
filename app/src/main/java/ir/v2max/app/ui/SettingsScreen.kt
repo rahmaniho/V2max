@@ -460,8 +460,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "مسیریابی دقیق ایران (geoip/geosite)",
-                subtitle = "دانلود خودکار فایل‌های رسمی؛ دامنه و IPهای ایرانی مستقیم و بدون تانل باز می‌شوند",
+                title = "فایل‌های مسیریابی ایران (geoip/geosite)",
+                subtitle = "دریافت از GitHub خارج از تونل این برنامه است؛ در حالت هوشمند برخی مقصدها مستقیم‌اند",
                 checked = settings.geoAssets
             ) { value -> onChange { it.copy(geoAssets = value) } }
         }

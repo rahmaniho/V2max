@@ -9,7 +9,8 @@ import kotlinx.coroutines.sync.withLock
  * its holder releases the gate only after the call actually returns.
  *
  * Live monitoring may overlap a long housekeeping scan so the existing VPN is
- * not left unmonitored. Handover takes both gates, always in the same order.
+ * not left unmonitored. Handover and local geodata replacement take both gates,
+ * always in the same order. Geodata downloads happen before taking the gate.
  * Never initiate a new scan or handover from inside either test block.
  */
 internal object ConnectionTestBarrier {
