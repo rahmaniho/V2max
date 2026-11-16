@@ -8,6 +8,7 @@ import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbePlanner
+import ir.v2max.app.net.ScanDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -140,6 +141,9 @@ object SmartConnect {
                     val rememberedId = if (preferredId == null && settings.rememberNetworks && profileKey.isNotBlank()) {
                         Repo.profileFor(profileKey)?.serverId
                     } else null
+                    // Keep diagnostic evidence separate from connection receipts. TCP,
+                    // skipped tests and setup failures must never become proxy failures.
+                    val diagnosticScan = ScanDiagnostics(servers.size)
                     val outcome = try {
                         HealthScanner.scan(
                             context = context,
@@ -152,8 +156,10 @@ object SmartConnect {
                             fastestRecentFirst = preferFastest,
                             onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
                             onReal = { cfg, result ->
+                                diagnosticScan.onReal(cfg.id, result)
                                 Repo.setVerifiedResult(cfg.id, result, expectedFingerprint = cfg.fingerprint())
                             },
+                            onIndeterminate = { cfg -> diagnosticScan.onIndeterminate(cfg.id) },
                             onSpeed = { cfg, kbps ->
                                 Repo.setSpeed(cfg.id, kbps, persist = false, expectedFingerprint = cfg.fingerprint())
                             },
@@ -175,11 +181,11 @@ object SmartConnect {
                     } catch (e: CancellationException) {
                         Repo.scan.value = Repo.scan.value.copy(running = false, message = "تست لغو شد")
                         throw e
-                    } catch (t: Exception) {
+                    } catch (_: Exception) {
                         Repo.scan.value = Repo.scan.value.copy(
                             running = false,
                             finished = true,
-                            message = "اسکن متوقف شد: ${t.message ?: "خطا"}"
+                            message = "اسکن با خطا متوقف شد؛ دوباره تلاش کنید"
                         )
                         return@withLock null
                     }
@@ -218,6 +224,9 @@ object SmartConnect {
                         alive = qualified.size,
                         done = outcome.testedCount,
                         total = outcome.testedCount,
+                        // An interrupted optional test can return before evidence is
+                        // published. In that case there is no complete scan summary.
+                        diagnosticCounts = diagnosticScan.complete(outcome.testedCount),
                         bestName = chosen?.displayName().orEmpty(),
                         phase = "پایان",
                         message = when {

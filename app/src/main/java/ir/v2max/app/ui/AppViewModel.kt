@@ -118,8 +118,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val errorHandler = CoroutineExceptionHandler { _, throwable ->
         ir.v2max.app.util.CrashLog.record(throwable, "viewModel")
         runCatching { _busy.value = false }
-        val text = throwable.message.orEmpty().take(120)
-        _message.value = if (text.isBlank()) "خطای غیرمنتظره رخ داد؛ دوباره تلاش کنید" else "خطا: $text"
+        _message.value = "خطای غیرمنتظره رخ داد؛ دوباره تلاش کنید"
     }
 
     init {
@@ -134,8 +133,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!Repo.startupHealthIsCurrent(token)) return
         val app = getApplication<Application>()
         val settings = Repo.settings.value
-        val crash = runCatching { ir.v2max.app.util.CrashLog.lastSummary() }.getOrDefault("")
-        if (crash.isNotBlank()) showMessage("دفعه‌ی قبل برنامه بسته شد: $crash")
+        if (ir.v2max.app.util.CrashLog.hasRecorded()) {
+            showMessage("یک خطای محلی ثبت شده است؛ خلاصهٔ خصوصی در تنظیمات موجود است")
+        }
         if (settings.useFreeSources) runCatching { Repo.ensureBuiltInSources(requireEnabled = true) }
         if (settings.autoUpdateCheck) checkUpdates(manual = false)
 

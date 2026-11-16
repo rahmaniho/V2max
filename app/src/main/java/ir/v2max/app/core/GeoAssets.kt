@@ -4,6 +4,8 @@ import android.content.Context
 import android.util.Log
 import ir.v2max.core.geo.GeoDataTags
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.HttpURLConnection
@@ -44,6 +46,11 @@ object GeoAssets {
     @Volatile
     private var geositeTag: String? = null
 
+    // Null until both cached tags have actually been inspected, including while
+    // a refresh is in progress. Diagnostics must not infer absence from startup.
+    private val _diagnosticReadiness = MutableStateFlow<Boolean?>(null)
+    val diagnosticReadiness = _diagnosticReadiness.asStateFlow()
+
     /** مسیر پوشه‌ی assetهای هسته (همان مسیری که XrayCore.init استفاده می‌کند) */
     fun init(context: Context) {
         if (dir != null) return
@@ -52,9 +59,12 @@ object GeoAssets {
         refreshTags(d)
     }
 
+    @Synchronized
     private fun refreshTags(d: File) {
+        _diagnosticReadiness.value = null
         geoipTag = findTag(File(d, GEOIP_FILE), listOf("ir"))
         geositeTag = findTag(File(d, GEOSITE_FILE), listOf("category-ir", "geolocation-ir", "ir"))
+        _diagnosticReadiness.value = geoipTag != null && geositeTag != null
     }
 
     /** فقط نام واقعی دسته‌های protobuf را می‌خوانیم، نه زیررشته‌های داخل دامنه‌ها. */

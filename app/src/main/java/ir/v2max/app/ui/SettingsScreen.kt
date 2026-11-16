@@ -57,13 +57,15 @@ fun SettingsScreen(
     onOpenDiag: () -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {},
-    onCopyCrashLog: () -> Unit = {}
+    onOpenCrashReport: () -> Unit = {},
+    onClearCrashLog: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showLockSetupDialog by remember { mutableStateOf(false) }
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showClearCrashDialog by remember { mutableStateOf(false) }
     var showAutomationWarning by remember { mutableStateOf(false) }
 
     LazyColumn(
@@ -179,7 +181,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "بررسی عمیق شبکه پیش از اتصال",
-                subtitle = "سنجش نمونه‌های DNS و TCP/TLS؛ علت اختلال به‌طور قطعی مشخص نمی‌شود",
+                subtitle = "نمونه‌های DNS و TCP/TLS مستقیم بررسی می‌شوند؛ مقصدها ممکن است IP شبکه را ببینند و علت اختلال قطعی نیست",
                 checked = settings.deepProbe
             ) { value -> onChange { it.copy(deepProbe = value) } }
         }
@@ -408,10 +410,18 @@ fun SettingsScreen(
 
         item {
             SettingValue(
-                title = "گزارش آخرین خطا",
-                subtitle = "اگر برنامه بسته شد، متن خطا اینجا کپی می‌شود تا برای رفع مشکل بفرستید",
-                value = "کپی"
-            ) { onCopyCrashLog() }
+                title = "خلاصهٔ خصوصی خطا",
+                subtitle = "پیش‌نمایش پیش از کپی؛ متن خام خطا و مشخصات سرور فرستاده نمی‌شود",
+                value = "پیش‌نمایش"
+            ) { onOpenCrashReport() }
+        }
+
+        item {
+            SettingValue(
+                title = "حذف گزارش محلی خطا",
+                subtitle = "گزارش‌های قدیمی ممکن است اطلاعات حساس داشته باشند؛ با حذف، قابل بازیابی نیستند",
+                value = "حذف"
+            ) { showClearCrashDialog = true }
         }
 
         item {
@@ -526,7 +536,7 @@ fun SettingsScreen(
         item {
             SettingValue(
                 title = "عیب‌یابی و گزارش",
-                subtitle = "لاگ زنده‌ی هسته، IP و کشور خروجی، بررسی DNS و ارسال گزارش",
+                subtitle = "وضعیت محلی، محدودیت بررسی IP و DNS، و گزارش با پیش‌نمایش",
                 value = "باز کردن"
             ) { onOpenDiag() }
         }
@@ -697,6 +707,21 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { showDnsDialog = false }) { Text("انصراف", color = V2.TextMuted) }
             }
+        )
+    }
+
+    if (showClearCrashDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearCrashDialog = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("حذف گزارش محلی خطا", color = V2.TextPrimary) },
+            text = { Text("گزارش‌های خطای این دستگاه، از جمله گزارش‌های نسخه‌های قبلی، حذف شوند؟", color = V2.TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = { onClearCrashLog(); showClearCrashDialog = false }) { Text("حذف", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearCrashDialog = false }) { Text("انصراف", color = V2.TextMuted) }
+            },
         )
     }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that Android's two backup systems cannot transfer local automation consent."""
+"""Check both backup systems exclude device-local consent and private error logs."""
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -17,18 +17,25 @@ assert app.get(ANDROID + "fullBackupContent") == "@xml/backup_rules"
 assert app.get(ANDROID + "dataExtractionRules") == "@xml/data_extraction_rules"
 
 
-def excludes_consent(section):
+def excludes(section, domain, path):
     return any(
-        child.tag == "exclude" and child.get("domain") == "sharedpref" and child.get("path") == CONSENT
+        child.tag == "exclude" and child.get("domain") == domain and child.get("path") == path
         for child in section
     )
 
 
+def verify_section(section, label):
+    assert excludes(section, "sharedpref", CONSENT), f"missing consent exclusion for {label}"
+    assert excludes(section, "file", "crash.log"), f"missing private crash-log exclusion for {label}"
+
+
 legacy = ET.parse(RES / "backup_rules.xml").getroot()
 modern = ET.parse(RES / "data_extraction_rules.xml").getroot()
-assert legacy.tag == "full-backup-content" and excludes_consent(legacy)
+assert legacy.tag == "full-backup-content"
+verify_section(legacy, "legacy")
 assert modern.tag == "data-extraction-rules"
 for name in ("cloud-backup", "device-transfer"):
     section = modern.find(name)
-    assert section is not None and excludes_consent(section), f"missing consent exclusion for {name}"
-print("Automation consent is excluded from legacy, cloud and device-transfer backup rules.")
+    assert section is not None, f"missing {name}"
+    verify_section(section, name)
+print("Automation consent and local crash logs are excluded from legacy, cloud and device-transfer backup rules.")

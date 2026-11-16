@@ -2,8 +2,10 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="v2max_control_consent.xml" />
+        <exclude domain="file" path="crash.log" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="v2max_control_consent.xml" />
+        <exclude domain="file" path="crash.log" />
     </device-transfer>
 </data-extraction-rules>

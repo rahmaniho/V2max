@@ -515,7 +515,9 @@ data class ScanState(
     val bestName: String = "",
     val message: String = "",
     val finished: Boolean = false,
-    val finishedAt: Long = 0L
+    val finishedAt: Long = 0L,
+    /** In-memory snapshot of a completed group scan; not persisted or used to connect. */
+    val diagnosticCounts: ir.v2max.core.domain.ServerProbeCounts? = null
 ) {
     val progress: Float get() = if (total <= 0) 0f else (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
 }

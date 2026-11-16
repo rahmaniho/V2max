@@ -58,12 +58,12 @@ object TunnelController {
             } else {
                 context.applicationContext.startService(intent)
             }
-        } catch (t: Throwable) {
+        } catch (_: Throwable) {
             val previous = Repo.tunnel.value
             Repo.tunnel.value = previous.copy(
                 status = if (previous.status == ir.v2max.app.data.TunnelStatus.CONNECTED && XrayCore.isRunning)
                     previous.status else ir.v2max.app.data.TunnelStatus.ERROR,
-                message = "اجرای سرویس ممکن نشد: ${t.message ?: "خطای ناشناخته"}"
+                message = "اجرای سرویس ممکن نشد؛ دوباره تلاش کنید"
             )
         }
     }

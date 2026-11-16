@@ -121,7 +121,7 @@ class V2maxVpnService : VpnService() {
     /** هیچ خطایی در کارهای سرویس نباید باعث بسته‌شدن اجباری برنامه شود */
     private val serviceErrorHandler = kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
         ir.v2max.app.util.CrashLog.record(throwable, "vpnService")
-        Log.e(TAG, "unhandled service error", throwable)
+        Log.e(TAG, "unhandled service error")
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + serviceErrorHandler)
@@ -555,7 +555,7 @@ class V2maxVpnService : VpnService() {
                     currentServer = server
                     Repo.setSelected(server.id)
                     if (isFailover) {
-                        Log.i(TAG, "failover: connecting to ${server.endpoint}")
+                        Log.i(TAG, "failover: connecting to a verified replacement")
                     } else {
                         Failover.reset()
                     }
@@ -619,7 +619,7 @@ class V2maxVpnService : VpnService() {
                     // A damaged geodata file must not make every otherwise-valid profile unusable.
                     val message = e.message.orEmpty().lowercase()
                     if (settings.geoAssets && (message.contains("geoip") || message.contains("geosite"))) {
-                        XrayCore.log("فایل مسیریابی جغرافیایی نامعتبر بود؛ اتصال بدون آن امتحان می‌شود")
+                        XrayCore.log(XrayCore.Event.GEO_FALLBACK)
                         settings = settings.copy(geoAssets = false)
                         startAndVerify(settings, listOf(server))
                     } else throw e
@@ -645,7 +645,7 @@ class V2maxVpnService : VpnService() {
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        XrayCore.log("استخر پاسخ نداد؛ بازگشت به سرور انتخابی")
+                        XrayCore.log(XrayCore.Event.POOL_FALLBACK)
                         verified = startAndVerify(settings, listOf(server))
                         Repo.poolSize.value = 1
                     }
@@ -702,12 +702,12 @@ class V2maxVpnService : VpnService() {
             val message = "کانفیگ، شبکه یا تنظیمات پس از تست تغییر کرد"
             if (isFailover && !running && Repo.settings.value.smartFailover) beginRecovery(message, token, requestStartId)
             else preflightFailed("$message؛ دوباره تلاش کنید", token, requestStartId)
-        } catch (t: Exception) {
+        } catch (_: Exception) {
             if (!ownsGeneration(token)) {
                 if (replacedTunnel) releaseOwnedResources(token)
                 return
             }
-            Log.e(TAG, "connect failed", t)
+            Log.e(TAG, "connect failed")
             if (!replacedTunnel) {
                 // Configuration construction failed before we touched the old VPN.
                 preflightFailed("آماده‌سازی اتصال جدید ناموفق بود", token, requestStartId)
@@ -733,10 +733,9 @@ class V2maxVpnService : VpnService() {
 
             if (ownsGeneration(token)) currentServer?.let { server ->
                 runCatching { Repo.recordOutcome(server.id, false) }
-                    .onFailure { Log.w(TAG, "could not persist failed connection statistics", it) }
+                    .onFailure { Log.w(TAG, "could not persist failed connection statistics") }
             }
-            val raw = (t.message ?: t.javaClass.simpleName).take(180)
-            val message = "اتصال برقرار نشد: $raw"
+            val message = "اتصال برقرار نشد؛ تنظیمات و شبکه را بررسی کنید"
             if (Repo.settings.value.smartFailover) beginRecovery(message, token, requestStartId)
             else fail(message, token, requestStartId)
         }
@@ -775,8 +774,8 @@ class V2maxVpnService : VpnService() {
 
         return try {
             builder.establish()
-        } catch (t: Throwable) {
-            Log.e(TAG, "establish failed", t)
+        } catch (_: Throwable) {
+            Log.e(TAG, "establish failed")
             null
         }
     }
@@ -1034,8 +1033,8 @@ class V2maxVpnService : VpnService() {
         Failover.findReplacement(applicationContext, currentId)
     } catch (e: CancellationException) {
         throw e
-    } catch (e: Exception) {
-        Log.w(TAG, "replacement search failed", e)
+    } catch (_: Exception) {
+        Log.w(TAG, "replacement search failed")
         null
     }
 
@@ -1241,8 +1240,8 @@ class V2maxVpnService : VpnService() {
             } else {
                 startForeground(Notifier.NOTIFICATION_ID, notification)
             }
-        } catch (t: Throwable) {
-            Log.e(TAG, "startForeground failed", t)
+        } catch (_: Throwable) {
+            Log.e(TAG, "startForeground failed")
         }
     }
 
@@ -1254,8 +1253,8 @@ class V2maxVpnService : VpnService() {
                 @Suppress("DEPRECATION")
                 stopForeground(true)
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "stopForeground failed: ${t.message}")
+        } catch (_: Throwable) {
+            Log.w(TAG, "stopForeground failed")
         }
         isForeground = false
     }

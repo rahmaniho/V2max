@@ -2,7 +2,6 @@ package ir.v2max.app.ui
 
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,22 +16,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,140 +38,95 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import ir.v2max.app.core.GeoAssets
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.Repo
-import ir.v2max.app.net.Diagnostics
+import ir.v2max.app.net.LocalDiagnostics
+import ir.v2max.app.util.CrashLog
 import ir.v2max.core.domain.ConnectionAdvice
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * صفحه‌ی عیب‌یابی: نمایش زنده‌ی لاگ هسته، IP/کشور خروجی، بررسی DNS و خروجی گزارش.
- */
+/** Only locally known information; this page never probes IP or DNS directly. */
 @Composable
 fun DiagScreen(
     appVersion: String,
     coreVersion: String,
     onBack: () -> Unit,
-    onAction: (String) -> Unit = {}
+    onAction: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val tunnel by Repo.tunnel.collectAsStateWithLifecycle()
     val settings by Repo.settings.collectAsStateWithLifecycle()
-
+    val servers by Repo.servers.collectAsStateWithLifecycle()
+    val scan by Repo.scan.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     var logs by remember { mutableStateOf(XrayCore.logs()) }
-    var exit by remember { mutableStateOf(ConnectionAdvice.ExitInfo()) }
-    var dns by remember { mutableStateOf(ConnectionAdvice.DnsInfo()) }
-    var busy by remember { mutableStateOf(false) }
-    var lastCheck by remember { mutableStateOf("") }
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    var preview by remember { mutableStateOf<String?>(null) }
+    var shareError by remember { mutableStateOf(false) }
+    val geoReady by GeoAssets.diagnosticReadiness.collectAsStateWithLifecycle()
+    val observation = LocalDiagnostics.observation(tunnel, settings, servers, geoReady)
+    val findings = ConnectionAdvice.advise(observation)
 
-    LaunchedEffect(Unit) {
-        val listener: (String) -> Unit = { logs = XrayCore.logs() }
+    DisposableEffect(Unit) {
+        val listener: (String) -> Unit = { scope.launch { logs = XrayCore.logs() } }
         XrayCore.addLogListener(listener)
-        while (true) {
-            delay(1500)
-            logs = XrayCore.logs()
-        }
+        onDispose { XrayCore.removeLogListener(listener) }
     }
 
-    fun runChecks() {
-        busy = true
-        scope.launch {
-            exit = Diagnostics.exitInfo()
-            dns = Diagnostics.dnsCheck(settings.remoteDns)
-            lastCheck = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-            busy = false
-        }
-    }
-
-    fun shareReport() {
-        val report = ConnectionAdvice.buildReport(
-            appVersion = appVersion,
-            coreVersion = coreVersion,
-            deviceInfo = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} · اندروید ${android.os.Build.VERSION.RELEASE}",
-            serverLabel = tunnel.serverName.ifBlank { "—" },
-            tunnelStatus = tunnel.status.name,
-            exit = exit,
-            dns = dns,
-            logs = logs
+    preview?.let { report ->
+        ReportPreviewDialog(
+            report = report,
+            confirmLabel = "اشتراک‌گذاری",
+            onDismiss = { preview = null },
+            onConfirm = { text ->
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "گزارش خصوصی V2max")
+                    putExtra(Intent.EXTRA_TEXT, text)
+                }
+                shareError = runCatching {
+                    context.startActivity(Intent.createChooser(intent, "اشتراک‌گذاری گزارش"))
+                }.isFailure
+                preview = null
+            },
         )
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "گزارش عیب‌یابی V2max")
-            putExtra(Intent.EXTRA_TEXT, report)
-        }
-        runCatching { context.startActivity(Intent.createChooser(intent, "ارسال گزارش")) }
     }
 
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxSize().padding(horizontal = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(V2.Surface)
-                        .clickable { onBack() },
-                    contentAlignment = Alignment.Center
+                    Modifier.size(38.dp).clip(CircleShape).background(V2.Surface).clickable { onBack() },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = V2.TextMuted, modifier = Modifier.size(20.dp))
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت", tint = V2.TextMuted, modifier = Modifier.size(20.dp))
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("عیب‌یابی و گزارش", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
-                    Text("وضعیت خروج، DNS و لاگ زنده‌ی هسته", style = androidx.compose.material3.MaterialTheme.typography.bodySmall, color = V2.TextMuted)
+                    Text("عیب‌یابی و گزارش", style = MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
+                    Text("وضعیت محلی و گزارش خصوصی", style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
                 }
             }
         }
 
-        // ---- تشخیص خودکار با اقدام پیشنهادی
         item {
-            val findings = remember(exit, dns, tunnel, settings) {
-                val alive = Repo.servers.value.count { it.bestPing() > 0 || it.tcpPing > 0 }
-                ConnectionAdvice.advise(
-                    connected = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTED,
-                    connecting = tunnel.status == ir.v2max.app.data.TunnelStatus.CONNECTING,
-                    killSwitchBlocked = tunnel.killSwitchRetained,
-                    exitOk = exit.ok,
-                    dnsDohOk = dns.dohOk,
-                    dnsConsistent = dns.consistent,
-                    totalServers = Repo.servers.value.size,
-                    aliveServers = alive,
-                    balancerEnabled = settings.balancer,
-                    geoReady = ir.v2max.app.core.GeoAssets.isReady(),
-                    fragmentProfile = settings.fragmentProfile.name
-                )
-            }
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
-                    Text(
-                        "تشخیص خودکار",
-                        style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
-                        color = V2.TextPrimary
-                    )
+                    Text("وضعیت برنامه", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(8.dp))
                     findings.forEach { finding ->
                         val color = when (finding.severity) {
                             ConnectionAdvice.Severity.CRITICAL -> V2.Red
                             ConnectionAdvice.Severity.WARN -> V2.Amber
                             ConnectionAdvice.Severity.INFO -> V2.Sky
-                            ConnectionAdvice.Severity.OK -> V2.Mint
                         }
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                            Box(
-                                Modifier
-                                    .padding(top = 5.dp)
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(color)
-                            )
+                            Box(Modifier.padding(top = 5.dp).size(8.dp).clip(CircleShape).background(color))
                             Spacer(Modifier.width(8.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(finding.title, fontSize = 12.sp, color = color)
@@ -181,14 +134,11 @@ fun DiagScreen(
                                 if (finding.actionId.isNotBlank()) {
                                     Spacer(Modifier.height(6.dp))
                                     Box(
-                                        Modifier
-                                            .clip(RoundedCornerShape(10.dp))
+                                        Modifier.clip(RoundedCornerShape(10.dp))
                                             .background(color.copy(alpha = 0.14f))
                                             .clickable { onAction(finding.actionId) }
-                                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                                    ) {
-                                        Text(finding.actionLabel, fontSize = 10.5.sp, color = color)
-                                    }
+                                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                                    ) { Text(finding.actionLabel, fontSize = 10.5.sp, color = color) }
                                 }
                             }
                         }
@@ -200,24 +150,21 @@ fun DiagScreen(
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("وضعیت خروج", style = androidx.compose.material3.MaterialTheme.typography.titleSmall, color = V2.TextPrimary, modifier = Modifier.weight(1f))
-                        if (busy) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = V2.Mint)
-                    }
+                    Text("مسیر خروج و DNS", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    InfoLine("IP خروجی", exit.ip.ifBlank { if (busy) "در حال بررسی…" else "—" })
-                    InfoLine("کشور", exit.country.ifBlank { "—" })
-                    InfoLine("نود شبکه", exit.colo.ifBlank { "—" })
-                    if (exit.error.isNotBlank()) InfoLine("خطا", exit.error)
+                    InfoLine("IP خروجی VPN", "نامشخص")
+                    InfoLine("DNS و نشت DNS", "نامشخص")
+                    Text(
+                        "این برنامه از VPN خودش مستثناست؛ درخواست از داخل آن ممکن است IP واقعی را آشکار کند. " +
+                            "برای همین اینجا درخواست IP یا DNS ارسال نمی‌شود و عبور از TUN تأیید نشده است.",
+                        fontSize = 11.sp, color = V2.TextMuted,
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        GhostButton(text = "بررسی مجدد", modifier = Modifier.weight(1f)) { runChecks() }
-                        GhostButton(text = "ارسال گزارش", modifier = Modifier.weight(1f)) { shareReport() }
-                    }
-                    if (lastCheck.isNotBlank()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("آخرین بررسی: $lastCheck", fontSize = 10.sp, color = V2.TextMuted)
-                    }
+                    Text(
+                        "برای بررسی مسیر خروج، از برنامهٔ دیگری که مشمول VPN و قواعد مسیریابی آن است استفاده کنید. " +
+                            "این کار به‌تنهایی نبود نشت DNS را ثابت نمی‌کند.",
+                        fontSize = 11.sp, color = V2.TextMuted,
+                    )
                 }
             }
         }
@@ -225,47 +172,69 @@ fun DiagScreen(
         item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
-                    Text("DNS", style = androidx.compose.material3.MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
+                    Text("آخرین اسکن انتخاب یا گروهی", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    InfoLine("DNS امن (DoH)", if (dns.dohOk) dns.dohAnswer else "بدون پاسخ")
-                    InfoLine("DNS سیستم", dns.systemAnswer.ifBlank { "—" })
-                    InfoLine("هم‌خوانی", if (dns.consistent) "یکسان" else "نامشخص / متفاوت")
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "توجه: تشخیص قطعی نشت DNS از داخل اپلیکیشن ممکن نیست؛ این بخش فقط تأیید می‌کند که پاسخ DoH از مسیر تانل دریافت می‌شود.",
-                        fontSize = 10.sp,
-                        color = V2.TextMuted
-                    )
+                    val counts = if (scan.finished && !scan.running) scan.diagnosticCounts else null
+                    if (counts == null) {
+                        Text(if (scan.running) "اسکن در حال انجام است؛ نتیجه هنوز نامشخص است." else
+                            "اسکن کامل در این اجرای برنامه ثبت نشده است؛ نتیجه نامشخص است.",
+                            fontSize = 11.sp, color = V2.TextMuted)
+                    } else {
+                        InfoLine("پاسخ‌گو", counts.responded.toString())
+                        InfoLine("بی‌پاسخ", counts.noResponse.toString())
+                        InfoLine("نامشخص", counts.unknown.toString())
+                        Text(
+                            "این فقط نتیجهٔ همان اسکن است و ممکن است قدیمی باشد؛ بی‌پاسخ به معنی خرابی دائمی نیست. " +
+                                "موارد تست‌نشده و خطای نامشخص در دستهٔ نامشخص‌اند؛ TCP به‌تنهایی سلامت پروکسی نیست.",
+                            fontSize = 11.sp, color = V2.TextMuted,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    GhostButton(text = if (scan.running) "در حال تست سرورها" else "تست همهٔ سرورها", modifier = Modifier.fillMaxWidth()) {
+                        if (!scan.running) onAction(ConnectionAdvice.Action.TEST_SERVERS)
+                    }
+                    Text("این تست به سرورها و مقصدهای آزمون درخواست می‌فرستد؛ اتصال جدیدی شروع نمی‌کند. " +
+                        "اگر بررسی عمیق فعال باشد، نمونه‌های شبکه مستقیم بررسی می‌شوند و مقصدها ممکن است IP شبکه را ببینند.",
+                        fontSize = 10.sp, color = V2.TextMuted, modifier = Modifier.padding(top = 6.dp))
+                }
+            }
+        }
+
+        item {
+            GlassCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp)) {
+                    Text("گزارش خصوصی", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
+                    Text("نام سرور، IP، نشانی‌ها، لینک‌ها و متن خام خطا یا لاگ در گزارش نیستند.",
+                        fontSize = 11.sp, color = V2.TextMuted, modifier = Modifier.padding(vertical = 8.dp))
+                    GhostButton(text = "پیش‌نمایش و اشتراک‌گذاری", modifier = Modifier.fillMaxWidth()) {
+                        shareError = false
+                        preview = LocalDiagnostics.report(
+                            appVersion, coreVersion, android.os.Build.VERSION.SDK_INT,
+                            tunnel, settings, servers, scan, geoReady, CrashLog.latestSummary(),
+                        )
+                    }
+                    if (shareError) Text("باز کردن اشتراک‌گذاری ممکن نشد؛ دوباره تلاش کنید.", color = V2.Amber, fontSize = 11.sp)
                 }
             }
         }
 
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("لاگ زنده", style = androidx.compose.material3.MaterialTheme.typography.titleSmall, color = V2.TextPrimary, modifier = Modifier.weight(1f))
-                GhostButton(text = "پاک کردن", modifier = Modifier.width(96.dp)) { XrayCore.clearLogs(); logs = emptyList() }
+                Text("رویدادهای محلی", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary, modifier = Modifier.weight(1f))
+                GhostButton(text = "پاک کردن", modifier = Modifier.width(110.dp)) { XrayCore.clearLogs(); logs = emptyList() }
             }
         }
-
         item {
             GlassCard(Modifier.fillMaxWidth()) {
-                Column(
-                    Modifier
-                        .heightIn(min = 120.dp, max = 420.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(12.dp)
-                ) {
-                    if (logs.isEmpty()) {
-                        Text("هنوز رویدادی ثبت نشده است.", fontSize = 11.sp, color = V2.TextMuted)
-                    } else {
-                        logs.takeLast(300).forEach { line ->
-                            Text(line, fontSize = 10.sp, color = V2.TextMuted, modifier = Modifier.padding(vertical = 1.dp))
-                        }
+                Column(Modifier.heightIn(min = 100.dp, max = 300.dp).verticalScroll(rememberScrollState()).padding(12.dp)) {
+                    Text("این رویدادها در گزارش اشتراکی قرار نمی‌گیرند.", fontSize = 10.sp, color = V2.TextMuted)
+                    if (logs.isEmpty()) Text("هنوز رویدادی ثبت نشده است.", fontSize = 11.sp, color = V2.TextMuted)
+                    else logs.takeLast(100).forEach { line ->
+                        Text(line, fontSize = 10.sp, color = V2.TextMuted, modifier = Modifier.padding(vertical = 1.dp))
                     }
                 }
             }
         }
-
         item { Spacer(Modifier.height(16.dp)) }
     }
 }

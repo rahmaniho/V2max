@@ -8,6 +8,8 @@ import ir.v2max.app.data.Proto
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbePlanner
+import ir.v2max.app.net.ScanDiagnostics
+import ir.v2max.core.domain.ServerProbeCounts
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -155,6 +157,33 @@ class HealthScannerTest {
         assertEquals(setOf("s0", "s3"), published)
         assertEquals(setOf("s0", "s3"), outcome.qualified.map { it.id }.toSet())
         assertEquals(2, calls["s3"])
+    }
+
+    @Test fun `diagnostics distinguish protocol responses no response and indeterminate from tcp only`() = runBlocking {
+        val diagnostics = ScanDiagnostics(4)
+        val outcome = HealthScanner.scanPrepared(
+            (0..3).map { node(it) }, settings,
+            ops(tcp = { if (it.id == "s3") -1 else 10 }, real = { cfg, _, _ ->
+                when (cfg.id) { "s0" -> 30; "s1" -> -1; else -> -2 }
+            }),
+            onReal = { cfg, result -> diagnostics.onReal(cfg.id, result) },
+            onIndeterminate = { cfg -> diagnostics.onIndeterminate(cfg.id) }
+        )
+        assertEquals(3, outcome.testedCount)
+        assertEquals(ServerProbeCounts(responded = 1, noResponse = 1, unknown = 2),
+            diagnostics.complete(outcome.testedCount))
+    }
+
+    @Test fun `a speed setup failure publishes no completed diagnostic summary`() = runBlocking {
+        val diagnostics = ScanDiagnostics(2)
+        val outcome = HealthScanner.scanPrepared(
+            (0..1).map { node(it) }, settings.copy(speedTest = true),
+            ops(speed = { _, _ -> null }),
+            onReal = { cfg, result -> diagnostics.onReal(cfg.id, result) },
+            onIndeterminate = { cfg -> diagnostics.onIndeterminate(cfg.id) }
+        )
+        assertEquals(2, outcome.testedCount)
+        assertNull(diagnostics.complete(outcome.testedCount))
     }
 
     @Test fun `all enabled extra tests finish before any results are published`() = runBlocking {

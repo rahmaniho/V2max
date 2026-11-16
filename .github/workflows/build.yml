@@ -58,6 +58,7 @@ jobs:
       - name: Verify automation consent backup exclusions and release guards
         run: |
           python3 scripts/verify-backup-rules.py
+          python3 scripts/test-diagnostic-privacy.py
           python3 scripts/test-apk-payload.py
           python3 scripts/test-release-metadata.py
           python3 scripts/test-release-draft.py

@@ -3,6 +3,8 @@ package ir.v2max.app
 import android.Manifest
 import android.app.Instrumentation
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Rect
@@ -30,11 +32,13 @@ import ir.v2max.app.data.Subscription
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.service.V2maxVpnService
 import ir.v2max.app.ui.AppViewModel
+import ir.v2max.app.util.CrashLog
 import libv2ray.Libv2ray
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -42,10 +46,12 @@ import org.junit.FixMethodOrder
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
+import java.io.File
 import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Opt-in only: a disposable emulator and the local Xray/HTTP fixture are required.
@@ -507,6 +513,74 @@ class AndroidUiConnectionTest {
         assertNotNull("Deleting a subscription must not delete unrelated personal profiles", Repo.serverById(alpha.id))
         assertNotNull(Repo.serverById(beta.id))
         assertFalse("A cleanup prompt must not start a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running)
+    }
+
+    @Test fun privateDiagnosticsRequirePreviewAndDoNotExportLegacySecrets() {
+        grantNotificationsIfNeeded()
+        val secret = "vless://fixture-secret@203.0.113.42:443?token=fixture-token#private"
+        val crashFile = File(context.filesDir, "crash.log")
+        val clipboard = requireNotNull(context.getSystemService(ClipboardManager::class.java))
+        val chooser = AtomicReference<Intent?>(null)
+        val monitor = object : Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
+                if (intent.action != Intent.ACTION_CHOOSER) return null
+                chooser.set(intent)
+                // Intercept the chooser; no app actually receives the report.
+                return Instrumentation.ActivityResult(android.app.Activity.RESULT_CANCELED, null)
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            assertTrue(CrashLog.clear())
+            CrashLog.record(IllegalArgumentException(secret), "viewModel")
+            assertFalse("New local records must not contain raw exception text", crashFile.readText().contains(secret))
+            crashFile.writeText("=== legacy raw error: $secret ===\n203.0.113.42\n")
+            clipboard.setPrimaryClip(ClipData.newPlainText("fixture", "unchanged"))
+            launchActivity()
+            clickText("تنظیمات")
+            awaitText("تنظیمات را با دقت تغییر دهید")
+            clickScrollableText("خلاصهٔ خصوصی خطا")
+            awaitText("پیش‌نمایش گزارش خصوصی")
+            val displayedCrashReport = awaitText("=== گزارش خصوصی V2max ===").first().text.toString()
+            assertFalse(displayedCrashReport.contains(secret))
+            assertFalse(displayedCrashReport.contains("203.0.113.42"))
+            assertEquals("Opening the preview must not copy anything", "unchanged",
+                clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+            clickText("انصراف")
+            assertEquals("Canceling must not copy anything", "unchanged",
+                clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+
+            clickScrollableText("خلاصهٔ خصوصی خطا")
+            val copiedPreview = awaitText("=== گزارش خصوصی V2max ===").first().text.toString()
+            clickText("کپی خلاصه")
+            assertEquals("Only the exact preview may be copied", copiedPreview,
+                clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+
+            clickScrollableText("عیب‌یابی و گزارش")
+            clickScrollableText("پیش‌نمایش و اشتراک‌گذاری")
+            awaitText("پیش‌نمایش گزارش خصوصی")
+            val sharedPreview = awaitText("=== گزارش خصوصی V2max ===").first().text.toString()
+            assertTrue(sharedPreview.contains("IP خروجی VPN: نامشخص"))
+            assertTrue(sharedPreview.contains("DNS و نشت DNS: نامشخص"))
+            assertTrue(sharedPreview.contains("عبور ترافیک برنامه‌های دیگر از TUN: تأیید نشده"))
+            assertFalse(sharedPreview.contains(secret))
+            assertFalse(sharedPreview.contains("UI Alpha"))
+            assertFalse(sharedPreview.contains("10.0.2.2"))
+            assertNull("No share chooser should open before consent", chooser.get())
+            clickText("اشتراک‌گذاری")
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            while (chooser.get() == null && SystemClock.elapsedRealtime() < deadline) SystemClock.sleep(50)
+            @Suppress("DEPRECATION")
+            val send = chooser.get()?.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+            assertNotNull("The explicit share action did not launch a chooser", send)
+            assertEquals(Intent.ACTION_SEND, send?.action)
+            assertEquals("Only the exact preview may be shared", sharedPreview, send?.getStringExtra(Intent.EXTRA_TEXT))
+            assertFalse("Diagnostics must not start a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running)
+            assertFalse("Diagnostics must not start a scan by itself", Repo.scan.value.running)
+        } finally {
+            instrumentation.removeMonitor(monitor)
+            CrashLog.clear()
+        }
     }
 
     private fun grantNotificationsIfNeeded() {
