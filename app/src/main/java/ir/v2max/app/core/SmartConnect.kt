@@ -179,7 +179,7 @@ object SmartConnect {
                             onAlive = { alive -> Repo.scan.value = Repo.scan.value.copy(alive = alive) }
                         )
                     } catch (e: CancellationException) {
-                        Repo.scan.value = Repo.scan.value.copy(running = false, message = "تست لغو شد")
+                        Repo.scan.value = Repo.scan.value.copy(running = false, diagnosticCounts = null, message = "تست لغو شد")
                         throw e
                     } catch (_: Exception) {
                         Repo.scan.value = Repo.scan.value.copy(
@@ -280,7 +280,7 @@ object SmartConnect {
                     // The service intentionally cancels superseded startup work
                     // after accepting its receipt; that is not a canceled test.
                     if (job?.isCancelled == true && !handedOff) {
-                        Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, message = "تست لغو شد")
+                        Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, diagnosticCounts = null, message = "تست لغو شد")
                     }
                 }
             }

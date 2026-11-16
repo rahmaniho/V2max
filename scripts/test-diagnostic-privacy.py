@@ -57,6 +57,10 @@ class DiagnosticPrivacyGuards(unittest.TestCase):
         self.assertNotIn('Log.i(TAG, "core: $message")', core)
         self.assertNotIn("log(message)", core)
 
+    def test_canceled_scan_does_not_leave_a_completed_summary(self):
+        smart = read(APP / "core/SmartConnect.kt")
+        self.assertGreaterEqual(smart.count('diagnosticCounts = null, message = "تست لغو شد"'), 2)
+
     def test_test_button_does_not_autostart_a_vpn(self):
         screen = read(APP / "ui/DiagScreen.kt")
         root = read(APP / "ui/AppRoot.kt")

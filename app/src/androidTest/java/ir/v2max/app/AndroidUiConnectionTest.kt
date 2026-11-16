@@ -577,6 +577,23 @@ class AndroidUiConnectionTest {
             assertEquals("Only the exact preview may be shared", sharedPreview, send?.getStringExtra(Intent.EXTRA_TEXT))
             assertFalse("Diagnostics must not start a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running)
             assertFalse("Diagnostics must not start a scan by itself", Repo.scan.value.running)
+
+            // The optional button is a real Xray scan, never an implicit connection.
+            clickScrollableText("تست همهٔ سرورها")
+            val scanDeadline = SystemClock.elapsedRealtime() + 40_000
+            while ((Repo.scan.value.running || !Repo.scan.value.finished || Repo.scan.value.diagnosticCounts == null) &&
+                SystemClock.elapsedRealtime() < scanDeadline) SystemClock.sleep(50)
+            val counts = Repo.scan.value.diagnosticCounts
+            assertNotNull("A complete scan did not publish diagnostics: ${Repo.scan.value.message}", counts)
+            assertEquals(2, counts?.responded)
+            assertEquals(0, counts?.noResponse)
+            assertEquals(0, counts?.unknown)
+            assertFalse("Testing servers must not start a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running)
+            awaitText("بی‌پاسخ")
+            clickScrollableText("پیش‌نمایش و اشتراک‌گذاری")
+            val scannedPreview = awaitText("=== گزارش خصوصی V2max ===").first().text.toString()
+            assertTrue("The report did not show the completed scan", scannedPreview.contains("پاسخ‌گو 2، بی‌پاسخ 0، نامشخص 0"))
+            clickText("انصراف")
         } finally {
             instrumentation.removeMonitor(monitor)
             CrashLog.clear()
