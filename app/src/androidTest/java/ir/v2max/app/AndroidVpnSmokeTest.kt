@@ -797,7 +797,7 @@ class AndroidVpnSmokeTest {
                         Repo.tunnel.value.message.contains("اتصال فعلی با تنظیمات قبلی حفظ شد"))) {
                     SystemClock.sleep(50)
                 }
-                assertTrue("Invalid app rule was not reported: ${Repo.tunnel.value.message}",
+                assertTrue("Invalid app rule for $mode was not reported: ${Repo.tunnel.value.message}",
                     V2maxVpnService.currentActionGeneration() != before && Repo.tunnel.value.message.contains(reason) &&
                         Repo.tunnel.value.message.contains("اتصال فعلی با تنظیمات قبلی حفظ شد"))
                 assertEquals("Invalid app rule dropped the previous VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)

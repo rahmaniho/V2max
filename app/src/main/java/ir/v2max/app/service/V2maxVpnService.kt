@@ -805,6 +805,11 @@ class V2maxVpnService : VpnService() {
             ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> CorePerAppMode.ONLY_SELECTED
             ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> CorePerAppMode.EXCEPT_SELECTED
         }
+        // Some Android versions' Builder.verifyApp ignores a null result from
+        // the package service even though its API documents NameNotFoundException.
+        // The public PackageManager method reliably rejects an absent package.
+        @Suppress("DEPRECATION")
+        fun installed(pkg: String) = packageManager.getApplicationInfo(pkg, 0)
         PerAppRouting.apply(
             mode = mode,
             requestedPackages = settings.perAppPackages,
@@ -812,12 +817,14 @@ class V2maxVpnService : VpnService() {
             allow = { pkg ->
                 // Android routes by UID. Allowing another package sharing this
                 // app's UID would route our own Xray sockets back into the VPN.
-                @Suppress("DEPRECATION")
-                val app = packageManager.getApplicationInfo(pkg, 0)
+                val app = installed(pkg)
                 check(app.uid != applicationInfo.uid)
                 builder.addAllowedApplication(pkg)
             },
-            disallow = { pkg -> builder.addDisallowedApplication(pkg) },
+            disallow = { pkg ->
+                installed(pkg)
+                builder.addDisallowedApplication(pkg)
+            },
         )
     }
 
