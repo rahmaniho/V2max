@@ -137,6 +137,15 @@ adb push "$work/direct-probe.sh" /data/local/tmp/v2max-direct-probe.sh
 if [[ "${V2MAX_UI_ONLY:-false}" != true ]]; then
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
+  # Require evidence that the selected-profile test reached its per-app checks;
+  # an accidentally excluded/skipped instrumentation case must not pass CI.
+  per_app_log="$(adb logcat -d -v raw -s V2maxPerAppTest:I '*:S' 2>/dev/null || true)"
+  per_app_marker='V2MAX_PER_APP_ROUTING invalid=refused live=preserved only=passed except=passed disconnected=refused'
+  if [[ "$per_app_log" != *"$per_app_marker"* ]]; then
+    echo '::error title=Per-app VPN smoke::The per-app routing assertions did not complete.'
+    exit 1
+  fi
+  echo "::notice title=Per-app VPN smoke::$per_app_marker"
   # Report all handovers together: GitHub limits annotations per step. Any
   # retry is still surfaced as a warning rather than concealed by eventual success.
   mapfile -t handovers < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)

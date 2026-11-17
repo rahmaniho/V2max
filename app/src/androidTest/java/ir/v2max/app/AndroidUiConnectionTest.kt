@@ -300,6 +300,25 @@ class AndroidUiConnectionTest {
         assertFalse("Opening restore unexpectedly started a tunnel", Repo.tunnel.value.isActive || V2maxVpnService.running)
     }
 
+    @Test fun stalePerAppSelectionCanBeRemovedWithoutConnecting() {
+        val missing = "ir.v2max.missing.fixture.app"
+        assertTrue(Repo.updateSettings {
+            it.copy(perAppMode = PerAppMode.ONLY_SELECTED, perAppPackages = listOf(missing))
+        })
+        grantNotificationsIfNeeded()
+        launchActivity()
+        clickText("تنظیمات")
+        awaitText("تنظیمات را با دقت تغییر دهید")
+        clickScrollableText("پروکسی برنامه‌به‌برنامه")
+        clickScrollableText(missing, exact = false)
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < deadline && missing in Repo.settings.value.perAppPackages) SystemClock.sleep(50)
+        assertTrue("The stale selection could not be removed", missing !in Repo.settings.value.perAppPackages)
+        assertEquals("Removing a stale selection must not change the routing mode", PerAppMode.ONLY_SELECTED, Repo.settings.value.perAppMode)
+        assertFalse("Editing app rules started a VPN", Repo.tunnel.value.isActive || V2maxVpnService.running || XrayCore.isRunning)
+        assertNotNull("Editing app rules authorized the VPN", VpnService.prepare(context))
+    }
+
     @Test fun manualSelectionCancelsStartupButWaitsForItsNativeProbe() {
         grantNotificationsIfNeeded()
         assertTrue(Repo.addSubscription(Subscription(
@@ -713,7 +732,7 @@ class AndroidUiConnectionTest {
         throw AssertionError("Text not visible/clickable: $text; active=${activePackage()}; ${visibleSummary()}")
     }
 
-    private fun clickScrollableText(text: String) {
+    private fun clickScrollableText(text: String, exact: Boolean = true) {
         val deadline = SystemClock.elapsedRealtime() + 30_000
         var swipes = 0
         val seenMatches = linkedSetOf<String>()
@@ -721,7 +740,7 @@ class AndroidUiConnectionTest {
             val tree = nodes()
             tree.filter { it.text?.toString()?.contains(text) == true }.forEach {
                 seenMatches.add("${it.text}:${it.isClickable}:${it.isEnabled}")
-                if (it.text?.toString() == text && clickNode(it)) return
+                if ((!exact || it.text?.toString() == text) && clickNode(it)) return
             }
             val list = tree.firstOrNull { it.isScrollable && it.isEnabled }
             val bounds = Rect()

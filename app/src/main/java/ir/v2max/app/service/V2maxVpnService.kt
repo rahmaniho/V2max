@@ -28,6 +28,8 @@ import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.ProbePlanner
 import ir.v2max.app.net.ProbeResult
 import ir.v2max.app.net.StartupMaintenance
+import ir.v2max.core.domain.PerAppRouting
+import ir.v2max.core.model.PerAppMode as CorePerAppMode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -531,8 +533,11 @@ class V2maxVpnService : VpnService() {
                     fragmentProfile = server.testedFragmentProfile,
                     balancer = false
                 )
-                // Catch malformed VPN/routing settings before interrupting a live tunnel.
+                // Prepare both the Xray configuration and Android's per-app/DNS
+                // rules before interrupting a live tunnel. Builder configuration
+                // does not establish an interface; a rejected rule discards it.
                 val initialConfig = ConfigBuilder.vpnConfig(server, settings, listOf(server))
+                val preparedTun = prepareTun(settings)
                 synchronized(coreStartStopLock) {
                     if (!ownsGeneration(token)) throw CancellationException("superseded")
                     val current = Repo.serverById(server.id)
@@ -575,7 +580,7 @@ class V2maxVpnService : VpnService() {
                 // and registering it for cleanup.
                 val fd = synchronized(coreStartStopLock) {
                     if (!ownsGeneration(token)) throw CancellationException("superseded")
-                    val created = establishTun(settings)
+                    val created = establishTun(preparedTun)
                         ?: throw IllegalStateException("دسترسی VPN داده نشده است. دوباره تلاش کنید.")
                     tun = created
                     Repo.clearLatencyHistory()
@@ -698,6 +703,16 @@ class V2maxVpnService : VpnService() {
         } catch (e: CancellationException) {
             if (replacedTunnel) releaseOwnedResources(token)
             throw e
+        } catch (e: PerAppRouting.InvalidRules) {
+            val message = when (e.reason) {
+                PerAppRouting.Failure.EMPTY_SELECTION ->
+                    "برای حالت «فقط انتخاب‌شده‌ها» دست‌کم یک برنامه انتخاب کنید"
+                PerAppRouting.Failure.RULE_UNAVAILABLE ->
+                    "قوانین برنامه‌به‌برنامه اعمال نشد؛ فهرست برنامه‌های انتخاب‌شده را بررسی کنید"
+            }
+            // Preparation failed before touching the previous VPN. Its old rules,
+            // not the newly requested ones, remain in force if it is still alive.
+            preflightFailed(message, token, requestStartId, "اتصال فعلی با تنظیمات قبلی حفظ شد")
         } catch (e: PreflightChanged) {
             val message = "کانفیگ، شبکه یا تنظیمات پس از تست تغییر کرد"
             if (isFailover && !running && Repo.settings.value.smartFailover) beginRecovery(message, token, requestStartId)
@@ -741,7 +756,8 @@ class V2maxVpnService : VpnService() {
         }
     }
 
-    private fun establishTun(settings: AppSettings): ParcelFileDescriptor? {
+    /** Configure a new builder without establishing it or replacing a live VPN. */
+    private fun prepareTun(settings: AppSettings): Builder {
         val builder = Builder()
         builder.setSession("V2max")
         builder.setMtu(settings.mtu.coerceIn(1280, 9000))
@@ -769,50 +785,40 @@ class V2maxVpnService : VpnService() {
             runCatching { builder.setMetered(false) }
         }
 
-        // خود برنامه از تانل خارج می‌شود تا سوکت‌های هسته در حلقه نیفتند
+        // Android's allow/disallow lists are mutually exclusive. A missing or
+        // rejected package must never silently turn a restricted list into all apps.
         applyPerAppRules(builder, settings)
-
-        return try {
-            builder.establish()
-        } catch (_: Throwable) {
-            Log.e(TAG, "establish failed")
-            null
-        }
+        return builder
     }
 
-    /** اعمال قوانین پروکسی برنامه‌به‌برنامه */
+    private fun establishTun(builder: Builder): ParcelFileDescriptor? = try {
+        builder.establish()
+    } catch (_: Throwable) {
+        Log.e(TAG, "establish failed")
+        null
+    }
+
+    /** Configure every rule or discard this unestablished builder. */
     private fun applyPerAppRules(builder: Builder, settings: AppSettings) {
-        val selected = settings.perAppPackages.filter { it.isNotBlank() }
-        when (settings.perAppMode) {
-            ir.v2max.app.data.PerAppMode.OFF -> {
-                runCatching { builder.addDisallowedApplication(packageName) }
-            }
-
-            ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> {
-                if (selected.isEmpty()) {
-                    runCatching { builder.addDisallowedApplication(packageName) }
-                } else {
-                    var added = 0
-                    selected.forEach { pkg ->
-                        if (pkg == packageName) return@forEach
-                        runCatching {
-                            builder.addAllowedApplication(pkg)
-                            added++
-                        }
-                    }
-                    if (added == 0) {
-                        runCatching { builder.addDisallowedApplication(packageName) }
-                    }
-                }
-            }
-
-            ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> {
-                runCatching { builder.addDisallowedApplication(packageName) }
-                selected.forEach { pkg ->
-                    runCatching { builder.addDisallowedApplication(pkg) }
-                }
-            }
+        val mode = when (settings.perAppMode) {
+            ir.v2max.app.data.PerAppMode.OFF -> CorePerAppMode.OFF
+            ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> CorePerAppMode.ONLY_SELECTED
+            ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> CorePerAppMode.EXCEPT_SELECTED
         }
+        PerAppRouting.apply(
+            mode = mode,
+            requestedPackages = settings.perAppPackages,
+            vpnPackage = packageName,
+            allow = { pkg ->
+                // Android routes by UID. Allowing another package sharing this
+                // app's UID would route our own Xray sockets back into the VPN.
+                @Suppress("DEPRECATION")
+                val app = packageManager.getApplicationInfo(pkg, 0)
+                check(app.uid != applicationInfo.uid)
+                builder.addAllowedApplication(pkg)
+            },
+            disallow = { pkg -> builder.addDisallowedApplication(pkg) },
+        )
     }
 
     // --------------------------------------------------------------- monitor
@@ -1107,14 +1113,19 @@ class V2maxVpnService : VpnService() {
     }
 
     /** A failed/stale preflight must not tear down an already working VPN. */
-    private fun preflightFailed(message: String, generation: Int, requestStartId: Int) = synchronized(coreStartStopLock) {
+    private fun preflightFailed(
+        message: String,
+        generation: Int,
+        requestStartId: Int,
+        preservedMessage: String = "اتصال فعلی حفظ شد"
+    ) = synchronized(coreStartStopLock) {
         if (!ownsGeneration(generation)) return@synchronized
         val active = currentServer
         if (running && coreRunning() && tun != null && active != null) {
             publish(Repo.tunnel.value.copy(
                 status = TunnelStatus.CONNECTED, serverId = active.id,
                 serverName = active.displayName(), serverProto = active.proto.label,
-                message = "$message؛ اتصال فعلی حفظ شد"
+                message = "$message؛ $preservedMessage"
             ))
             startMonitor()
         } else if (running && active != null && Repo.settings.value.smartFailover) {

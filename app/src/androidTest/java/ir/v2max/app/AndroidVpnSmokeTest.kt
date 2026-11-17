@@ -20,6 +20,7 @@ import ir.v2max.app.core.PreflightTickets
 import ir.v2max.app.core.SmartConnect
 import ir.v2max.app.core.TunnelController
 import ir.v2max.app.core.XrayCore
+import ir.v2max.app.data.PerAppMode
 import ir.v2max.app.data.Proto
 import ir.v2max.app.data.Repo
 import ir.v2max.app.data.RoutingMode
@@ -433,6 +434,7 @@ class AndroidVpnSmokeTest {
                 networkBeforeVpn, CarrierProbe.networkHandle(context))
             assertQrImportsPreserveLiveTunnel(instrumentation, server)
             assertEditingPreservesLiveTunnel(instrumentation, server)
+            assertPerAppRulesAndPreservedTunnel(instrumentation, server)
 
             // Explicit broadcasts from the shell UID simulate an unrelated app.
             // Neither the old exported widget action nor private receiver may
@@ -735,11 +737,105 @@ class AndroidVpnSmokeTest {
             SystemClock.sleep(4_500)
             assertEquals("A canceled connection returned after stop", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
             assertTrue("Native core kept running after stop", !V2maxVpnService.running && !XrayCore.isRunning)
+
+            // With no existing VPN, an empty allow-list must not become Android's
+            // default all-apps VPN either. The protocol preflight can succeed,
+            // but the service must report the invalid routing settings and stop.
+            Repo.updateSettings { it.copy(perAppMode = PerAppMode.ONLY_SELECTED, perAppPackages = emptyList(),
+                delayTestUrl = "http://198.51.100.1:18081/probe") }
+            val beforeEmpty = V2maxVpnService.currentActionGeneration()
+            assertTrue("Disconnected per-app preflight failed: ${Repo.scan.value.message}",
+                runBlocking { SmartConnect.connectVerified(context, edited.id) })
+            val emptyDeadline = SystemClock.elapsedRealtime() + 30_000
+            while (SystemClock.elapsedRealtime() < emptyDeadline &&
+                !(V2maxVpnService.currentActionGeneration() != beforeEmpty &&
+                    Repo.tunnel.value.status == TunnelStatus.ERROR && Repo.tunnel.value.message.contains("دست‌کم یک برنامه"))) {
+                SystemClock.sleep(50)
+            }
+            assertEquals("Empty allow-list did not refuse a new VPN: ${Repo.tunnel.value.message}",
+                TunnelStatus.ERROR, Repo.tunnel.value.status)
+            assertTrue("Empty allow-list error was not reported",
+                V2maxVpnService.currentActionGeneration() != beforeEmpty && Repo.tunnel.value.message.contains("دست‌کم یک برنامه"))
+            assertTrue("Empty allow-list started a VPN", !V2maxVpnService.running && !XrayCore.isRunning)
+            assertDirectFixtureReachable(instrumentation)
+            Repo.updateSettings { it.copy(perAppMode = PerAppMode.OFF, perAppPackages = emptyList()) }
+            android.util.Log.i("V2maxPerAppTest", "V2MAX_PER_APP_ROUTING invalid=refused live=preserved only=passed except=passed disconnected=refused")
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
             runCatching { fixtureControl("hold-release") }
             Repo.removeServer("held-replacement")
+        }
+    }
+
+    /** Exercise Android's actual allow/disallow builders without sacrificing a live tunnel on invalid input. */
+    private fun assertPerAppRulesAndPreservedTunnel(instrumentation: Instrumentation, active: ServerConfig) {
+        val context = instrumentation.targetContext
+        val original = Repo.settings.value.copy()
+        val missingPackage = "ir.v2max.missing.fixture.app"
+        val shellPackage = "com.android.shell"
+        @Suppress("DEPRECATION")
+        val shellApp = context.packageManager.getApplicationInfo(shellPackage, 0)
+        assertNotNull("The external-UID fixture package must be installed", shellApp)
+
+        try {
+            val invalid = listOf(
+                Triple(PerAppMode.ONLY_SELECTED, emptyList(), "دست‌کم یک برنامه"),
+                // A partial allow-list must not be applied if another rule failed.
+                Triple(PerAppMode.ONLY_SELECTED, listOf(shellPackage, missingPackage), "قوانین برنامه‌به‌برنامه اعمال نشد"),
+                Triple(PerAppMode.EXCEPT_SELECTED, listOf(missingPackage), "قوانین برنامه‌به‌برنامه اعمال نشد"),
+            )
+            for ((mode, packages, reason) in invalid) {
+                val before = V2maxVpnService.currentActionGeneration()
+                assertTrue(Repo.updateSettings { it.copy(perAppMode = mode, perAppPackages = packages) })
+                assertTrue("Protocol preflight for invalid routing failed: ${Repo.scan.value.message}",
+                    runBlocking { SmartConnect.connectVerified(context, active.id) })
+                val deadline = SystemClock.elapsedRealtime() + 30_000
+                while (SystemClock.elapsedRealtime() < deadline &&
+                    !(V2maxVpnService.currentActionGeneration() != before &&
+                        Repo.tunnel.value.message.contains(reason) &&
+                        Repo.tunnel.value.message.contains("اتصال فعلی با تنظیمات قبلی حفظ شد"))) {
+                    SystemClock.sleep(50)
+                }
+                assertTrue("Invalid app rule was not reported: ${Repo.tunnel.value.message}",
+                    V2maxVpnService.currentActionGeneration() != before && Repo.tunnel.value.message.contains(reason) &&
+                        Repo.tunnel.value.message.contains("اتصال فعلی با تنظیمات قبلی حفظ شد"))
+                assertEquals("Invalid app rule dropped the previous VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+                assertTrue("Invalid app rule changed the active VPN", V2maxVpnService.activeProfileMatches(active, original))
+                assertTrue("Invalid app rule stopped the Xray core", XrayCore.isRunning)
+                assertTunTraffic(instrumentation)
+            }
+
+            suspend fun requestAndWait(mode: PerAppMode, packages: List<String>, phase: String) {
+                assertTrue(Repo.updateSettings { it.copy(perAppMode = mode, perAppPackages = packages) })
+                assertTrue("Per-app protocol preflight failed: ${Repo.scan.value.message}",
+                    SmartConnect.connectVerified(context, active.id))
+                val deadline = SystemClock.elapsedRealtime() + 60_000
+                while (SystemClock.elapsedRealtime() < deadline &&
+                    !(Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(active))) {
+                    SystemClock.sleep(50)
+                }
+                assertTrue("Per-app $phase was not applied: ${Repo.tunnel.value.message}",
+                    Repo.tunnel.value.status == TunnelStatus.CONNECTED && V2maxVpnService.activeProfileMatches(active))
+            }
+
+            // The fixture shell is a separate UID. Allowing just that package
+            // must still carry its local test traffic across Android's TUN.
+            runBlocking { requestAndWait(PerAppMode.ONLY_SELECTED, listOf(shellPackage), "allow") }
+            assertTunTrafficEventually(instrumentation, "per-app-allowed")
+
+            // Excluding that same UID must prevent it from reaching the address
+            // which only the local VPN fixture can serve.
+            runBlocking { requestAndWait(PerAppMode.EXCEPT_SELECTED, listOf(shellPackage), "exclude") }
+            assertDirectFixtureReachable(instrumentation)
+            val bypassed = shell(instrumentation, "sh /data/local/tmp/v2max-tun-probe.sh")
+            assertTrue("Excluded UID unexpectedly reached the TUN-only fixture: $bypassed",
+                !bypassed.contains(" 200 ") && !bypassed.contains("v2max-tun-ok"))
+
+            runBlocking { requestAndWait(original.perAppMode, original.perAppPackages, "restore") }
+            assertTunTrafficEventually(instrumentation, "per-app-restored")
+        } finally {
+            Repo.updateSettings { it.copy(perAppMode = original.perAppMode, perAppPackages = original.perAppPackages) }
         }
     }
 

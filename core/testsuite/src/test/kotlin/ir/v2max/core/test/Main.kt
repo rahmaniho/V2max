@@ -87,6 +87,7 @@ fun runAllSuites(): Int {
     CountryFlagsTests.run()
     GeoDataTagsTests.run()
     ConnectionAdviceTests.run()
+    PerAppRoutingTests.run()
     ProbePlannerTests.run()
     ServerHealthTests.run()
     PublicSourcesTests.run()

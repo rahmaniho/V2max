@@ -316,7 +316,7 @@ fun SettingsScreen(
             SettingValue(
                 title = "پروکسی برنامه‌به‌برنامه",
                 subtitle = when (settings.perAppMode) {
-                    ir.v2max.app.data.PerAppMode.OFF -> "همه‌ی برنامه‌ها از تانل عبور می‌کنند"
+                    ir.v2max.app.data.PerAppMode.OFF -> "همهٔ برنامه‌ها به‌جز خود V2max"
                     ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> "فقط برنامه‌های انتخاب‌شده"
                     ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> "به‌جز برنامه‌های انتخاب‌شده"
                 },
