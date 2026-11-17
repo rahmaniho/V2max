@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import importlib.util
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -38,6 +41,53 @@ class MetadataTest(unittest.TestCase):
             self.values["previous.apk"] = value
             with self.assertRaises(ValueError):
                 metadata.verify(self.root, "2.4.0", 23, self.read, self.previous)
+
+    def test_native_badging_must_be_present_and_unambiguous(self):
+        badging = "package: example\nnative-code: 'arm64-v8a' 'armeabi-v7a' 'x86_64'\n"
+        self.assertEqual({"arm64-v8a", "armeabi-v7a", "x86_64"}, metadata.native_abis(badging))
+        for malformed in ("", "native-code: \n", badging + "native-code: 'x86'\n", "native-code: 'unterminated\n"):
+            with self.subTest(badging=malformed), self.assertRaises(ValueError):
+                metadata.native_abis(malformed)
+
+    def test_universal_and_splits_must_support_their_advertised_abis(self):
+        abis = {name: set(required) for name, required in metadata.REQUIRED_ABIS.items()}
+        metadata.verify_abis(self.root, lambda path: abis[path.name])
+        for name, expected in metadata.REQUIRED_ABIS.items():
+            for missing in expected:
+                broken = {key: value.copy() for key, value in abis.items()}
+                broken[name].remove(missing)
+                with self.subTest(name=name, missing=missing), self.assertRaisesRegex(ValueError, name):
+                    metadata.verify_abis(self.root, lambda path: broken[path.name])
+
+    def test_cli_checks_real_aapt_output_for_each_apk(self):
+        build_tools = self.root / "sdk" / "build-tools" / "35.0.0"
+        build_tools.mkdir(parents=True)
+        aapt = build_tools / "aapt"
+        aapt.write_text('''#!/usr/bin/env python3
+import os, pathlib, sys
+name = pathlib.Path(sys.argv[-1]).name
+abis = {
+    'app-arm64-v8a-release.apk': ['arm64-v8a'],
+    'app-armeabi-v7a-release.apk': ['armeabi-v7a'],
+    'app-universal-release.apk': ['arm64-v8a', 'armeabi-v7a', 'x86_64'],
+    'app-x86_64-release.apk': ['x86_64'],
+}[name]
+if os.environ.get('TEST_INCOMPLETE') and name == 'app-universal-release.apk':
+    abis.remove('armeabi-v7a')
+print("package: name='ir.v2max.app' versionCode='{}' versionName='{}'".format(
+    os.environ['TEST_CODE'], os.environ['TEST_VERSION']))
+print('native-code: ' + ' '.join("'" + abi + "'" for abi in abis))
+''', encoding="utf-8")
+        aapt.chmod(0o755)
+        version, code = metadata.gradle_version("app/build.gradle.kts")
+        env = dict(os.environ, ANDROID_HOME=str(self.root / "sdk"), TEST_VERSION=version, TEST_CODE=str(code))
+        env.pop("GITHUB_OUTPUT", None)
+        command = [sys.executable, str(pathlib.Path(__file__).with_name("verify-release-metadata.py")), str(self.root)]
+        subprocess.run(command, check=True, env=env, stdout=subprocess.DEVNULL)
+        env["TEST_INCOMPLETE"] = "1"
+        failed = subprocess.run(command, env=env, text=True, capture_output=True)
+        self.assertNotEqual(0, failed.returncode)
+        self.assertIn("missing required native architectures", failed.stderr)
 
     def test_build_version_and_identity_must_be_unambiguous(self):
         build = self.root / "build.gradle.kts"

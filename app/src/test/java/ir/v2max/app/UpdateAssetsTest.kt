@@ -14,6 +14,13 @@ class UpdateAssetsTest {
         assertEquals(universal, UpdateAssets.select(listOf(arm, universal), listOf("armeabi-v7a")))
     }
 
+    @Test fun `legacy compatibility alias is a universal APK`() {
+        val alias = asset("00-V2max-universal.apk")
+        val arm64 = asset("app-arm64-v8a-release.apk")
+        assertEquals(alias, UpdateAssets.select(listOf(alias, arm64), listOf("armeabi-v7a")))
+        assertEquals(alias, UpdateAssets.select(listOf(alias, arm64), listOf("x86_64")))
+    }
+
     @Test fun `without universal selects supported architecture in device order`() {
         val arm64 = asset("app-arm64-v8a-release.apk")
         val arm32 = asset("app-armeabi-v7a-release.apk")

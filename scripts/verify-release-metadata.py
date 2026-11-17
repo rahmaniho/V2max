@@ -3,6 +3,7 @@
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 
@@ -12,6 +13,12 @@ REQUIRED_APKS = {
 }
 PACKAGE = "ir.v2max.app"
 VERSION = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
+REQUIRED_ABIS = {
+    "app-arm64-v8a-release.apk": {"arm64-v8a"},
+    "app-armeabi-v7a-release.apk": {"armeabi-v7a"},
+    "app-universal-release.apk": {"arm64-v8a", "armeabi-v7a", "x86_64"},
+    "app-x86_64-release.apk": {"x86_64"},
+}
 
 
 def gradle_version(path):
@@ -33,6 +40,24 @@ def read_badging(aapt, apk):
     if not match:
         raise ValueError(f"Could not read Android package identity: {apk.name}")
     return match.group(1), int(match.group(2)), match.group(3)
+
+
+def native_abis(badging):
+    lines = [line for line in badging.splitlines() if line.startswith("native-code:")]
+    if len(lines) != 1:
+        raise ValueError("APK has missing or ambiguous native-code badging")
+    abis = set(shlex.split(lines[0].removeprefix("native-code:")))
+    if not abis:
+        raise ValueError("APK has no native architectures")
+    return abis
+
+
+def verify_abis(directory, read):
+    directory = pathlib.Path(directory)
+    for name, required in REQUIRED_ABIS.items():
+        if not required.issubset(read(directory / name)):
+            raise ValueError(f"APK is missing required native architectures: {name}")
+    print("Verified native architectures in the universal and split APKs")
 
 
 def verify(directory, version, code, read, previous=None):
@@ -64,6 +89,8 @@ def main():
     aapt = max(candidates, key=version_key)
     version, code = gradle_version("app/build.gradle.kts")
     verify(sys.argv[1], version, code, lambda path: read_badging(aapt, path), sys.argv[2] if len(sys.argv) == 3 else None)
+    verify_abis(sys.argv[1], lambda path: native_abis(subprocess.check_output(
+        [str(aapt), "dump", "badging", str(path)], text=True)))
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write(f"version={version}\ncode={code}\n")
