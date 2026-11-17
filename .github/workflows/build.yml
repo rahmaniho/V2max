@@ -38,19 +38,6 @@ on:
         required: false
         type: boolean
         default: false
-      signing_log_diagnostics:
-        description: "Classify a failed signing job without exposing raw logs"
-        required: false
-        type: boolean
-        default: false
-      diagnostic_run_id:
-        description: "Failed release workflow run ID"
-        required: false
-        type: string
-      diagnostic_job_id:
-        description: "Failed signing job ID"
-        required: false
-        type: string
 
 env:
   LIBV2RAY_VERSION: v26.10.21
@@ -62,7 +49,7 @@ permissions:
 
 jobs:
   build:
-    if: (github.event_name != 'workflow_dispatch' || !inputs.security_only) && !inputs.signing_log_diagnostics
+    if: github.event_name != 'workflow_dispatch' || !inputs.security_only
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -433,21 +420,6 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-security-smoke.sh
-
-  signing-diagnostic:
-    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && inputs.signing_log_diagnostics && !inputs.security_only && !inputs.publish_release && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Classify signing error without revealing logs
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DIAGNOSTIC_RUN: ${{ inputs.diagnostic_run_id }}
-          DIAGNOSTIC_JOB: ${{ inputs.diagnostic_job_id }}
-        run: python3 scripts/summarize-signing-failure.py
 
   release-approval:
     # An explicit release request must fail clearly if the owner has not set
