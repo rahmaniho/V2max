@@ -421,12 +421,32 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-security-smoke.sh
 
+  release-approval:
+    # An explicit release request must fail clearly if the owner has not set
+    # the review flag; otherwise skipped sign/publish jobs can look successful.
+    # This lightweight check receives no signing secrets and runs in parallel.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require owner security review approval
+        env:
+          RELEASE_APPROVED: ${{ vars.V2MAX_RELEASE_APPROVED }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_APPROVED:-}" != true ]]; then
+            echo '::error title=release approval::Owner review and V2MAX_RELEASE_APPROVED=true are required before publication.'
+            exit 1
+          fi
+          echo 'Owner release approval flag is set.'
+
   sign-release:
     # A main push or merge can never sign or publish by itself. After owner
     # review, a separate manual dispatch must run both emulator suites first.
     # This job has no repository write access and never runs Gradle with the key.
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'
-    needs: [build, security-smoke]
+    needs: [build, security-smoke, release-approval]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -533,7 +553,9 @@ jobs:
           - بررسی سرورها پیش از اتصال و تلاش برای بازیابی اتصال قطع‌شده
           - پشتیبان‌گیری و اطلاع‌رسانی نسخهٔ جدید با تأیید نصب توسط کاربر
           - فایل universal برای بیشتر دستگاه‌ها؛ فایل‌های دیگر مخصوص معماری دستگاه هستند
+          - فایل 00-V2max-universal.apk با app-universal-release.apk یکسان است و برای سازگاری به‌روزرسان نسخهٔ قبلی ارائه می‌شود
 
+          آزمون‌های خودکار روی شبیه‌ساز انجام شده‌اند؛ اتصال روی همهٔ گوشی‌ها و شبکه‌ها تضمین نمی‌شود.
           پایداری و دسترسی به منابع رایگان به شبکه و ارائه‌دهنده بستگی دارد.
           برای به‌روزرسانی روی نصب قبلی، امضای نسخه‌ها باید یکسان باشد.
           EOF

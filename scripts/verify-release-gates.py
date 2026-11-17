@@ -9,9 +9,10 @@ import pathlib
 import re
 import sys
 
-CONDITION = ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
-             "inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && "
-             "!inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'")
+RELEASE_REQUEST = ("github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && "
+                   "inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && "
+                   "!inputs.validate_preview && !inputs.ui_diagnostics")
+CONDITION = RELEASE_REQUEST + " && vars.V2MAX_RELEASE_APPROVED == 'true'"
 PREVIEW_CONDITION = ("github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && "
                      "inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview && !inputs.ui_diagnostics")
 PREVIEW_TEST_CONDITION = ("github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && "
@@ -34,8 +35,16 @@ def verify(source):
         condition = re.search(r"(?m)^    if: (.+)$", body)
         if not condition or " ".join(condition.group(1).split()) != CONDITION:
             raise ValueError(f"{name} no longer requires explicit main dispatch and owner approval")
-    if not re.search(r"(?m)^    needs: \[build, security-smoke\]\s*$", section(source, "sign-release")):
-        raise ValueError("Signing must depend on both the full build and security matrix")
+    approval = section(source, "release-approval")
+    approval_condition = re.search(r"(?m)^    if: (.+)$", approval)
+    if not approval_condition or " ".join(approval_condition.group(1).split()) != RELEASE_REQUEST:
+        raise ValueError("Approval check must run for every explicit main release request")
+    if ("RELEASE_APPROVED: ${{ vars.V2MAX_RELEASE_APPROVED }}" not in approval
+            or 'if [[ "${RELEASE_APPROVED:-}" != true ]]; then' not in approval
+            or re.search(r"secrets\.V2MAX_RELEASE_", approval)):
+        raise ValueError("Approval check must require the owner flag without receiving signing secrets")
+    if not re.search(r"(?m)^    needs: \[build, security-smoke, release-approval\]\s*$", section(source, "sign-release")):
+        raise ValueError("Signing must depend on build, security matrix and explicit owner approval")
     if not re.search(r"(?m)^    needs: sign-release\s*$", section(source, "publish")):
         raise ValueError("Publication must depend on signing")
     security = section(source, "security-smoke")

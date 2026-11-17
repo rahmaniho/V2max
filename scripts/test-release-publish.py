@@ -112,6 +112,24 @@ def publication_script():
     return textwrap.dedent(match.group(1))
 
 
+class ApprovalWorkflowTest(unittest.TestCase):
+    def test_only_explicit_true_allows_release(self):
+        source = (ROOT / '.github/workflows/build.yml').read_text(encoding='utf-8')
+        match = re.search(r'(?ms)^      - name: Require owner security review approval\n.*?^        run: \|\n(.*?)(?=^  sign-release:)', source)
+        self.assertIsNotNone(match)
+        script = textwrap.dedent(match.group(1))
+        for value in (None, '', 'false', 'TRUE', '1', 'true ', 'true'):
+            env = os.environ.copy()
+            if value is None:
+                env.pop('RELEASE_APPROVED', None)
+            else:
+                env['RELEASE_APPROVED'] = value
+            result = subprocess.run(['bash', '-euo', 'pipefail', '-c', script], env=env,
+                                    text=True, capture_output=True, timeout=5)
+            with self.subTest(value=value):
+                self.assertEqual(value == 'true', result.returncode == 0, result.stderr)
+
+
 class PublishWorkflowTest(unittest.TestCase):
     def run_scenario(self, scenario):
         with tempfile.TemporaryDirectory() as temporary:
