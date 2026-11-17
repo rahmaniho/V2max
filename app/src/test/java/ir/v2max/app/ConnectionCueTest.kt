@@ -220,6 +220,22 @@ class ConnectionCueTest {
         assertEquals(1, next.releases)
     }
 
+    @Test fun `a failed newer post cannot prevent an earlier cancel from releasing the old player`() {
+        val dispatcher = Dispatcher()
+        val player = Player()
+        val cue = ConnectionCue(dispatcher::post, { player })
+        cue.announce { true }
+        dispatcher.drain()
+        player.prepared!!.invoke()
+        cue.cancel() // queued, but not delivered yet
+        dispatcher.failImmediate = true
+        cue.announce { true } // advances the revision but cannot be queued
+        dispatcher.failImmediate = false
+        dispatcher.drain()
+        assertEquals(1, player.starts)
+        assertEquals(1, player.releases)
+    }
+
     @Test fun `dispatcher failures do not escape or retain a prepared player`() {
         val dispatcher = Dispatcher()
         var failures = 0

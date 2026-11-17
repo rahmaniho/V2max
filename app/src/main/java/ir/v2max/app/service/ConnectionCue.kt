@@ -23,6 +23,7 @@ internal class ConnectionCue(
     private val revision = AtomicLong(0)
     // Accessed only on the dispatcher, never while holding the VPN lifecycle lock.
     private var player: ConnectionCuePlayer? = null
+    private var playerRevision = 0L
 
     /** Call once after a new tunnel has passed its post-start verification. */
     fun announce(stillEligible: () -> Boolean) {
@@ -39,6 +40,7 @@ internal class ConnectionCue(
                 return@post
             }
             player = created
+            playerRevision = request
             // A broken media service must not retain a player indefinitely.
             if (!post(MAX_LIFETIME_MS) { finish(created) }) {
                 finish(created)
@@ -79,9 +81,10 @@ internal class ConnectionCue(
     fun cancel() {
         val request = revision.incrementAndGet()
         post {
-            // A newer announcement releases the old player itself. A late cancel
-            // must never release that newer announcement instead.
-            if (revision.get() == request) releaseCurrent()
+            // A late cancel may release an older player, but never a player
+            // created by a newer announcement. Compare the actual player rather
+            // than the latest revision: a newer post itself may have failed.
+            if (player != null && playerRevision < request) releaseCurrent()
         }
     }
 
@@ -94,6 +97,7 @@ internal class ConnectionCue(
     private fun releaseCurrent() {
         val previous = player ?: return
         player = null
+        playerRevision = 0L
         try {
             previous.release()
         } catch (_: Throwable) {
