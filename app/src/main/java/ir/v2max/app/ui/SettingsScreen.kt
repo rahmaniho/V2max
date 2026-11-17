@@ -87,6 +87,14 @@ fun SettingsScreen(
         item { GroupTitle("اتصال") }
 
         item {
+            SettingSwitch(
+                title = "پیام صوتی اتصال",
+                subtitle = "پس از اتصال موفق، «تا ابد جاوید شاه» با صدای اعلان پخش می‌شود؛ در اتصال خودکار و بازیابی نیز فعال است",
+                checked = settings.connectionVoice
+            ) { value -> onChange { it.copy(connectionVoice = value) } }
+        }
+
+        item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Text(

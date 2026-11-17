@@ -19,6 +19,7 @@ mapfile -t tests < <(find app/build/outputs/apk/androidTest/preview -maxdepth 1 
   exit 1
 }
 python3 scripts/verify-preview-apk.py "${apks[0]}"
+python3 scripts/verify-connection-audio.py "${apks[0]}"
 sha256sum "${apks[0]}" > "$RUNNER_TEMP/v2max-preview-tested.sha256"
 
 # Prove side-by-side installation against the exact previously published APK.

@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.util.Log
+import ir.v2max.app.BuildConfig
 import ir.v2max.app.core.AppliedTunnelPolicy
 import ir.v2max.app.core.ConfigBuilder
 import ir.v2max.app.core.ConnectionTestBarrier
@@ -39,6 +40,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -94,6 +96,9 @@ class V2maxVpnService : VpnService() {
         private val serviceOwner = TunnelResourceOwnership()  // guarded by coreStartStopLock
         private val nextServiceInstance = java.util.concurrent.atomic.AtomicInteger(0)
 
+        // Disposable-emulator fault injection only; release/preview builds ignore it.
+        @Volatile internal var connectionCueForTest: ConnectionCue? = null
+
         internal fun currentActionGeneration(): Int = connectToken.get()
         internal fun invalidatePendingActions(): Int = synchronized(coreStartStopLock) {
             connectToken.incrementAndGet()
@@ -128,6 +133,7 @@ class V2maxVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + serviceErrorHandler)
     private val serviceInstance = nextServiceInstance.incrementAndGet()
+    @Volatile private var connectedSound: ConnectionCue? = null
     @Volatile private var latestStartId = 0
 
     @Volatile private var tun: ParcelFileDescriptor? = null
@@ -170,7 +176,35 @@ class V2maxVpnService : VpnService() {
         synchronized(coreStartStopLock) { serviceOwner.claim(serviceInstance) }
         Repo.init(this)
         Notifier.ensureChannel(this)
+        // Audio is optional: even creating its dispatcher must not affect VPN setup.
+        connectedSound = runCatching { connectionCue(applicationContext) }
+            .onFailure { Log.w(TAG, "connection sound unavailable") }.getOrNull()
+        scope.launch {
+            Repo.settings.collect { settings ->
+                if (!settings.connectionVoice) cancelConnectedSound()
+            }
+        }
         registerNetworkWatcher()
+    }
+
+    private fun cancelConnectedSound() {
+        runCatching { connectedSound?.cancel() }
+        if (BuildConfig.DEBUG) runCatching { connectionCueForTest?.cancel() }
+    }
+
+    /** Called only after post-start verification, not for CONNECTED state updates. */
+    private fun announceConnected(generation: Int, serverId: String) {
+        if (!Repo.settings.value.connectionVoice) return
+        runCatching {
+            val cue = if (BuildConfig.DEBUG) connectionCueForTest ?: connectedSound else connectedSound
+            cue?.announce {
+                synchronized(coreStartStopLock) {
+                    serviceOwner.isOwner(serviceInstance) && connectToken.get() == generation &&
+                        running && tun != null && currentServer?.id == serverId &&
+                        Repo.tunnel.value.status == TunnelStatus.CONNECTED && Repo.settings.value.connectionVoice
+                }
+            }
+        }.onFailure { Log.w(TAG, "connection sound unavailable") }
     }
 
     /** با تغییر شبکه (وای‌فای ↔ داده) بلافاصله کیفیت دوباره سنجیده می‌شود */
@@ -239,6 +273,7 @@ class V2maxVpnService : VpnService() {
                 }
                 // A canceled attempt may already have replaced the old tunnel.
                 // Close it rather than leaving a false CONNECTING/CONNECTED state.
+                cancelConnectedSound()
                 resourceOwner.clear()
                 XrayCore.stop()
                 closeTun()
@@ -454,6 +489,7 @@ class V2maxVpnService : VpnService() {
 
     override fun onDestroy() {
         Log.i(TAG, "service destroyed")
+        cancelConnectedSound()
         unregisterNetworkWatcher()
         preflightJob?.cancel()
         actionJob?.cancel()
@@ -553,6 +589,7 @@ class V2maxVpnService : VpnService() {
                     // from a destroyed Service instance may finish much later.
                     resourceOwner.claim(token)
                     replacedTunnel = true
+                    cancelConnectedSound()
                     running = false
                     activeIdentity = null
                     XrayCore.stop()
@@ -693,6 +730,9 @@ class V2maxVpnService : VpnService() {
                         )
                     )
                     startMonitor()
+                    // The callback is only queued here. Media preparation and
+                    // playback never run under the VPN lifecycle lock.
+                    announceConnected(token, server.id)
                 }
                 // Persisting a large server list must not hold the lifecycle gate.
                 if (ownsGeneration(token)) runCatching {
@@ -868,6 +908,7 @@ class V2maxVpnService : VpnService() {
                     val stopped = synchronized(coreStartStopLock) {
                         if (!ownsGeneration(monitorGeneration)) return@launch
                         if (coreRunning()) false else {
+                            cancelConnectedSound()
                             running = false
                             activeIdentity = null
                             publish(Repo.tunnel.value.copy(
@@ -999,6 +1040,7 @@ class V2maxVpnService : VpnService() {
     /** Keep retrying after the core actually stops, without pretending traffic is protected. */
     private fun beginRecovery(message: String, generation: Int, requestStartId: Int) = synchronized(coreStartStopLock) {
         if (!ownsGeneration(generation)) return@synchronized
+        cancelConnectedSound()
         monitorJob?.cancel()
         resourceOwner.clear()
         XrayCore.stop()
@@ -1084,6 +1126,7 @@ class V2maxVpnService : VpnService() {
         val stopped = synchronized(coreStartStopLock) {
             if (!serviceOwner.isOwner(serviceInstance) ||
                 (expectedGeneration != null && expectedGeneration != connectToken.get())) return@synchronized false
+            cancelConnectedSound()
             connectToken.incrementAndGet()
             StartupMaintenance.cancelAll()
             SmartConnect.cancelScan()
@@ -1146,6 +1189,7 @@ class V2maxVpnService : VpnService() {
 
     private fun fail(message: String, generation: Int, requestStartId: Int) = synchronized(coreStartStopLock) {
         if (!ownsGeneration(generation)) return@synchronized
+        cancelConnectedSound()
         running = false
         activeIdentity = null
         resourceOwner.clear()

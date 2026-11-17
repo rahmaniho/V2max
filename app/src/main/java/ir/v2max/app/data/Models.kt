@@ -329,6 +329,9 @@ data class AppSettings(
     /** پنهان‌کردن جزئیات اتصال در اعلان (نام سرور و سرعت) */
     var hideNotificationContent: Boolean = false,
 
+    /** پخش پیام از پیش ضبط‌شده پس از تأیید اتصال؛ به تنظیمات VPN ربطی ندارد. */
+    var connectionVoice: Boolean = true,
+
     /** نمایش پرچم کشور در فهرست سرورها */
     var showFlags: Boolean = true,
 
