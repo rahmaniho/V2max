@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Targeted, disposable emulator checks only; this is not a release build and
+# Targeted, disposable emulator security and bundled-audio checks only; this
 # does not replace the full VPN/TUN or updater integration suites.
 if [[ "$(adb shell getprop ro.kernel.qemu | tr -d '\r')" != 1 ]]; then
   echo '::error title=Android security smoke::Use a disposable Android emulator, not a physical device.'
@@ -20,11 +20,11 @@ pkg=ir.v2max.app.debug
 runner="$pkg.test/androidx.test.runner.AndroidJUnitRunner"
 api="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 if (( api >= 33 )); then adb shell pm grant "$pkg" android.permission.POST_NOTIFICATIONS; fi
-classes=ir.v2max.app.AndroidSecureBackupTest,ir.v2max.app.AndroidStoredDataRecoveryTest
-expected=9
+classes=ir.v2max.app.AndroidSecureBackupTest,ir.v2max.app.AndroidStoredDataRecoveryTest,ir.v2max.app.AndroidConnectionCueTest
+expected=11
 if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
   classes+=,ir.v2max.app.AndroidExternalControlTest,ir.v2max.app.AndroidSubscriptionWorkerTest,ir.v2max.app.AndroidGeoAssetTest
-  expected=19
+  expected=21
 fi
 run_instrumentation() {
   local name="$1" test_classes="$2" count="$3"; shift 3
@@ -42,7 +42,7 @@ PY
   fi
 }
 run_instrumentation security "$classes" "$expected" -e expectNoDeviceCredential true -e expectUnpreparedVpn true
-echo "Android API $api: $expected targeted security/backup tests passed (not a release build)."
+echo "Android API $api: $expected targeted security/backup/audio tests passed (not a release build)."
 if [[ "${V2MAX_BACKUP_ONLY:-false}" != true ]]; then
   # The emulator stages its own signed debug APK, opens the real system
   # installer, then cancels; it never installs or downloads a new package.

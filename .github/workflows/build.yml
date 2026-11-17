@@ -60,6 +60,7 @@ jobs:
           python3 scripts/verify-backup-rules.py
           python3 scripts/test-diagnostic-privacy.py
           python3 scripts/test-apk-payload.py
+          python3 scripts/test-connection-audio-apk.py
           python3 scripts/test-release-metadata.py
           python3 scripts/test-release-draft.py
           python3 scripts/test-release-gates.py
@@ -169,6 +170,7 @@ jobs:
               'ir.v2max.app.StartupHealthTest': 20,
               'ir.v2max.app.StartupMaintenanceTest': 2,
               'ir.v2max.app.ConnectionTestBarrierTest': 3,
+              'ir.v2max.app.ConnectionCueTest': 10,
               'ir.v2max.app.HealthScannerTest': 18,
               'ir.v2max.app.NativeDelayTest': 2,
               'ir.v2max.app.NetworkProbeSummaryTest': 1,
@@ -243,6 +245,10 @@ jobs:
             echo "::error title=build::no APK produced"
             exit 1
           fi
+
+      - name: Verify connection recording in every release-variant APK
+        if: ${{ !inputs.ui_diagnostics }}
+        run: python3 scripts/verify-connection-audio.py app/build/outputs/apk/release/*.apk
 
       - name: Exercise re-signing and reject the CI-only signer
         if: ${{ !inputs.ui_diagnostics }}

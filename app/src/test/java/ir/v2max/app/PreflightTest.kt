@@ -30,6 +30,9 @@ class PreflightTest {
         assertFalse(receipt.validFor(tested.copy(address = "changed.example.org"), options, 17L, now))
         assertFalse(receipt.validFor(tested, options.copy(speedTest = false), 17L, now))
         assertFalse(receipt.validFor(tested, options.copy(multiPing = false), 17L, now))
+        assertTrue("Changing the sound must not invalidate preflight", receipt.validFor(
+            tested, options.copy(connectionVoice = !options.connectionVoice), 17L, now
+        ))
         assertFalse(receipt.validFor(tested, options, 18L, now))
         assertFalse(receipt.validFor(tested, options, null, now))
         assertFalse(receipt.validFor(tested, options, 17L, now - 1))
@@ -43,7 +46,7 @@ class PreflightTest {
         val base = AppSettings(mux = false, balancer = false)
         val identity = AppliedTunnelPolicy.from(plain, base)
         assertEquals(identity, AppliedTunnelPolicy.from(plain, base.copy(
-            speedTest = true, multiPing = true, muxConcurrency = 99,
+            speedTest = true, multiPing = true, muxConcurrency = 99, connectionVoice = !base.connectionVoice,
             perAppPackages = listOf("ignored.when.off")
         )))
         assertEquals(identity, AppliedTunnelPolicy.from(plain.copy(testedFragmentProfile = FragmentProfile.MAHSA), base))

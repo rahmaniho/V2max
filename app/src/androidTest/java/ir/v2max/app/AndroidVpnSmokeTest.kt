@@ -35,6 +35,8 @@ import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.SpeedTester
 import ir.v2max.app.net.UpdateInstaller
+import ir.v2max.app.service.ConnectionCue
+import ir.v2max.app.service.ConnectionCuePlayer
 import ir.v2max.app.service.Notifier
 import ir.v2max.app.service.SubSyncWorker
 import ir.v2max.app.service.V2maxVpnService
@@ -56,6 +58,8 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.io.FileInputStream
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * CI runs an isolated Xray server on the emulator host. 198.51.100.1 has no direct
@@ -393,13 +397,14 @@ class AndroidVpnSmokeTest {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
         Repo.init(context)
+        val previousVoice = Repo.settings.value.connectionVoice
         Repo.updateSettings {
             it.copy(
                 autoConnectOnOpen = false, autoRefreshOnOpen = false, autoUpdateSubs = false, autoUpdateCheck = false,
                 appLock = false, allowExternalAutomation = false,
                 useFreeSources = false, deepProbe = false, fragment = false, balancer = false,
                 geoAssets = false, multiPing = false, speedTest = false, smartFailover = false,
-                killSwitch = false, perAppMode = ir.v2max.app.data.PerAppMode.OFF,
+                connectionVoice = true, killSwitch = false, perAppMode = ir.v2max.app.data.PerAppMode.OFF,
                 routingMode = RoutingMode.GLOBAL,
                 delayTestUrl = "http://198.51.100.1:18081/probe"
             )
@@ -418,7 +423,43 @@ class AndroidVpnSmokeTest {
         assertNotNull("No active network before starting the VPN", networkBeforeVpn)
         assertDirectFixtureReachable(instrumentation)
 
+        // The first media creation intentionally fails. Later ones count actual
+        // service requests; the real Android player is tested separately.
+        val soundAttempts = AtomicInteger()
+        val soundStarts = AtomicInteger()
+        val soundErrors = AtomicInteger()
+        val invalidSoundStarts = AtomicInteger()
+        val failFirstSound = AtomicBoolean(true)
+        val soundHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val testCue = ConnectionCue(
+            dispatch = { delay, task ->
+                if (delay == 0L) soundHandler.post { task() } else soundHandler.postDelayed({ task() }, delay)
+            },
+            createPlayer = {
+                soundAttempts.incrementAndGet()
+                if (failFirstSound.getAndSet(false)) error("simulated media failure")
+                object : ConnectionCuePlayer {
+                    override fun prepare(onPrepared: () -> Unit, onCompletion: () -> Unit, onError: () -> Unit) {
+                        onPrepared()
+                        soundHandler.post { onCompletion() }
+                    }
+                    override fun start() {
+                        if (Repo.tunnel.value.status != TunnelStatus.CONNECTED) invalidSoundStarts.incrementAndGet()
+                        soundStarts.incrementAndGet()
+                    }
+                    override fun release() = Unit
+                }
+            },
+            onFailure = { soundErrors.incrementAndGet() }
+        )
+        fun awaitSoundAttempts(expected: Int) {
+            val until = SystemClock.elapsedRealtime() + 10_000
+            while (SystemClock.elapsedRealtime() < until && soundAttempts.get() < expected) SystemClock.sleep(50)
+            assertEquals("Wrong number of connection sound requests", expected, soundAttempts.get())
+        }
+
         try {
+            V2maxVpnService.connectionCueForTest = testCue
             assertTrue("Pre-connect protocol test failed: ${Repo.scan.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 runBlocking { SmartConnect.connectVerified(context, server.id) })
             val deadline = SystemClock.elapsedRealtime() + 60_000
@@ -428,6 +469,13 @@ class AndroidVpnSmokeTest {
             }
             assertEquals("VPN did not connect: ${Repo.tunnel.value.message}\n${XrayCore.logs().joinToString("\n")}",
                 TunnelStatus.CONNECTED, Repo.tunnel.value.status)
+            awaitSoundAttempts(1)
+            instrumentation.runOnMainSync { }
+            assertEquals("The injected media error was not exercised", 1, soundErrors.get())
+            assertEquals(0, soundStarts.get())
+            SystemClock.sleep(1_200) // monitor updates must not re-announce the same connection
+            assertEquals("A status update repeated the connection sound", 1, soundAttempts.get())
+            assertTrue("Media failure stopped the live core", XrayCore.isRunning)
 
             assertTunTrafficEventually(instrumentation, "initial")
             assertEquals("The VPN app's underlying network changed during tunnel setup",
@@ -458,6 +506,10 @@ class AndroidVpnSmokeTest {
             assertEquals("External broadcast disconnected the VPN", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
             assertTunTraffic(instrumentation)
 
+            SystemClock.sleep(1_200) // let earlier verified switches enqueue their cue
+            instrumentation.runOnMainSync { }
+            val mutedAttempts = soundAttempts.get()
+            assertTrue(Repo.updateSettings { it.copy(connectionVoice = false) })
             val widgetClick = V2maxWidget.toggleIntent(context)
             widgetClick.send()
             val widgetStopDeadline = SystemClock.elapsedRealtime() + 10_000
@@ -470,6 +522,9 @@ class AndroidVpnSmokeTest {
                 Repo.tunnel.value.status != TunnelStatus.CONNECTED && Repo.tunnel.value.status != TunnelStatus.ERROR) SystemClock.sleep(100)
             assertEquals("Legitimate widget could not reconnect: ${Repo.tunnel.value.message}", TunnelStatus.CONNECTED, Repo.tunnel.value.status)
             assertTunTrafficEventually(instrumentation, "widget-restart")
+            SystemClock.sleep(1_200)
+            assertEquals("Muted widget connection played a sound", mutedAttempts, soundAttempts.get())
+            assertTrue(Repo.updateSettings { it.copy(connectionVoice = true) })
 
             // Very fast local responses may take less than one whole millisecond.
             // Repeated preflights must accept them without interrupting the live VPN.
@@ -527,7 +582,9 @@ class AndroidVpnSmokeTest {
                 assertTunTraffic(instrumentation)
             }
 
-            // A revoked/invalid service handoff must not tear down a live tunnel.
+            // A revoked/invalid service handoff must not tear down a live tunnel
+            // or replay the cue just because CONNECTED was published again.
+            val soundsBeforeStale = soundAttempts.get()
             context.startService(Intent(context, V2maxVpnService::class.java).apply {
                 action = V2maxVpnService.ACTION_START
                 putExtra(V2maxVpnService.EXTRA_SERVER_ID, server.id)
@@ -539,6 +596,8 @@ class AndroidVpnSmokeTest {
             assertEquals(TunnelStatus.CONNECTED, Repo.tunnel.value.status)
             assertTrue("Stale handoff was not handled", Repo.tunnel.value.message.contains("اتصال فعلی حفظ شد"))
             assertTunTraffic(instrumentation)
+            SystemClock.sleep(1_200)
+            assertEquals("Preserving a live VPN replayed the cue", soundsBeforeStale, soundAttempts.get())
 
             val staleStopGeneration = V2maxVpnService.currentActionGeneration()
             val oldNotificationStop = Notifier.build(context, Repo.tunnel.value, false).actions.last().actionIntent
@@ -559,6 +618,8 @@ class AndroidVpnSmokeTest {
             // A manual connect must use the freshly tested new version, not mistake
             // the old live tunnel for the updated configuration.
             val edited = server.copy(uuid = "22222222-3333-4444-5555-666666666666")
+            val soundsBeforeSwitch = soundAttempts.get()
+            val startsBeforeSwitch = soundStarts.get()
             assertTrue(V2maxVpnService.activeProfileMatches(server))
             assertTrue(!V2maxVpnService.activeProfileMatches(edited))
             Repo.updateServer(edited)
@@ -570,11 +631,16 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("Edited profile was not applied: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            awaitSoundAttempts(soundsBeforeSwitch + 1)
+            instrumentation.runOnMainSync { }
+            assertEquals("A verified profile switch did not start the cue", startsBeforeSwitch + 1, soundStarts.get())
             assertTunTrafficEventually(instrumentation, "profile-switch")
 
             // Simulate the native core stopping. With no other fixture profile,
             // recovery must re-test this profile rather than trust its old ping.
             val oldRetestAction = Notifier.build(context, Repo.tunnel.value, false).actions[1].actionIntent
+            val soundsBeforeRecovery = soundAttempts.get()
+            val startsBeforeRecovery = soundStarts.get()
             Repo.updateSettings { it.copy(smartFailover = true, autoUpdateSubs = false, killSwitch = false) }
             XrayCore.stop()
             val recoveryStartDeadline = SystemClock.elapsedRealtime() + 30_000
@@ -597,6 +663,9 @@ class AndroidVpnSmokeTest {
                 SystemClock.sleep(100)
             }
             assertTrue("VPN did not recover: ${Repo.tunnel.value.message}", V2maxVpnService.activeProfileMatches(edited))
+            awaitSoundAttempts(soundsBeforeRecovery + 1)
+            instrumentation.runOnMainSync { }
+            assertEquals("Recovery did not start exactly one cue", startsBeforeRecovery + 1, soundStarts.get())
             assertTunTrafficEventually(instrumentation, "automatic-recovery")
 
             // Hold an actual alternate-server probe in flight. A stopped core
@@ -710,6 +779,9 @@ class AndroidVpnSmokeTest {
             assertTrue("Canceled replacement superseded the live profile", V2maxVpnService.activeProfileMatches(edited))
             assertTunTraffic(instrumentation)
             Repo.removeServer(alternate.id)
+            SystemClock.sleep(1_200)
+            instrumentation.runOnMainSync { }
+            val soundsBeforeCanceledAttempt = soundAttempts.get()
 
             // Stop while the post-start native probe is still blocked, then
             // deliver an older, otherwise valid handoff. Neither can resurrect it.
@@ -737,6 +809,7 @@ class AndroidVpnSmokeTest {
             SystemClock.sleep(4_500)
             assertEquals("A canceled connection returned after stop", TunnelStatus.DISCONNECTED, Repo.tunnel.value.status)
             assertTrue("Native core kept running after stop", !V2maxVpnService.running && !XrayCore.isRunning)
+            assertEquals("A canceled attempt played a delayed sound", soundsBeforeCanceledAttempt, soundAttempts.get())
 
             // With no existing VPN, an empty allow-list must not become Android's
             // default all-apps VPN either. The protocol preflight can succeed,
@@ -758,11 +831,18 @@ class AndroidVpnSmokeTest {
                 V2maxVpnService.currentActionGeneration() != beforeEmpty && Repo.tunnel.value.message.contains("دست‌کم یک برنامه"))
             assertTrue("Empty allow-list started a VPN", !V2maxVpnService.running && !XrayCore.isRunning)
             assertDirectFixtureReachable(instrumentation)
+            SystemClock.sleep(1_200)
+            assertEquals("A refused connection played a sound", soundsBeforeCanceledAttempt, soundAttempts.get())
+            assertEquals("A sound started without a connected VPN", 0, invalidSoundStarts.get())
             Repo.updateSettings { it.copy(perAppMode = PerAppMode.OFF, perAppPackages = emptyList()) }
             android.util.Log.i("V2maxPerAppTest", "V2MAX_PER_APP_ROUTING invalid=refused live=preserved only=passed except=passed disconnected=refused")
+            android.util.Log.i("V2maxCueTest", "V2MAX_CONNECTION_CUE failure=isolated success=once muted=silent recovery=once stale=silent")
         } finally {
             SmartConnect.cancelScan()
             TunnelController.stop(context)
+            testCue.cancel()
+            V2maxVpnService.connectionCueForTest = null
+            Repo.updateSettings { it.copy(connectionVoice = previousVoice) }
             runCatching { fixtureControl("hold-release") }
             Repo.removeServer("held-replacement")
         }

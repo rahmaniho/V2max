@@ -146,6 +146,13 @@ if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.l
     exit 1
   fi
   echo "::notice title=Per-app VPN smoke::$per_app_marker"
+  cue_log="$(adb logcat -d -v raw -s V2maxCueTest:I '*:S' 2>/dev/null || true)"
+  cue_marker='V2MAX_CONNECTION_CUE failure=isolated success=once muted=silent recovery=once stale=silent'
+  if [[ "$cue_log" != *"$cue_marker"* ]]; then
+    echo '::error title=Connection audio smoke::The VPN/audio lifecycle assertions did not complete.'
+    exit 1
+  fi
+  echo "::notice title=Connection audio smoke::$cue_marker"
   # Report all handovers together: GitHub limits annotations per step. Any
   # retry is still surfaced as a warning rather than concealed by eventual success.
   mapfile -t handovers < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)

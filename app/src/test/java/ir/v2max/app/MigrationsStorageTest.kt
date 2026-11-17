@@ -65,6 +65,10 @@ class MigrationsStorageTest {
         val legacy = Migrations.heal("""{"multiPing":true}""", AppSettings())!!
         assertTrue(legacy.multiPing)
         assertFalse(legacy.appLock)
+        assertTrue("Legacy settings should get the requested default", legacy.connectionVoice)
+        assertFalse(Migrations.heal("""{"connectionVoice":false}""", AppSettings())!!.connectionVoice)
+        assertNull(Migrations.heal("""{"connectionVoice":"false"}""", AppSettings()))
+        assertNull(Migrations.heal("""{"connectionVoice":null}""", AppSettings()))
         assertNull(Migrations.heal("""{"appLock":null}""", AppSettings()))
         assertNull(Migrations.heal("""{"routingMode":"UNKNOWN"}""", AppSettings()))
         assertNull(Migrations.heal("""{"perAppPackages":[null]}""", AppSettings()))
@@ -76,9 +80,19 @@ class MigrationsStorageTest {
             assertFalse(safe.autoRefreshOnOpen)
             assertFalse(safe.useFreeSources)
             assertFalse(safe.allowExternalAutomation)
+            assertFalse(safe.connectionVoice)
         }
         // Preserve an explicitly readable disabled lock even if another field is bad.
         assertFalse(Migrations.safeSettingsAfterFailure("""{"appLock":false,"routingMode":"UNKNOWN"}""").appLock)
+    }
+
+    @Test fun `connection voice survives backups and legacy data gets the default`() {
+        val legacy = Migrations.decodeBackup("""{"version":2,"settings":{}}""")!!
+        assertTrue(legacy.settings.connectionVoice)
+        val disabled = Migrations.decodeBackup("""{"version":3,"settings":{"connectionVoice":false}}""")!!
+        assertFalse(disabled.settings.connectionVoice)
+        assertNull(Migrations.decodeBackup("""{"version":3,"settings":{"connectionVoice":null}}"""))
+        assertNull(Migrations.decodeBackup("""{"version":3,"settings":{"connectionVoice":"false"}}"""))
     }
 
     @Test fun `remembered network entries are individually healed`() {

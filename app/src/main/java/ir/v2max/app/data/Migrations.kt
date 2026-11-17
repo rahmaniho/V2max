@@ -107,10 +107,15 @@ object Migrations {
     fun <T : Any> healList(json: String, defaults: T): List<T>? = recoverList(json, defaults)?.values
 
     private fun <T : Any> decodeStoredObject(obj: JsonObject, defaults: T, expected: JsonObject = template(defaults)): T {
-        if (defaults is AppSettings && obj.has("appLock")) {
-            // An explicitly corrupt lock flag must not be healed to false.
-            val lock = obj.get("appLock")
-            require(lock.isJsonPrimitive && lock.asJsonPrimitive.isBoolean)
+        if (defaults is AppSettings) {
+            // Explicitly corrupt security/privacy flags must not be healed into
+            // an unlocked app or an unexpectedly audible connection.
+            listOf("appLock", "connectionVoice").forEach { key ->
+                if (obj.has(key)) {
+                    val value = obj.get(key)
+                    require(value.isJsonPrimitive && value.asJsonPrimitive.isBoolean)
+                }
+            }
         }
         if (defaults is ServerConfig) {
             // Do not turn an explicitly corrupted protocol/transport/security
@@ -157,7 +162,10 @@ object Migrations {
         return AppSettings(
             appLock = lock, autoConnectOnOpen = false, autoConnectOnBoot = false,
             autoRefreshOnOpen = false, autoUpdateSubs = false, useFreeSources = false,
-            autoUpdateCheck = false, geoAssets = false, allowExternalAutomation = false
+            autoUpdateCheck = false, geoAssets = false, allowExternalAutomation = false,
+            // A damaged settings document must not unexpectedly reveal a VPN
+            // connection through a speaker when the user's preference is unknown.
+            connectionVoice = false
         )
     }
 
@@ -208,15 +216,17 @@ object Migrations {
         val parsed = JsonParser.parseString(json)
         require(parsed.isJsonObject)
         val obj = parsed.asJsonObject
-        // Missing legacy fields can be filled, but an explicitly corrupt section
-        // or lock flag must not silently turn into an empty list or an unlocked app.
+        // Missing legacy fields can be filled, but corrupt sections, the lock
+        // or the audio preference must not silently become unsafe defaults.
         listOf("servers", "subs", "settings").forEach { key ->
             require(!obj.has(key) || !obj.get(key).isJsonNull)
         }
         obj.get("settings")?.takeIf { it.isJsonObject }?.asJsonObject?.let { settings ->
-            if (settings.has("appLock")) {
-                val lock = settings.get("appLock")
-                require(lock.isJsonPrimitive && lock.asJsonPrimitive.isBoolean)
+            listOf("appLock", "connectionVoice").forEach { key ->
+                if (settings.has(key)) {
+                    val value = settings.get(key)
+                    require(value.isJsonPrimitive && value.asJsonPrimitive.isBoolean)
+                }
             }
         }
         val versionElement = obj.get("version")
