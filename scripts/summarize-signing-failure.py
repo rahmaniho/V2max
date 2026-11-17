@@ -13,7 +13,7 @@ SECRET_NAMES = {
     "V2MAX_RELEASE_KEY_PASSWORD": "V2MAX_RELEASE_KEY_PASSWORD",
 }
 PATTERNS = (
-    ("invalid base64 encoding", r"(?i)base64:\s*invalid input"),
+    ("invalid base64 encoding", r"(?i)(base64[^\n]{0,120}\binvalid\b|\binvalid\b[^\n]{0,120}base64)"),
     ("invalid keystore format", r"(?i)(invalid keystore format|unrecognized keystore format|not a valid keystore)"),
     ("keystore password rejected", r"(?i)(keystore password was incorrect|keystore was tampered with, or password was incorrect)"),
     ("private key could not be recovered", r"(?i)(UnrecoverableKeyException|cannot recover key|cannot recover private key)"),
