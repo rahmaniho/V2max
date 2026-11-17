@@ -63,6 +63,7 @@ jobs:
           python3 scripts/test-release-metadata.py
           python3 scripts/test-release-draft.py
           python3 scripts/test-release-gates.py
+          python3 scripts/test-release-publish.py
           python3 scripts/test-preview-apk.py
           python3 scripts/test-preview-release.py
           python3 scripts/test-android-ui-connect-smoke.py
@@ -541,7 +542,14 @@ jobs:
           gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')
           [ "$tag_sha" = "$GITHUB_SHA" ] || { echo '::error::Unexpected release tag target'; exit 1; }
-          gh release create "$TAG" signed-apks/*.apk --verify-tag --draft \
+          # v2.3.1 selects the first APK in the releases API without checking
+          # ABI. GitHub may sort assets by name rather than by upload time, so
+          # publish a second, early-sorting copy of the signed universal APK.
+          # The draft verifier requires it to be first and byte-identical to
+          # the tested canonical universal APK before publication.
+          mkdir -p "$RUNNER_TEMP/legacy-update"
+          cp signed-apks/app-universal-release.apk "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk"
+          gh release create "$TAG" "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk" signed-apks/*.apk --verify-tag --draft \
             --title "V2max $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
           # The REST releases/tags endpoint does not return drafts. Resolve the
           # draft through gh and read its numeric release endpoint instead.
@@ -550,11 +558,22 @@ jobs:
           [[ "$draft_api" == "$prefix"* && "${draft_api#"$prefix"}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Unexpected draft release API URL'; exit 1; }
           gh api "$draft_api" > "$RUNNER_TEMP/draft.json"
           python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"
+          # v2.3.1 reads the releases list, not the numeric draft endpoint.
+          # Check that representation too before the release becomes public.
+          release_id="${draft_api#"$prefix"}"
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate \
+            --jq ".[] | select(.id == $release_id)" > "$RUNNER_TEMP/draft-list.json"
+          python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft-list.json" signed-apks "$TAG"
           if [ "$(main_sha)" != "$GITHUB_SHA" ]; then
             echo '::error::main advanced during upload; draft left unpublished for owner review'
             exit 1
           fi
           gh release edit "$TAG" --draft=false --latest
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RUNNER_TEMP/published-latest.json"
+          python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-latest.json" signed-apks "$TAG" published
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=10" \
+            --jq ".[] | select(.id == $release_id)" > "$RUNNER_TEMP/published-list.json"
+          python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-list.json" signed-apks "$TAG" published
           echo "Published verified release $TAG."
 
   publish-preview:

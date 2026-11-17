@@ -35,6 +35,19 @@ class GatesTest(unittest.TestCase):
             ('sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"', "echo 'skip checksum'"),
             ("--prerelease --latest=false", "--latest"),
             ('draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)', 'draft_api=invalid'),
+            ('cp signed-apks/app-universal-release.apk "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk"',
+             'cp signed-apks/app-arm64-v8a-release.apk "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk"'),
+            ('gh release create "$TAG" "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk" signed-apks/*.apk --verify-tag --draft',
+             'gh release create "$TAG" signed-apks/*.apk --verify-tag --draft'),
+            ('python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"',
+             'echo skip-draft-verification'),
+            ('python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft-list.json" signed-apks "$TAG"',
+             'echo skip-list-verification'),
+            ('gh release edit "$TAG" --draft=false --latest', 'echo skip-publishing'),
+            ('python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-latest.json" signed-apks "$TAG" published',
+             'echo skip-latest-verification'),
+            ('python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-list.json" signed-apks "$TAG" published',
+             'echo skip-published-list-verification'),
         )
         for before, after in changes:
             with self.subTest(before=before, after=after):

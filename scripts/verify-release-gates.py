@@ -53,6 +53,21 @@ def verify(source):
     draft_lookup = 'draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)'
     if draft_lookup not in publication or 'gh api "$draft_api"' not in publication:
         raise ValueError("Stable draft must be resolved by release ID before verification")
+    # v2.3.1 chooses the first APK; GitHub can order assets by name. The
+    # early-sorting alias must come from the signed universal APK and the draft
+    # verifier must check the actual API order and all digests before publishing.
+    release_steps = (
+        'cp signed-apks/app-universal-release.apk "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk"',
+        'gh release create "$TAG" "$RUNNER_TEMP/legacy-update/00-V2max-universal.apk" signed-apks/*.apk --verify-tag --draft',
+        'python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"',
+        'python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft-list.json" signed-apks "$TAG"',
+        'gh release edit "$TAG" --draft=false --latest',
+        'python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-latest.json" signed-apks "$TAG" published',
+        'python3 scripts/verify-release-draft.py "$RUNNER_TEMP/published-list.json" signed-apks "$TAG" published',
+    )
+    positions = [publication.find(step) for step in release_steps]
+    if -1 in positions or positions != sorted(positions) or len(set(positions)) != len(positions):
+        raise ValueError("Stable release must verify the universal alias and draft before publishing")
 
     for input_name in ("publish_test_release", "validate_preview", "ui_diagnostics"):
         preview_input = re.search(rf"(?ms)^      {input_name}:\n(.*?)(?=^      [a-z_]+:\n|^env:\n)", source)
