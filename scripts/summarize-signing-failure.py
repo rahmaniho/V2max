@@ -52,7 +52,7 @@ def main():
         raise ValueError("The selected job is not a failed sign-release job in this run")
     log = run(["gh", "run", "view", run_id, "--repo", repo, "--job", job_id, "--log-failed"])
     for result in categories(log):
-        print(result)
+        print(f"::notice title=Signing diagnosis::{result}")
 
 
 if __name__ == "__main__":
@@ -60,5 +60,5 @@ if __name__ == "__main__":
         main()
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError, subprocess.SubprocessError) as error:
         # Exception messages are deliberately fixed and must never contain URLs or raw logs.
-        print("Signing-log classification could not be completed.", file=sys.stderr)
+        print("::error title=Signing diagnosis::Signing-log classification could not be completed.", file=sys.stderr)
         sys.exit(1)
