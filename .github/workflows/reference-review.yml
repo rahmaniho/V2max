@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/reference-review.yml"
       - "scripts/inspect-reference-apks.sh"
+      - "scripts/test-inspect-reference-apks.py"
   workflow_dispatch:
 
 permissions:
@@ -17,5 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test fail-closed metadata inspection
+        run: python3 scripts/test-inspect-reference-apks.py
       - name: Verify and inspect public APKs without installing them
         run: bash scripts/inspect-reference-apks.sh
