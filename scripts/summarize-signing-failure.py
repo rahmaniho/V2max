@@ -19,18 +19,32 @@ PATTERNS = (
     ("private key could not be recovered", r"(?i)(UnrecoverableKeyException|cannot recover key|cannot recover private key)"),
     ("key alias not found", r"(?i)(no key with alias|does not contain key|alias [^\n]* does not exist)"),
     ("signer could not be loaded", r"(?i)failed to load signer"),
-    ("signing or verification failed", r"(?i)(failed to sign|failed to verify|signer mismatch)"),
+    ("signing or verification failed", r"(?i)(failed to sign|failed to verify|verification failed|signer mismatch)"),
     ("Android signing tool missing", r"(?i)(Android apksigner was not found|Android zipalign was not found)"),
+    ("file or tool missing", r"(?i)(no such file or directory|command not found|NoSuchFileException)"),
+    ("file access denied", r"(?i)permission denied"),
     ("runner disk full", r"(?i)no space left on device"),
 )
+SAFE_WORDS = ("base64", "invalid", "format", "password", "keystore", "tampered", "key", "alias",
+              "verify", "verification", "alignment", "zipalign", "signer", "certificate", "exception",
+              "file", "directory", "missing", "permission", "python", "decode", "empty", "failed")
 
 
 def categories(log):
+    # Actions print the shell and masked environment before this delimiter.
+    # Ignore those lines so their source-code words cannot masquerade as errors.
+    _, delimiter, output = log.rpartition("##[endgroup]")
+    text = output if delimiter else log
     result = []
-    missing = re.findall(r"Required signing secret\s+(KEYSTORE_BASE64|V2MAX_RELEASE_STORE_PASSWORD|V2MAX_RELEASE_KEY_ALIAS|V2MAX_RELEASE_KEY_PASSWORD)\s+is not configured", log)
+    missing = re.findall(r"Required signing secret\s+(KEYSTORE_BASE64|V2MAX_RELEASE_STORE_PASSWORD|V2MAX_RELEASE_KEY_ALIAS|V2MAX_RELEASE_KEY_PASSWORD)\s+is not configured", text)
     result.extend("missing secret: " + SECRET_NAMES[name] for name in sorted(set(missing)))
-    result.extend(label for label, pattern in PATTERNS if re.search(pattern, log))
-    return result or ["No recognized cause in the available failed-step log."]
+    result.extend(label for label, pattern in PATTERNS if re.search(pattern, text))
+    if not result:
+        words = [word for word in SAFE_WORDS if re.search(r"(?i)\b" + re.escape(word) + r"\b", text)]
+        result.append("No recognized cause in the available failed-step log.")
+        result.append("Fixed diagnostic keywords present: " + (", ".join(words) if words else "none"))
+        result.append("Output lines after environment group: " + str(len(text.splitlines())))
+    return result
 
 
 def run(args):
