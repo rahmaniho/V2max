@@ -18,6 +18,7 @@ import ir.v2max.app.data.Subscription
 import ir.v2max.app.net.SubscriptionFetcher
 import ir.v2max.app.service.SubSyncWorker
 import ir.v2max.app.service.V2maxVpnService
+import ir.v2max.core.model.PublicSources
 import kotlinx.coroutines.runBlocking
 import ir.v2max.app.ui.AppViewModel
 import org.junit.Assert.assertEquals
@@ -36,6 +37,44 @@ import kotlin.concurrent.thread
 /** A previously scheduled worker must obey the current, not its old, setting. */
 @RunWith(AndroidJUnit4::class)
 class AndroidSubscriptionWorkerTest {
+    @Test fun requestedDefaultSourcesAreRegisteredOnStartupWithoutAnAutomaticConnection() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        Repo.init(context)
+        assertFalse("Fixture requires no active tunnel", Repo.tunnel.value.isActive)
+        val previousSettings = Repo.settings.value.copy()
+        val previousIds = Repo.subs.value.map { it.id }.toSet()
+        val urls = setOf(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix",
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        )
+        val store = ViewModelStore()
+        try {
+            assertTrue(Repo.updateSettings {
+                it.copy(useFreeSources = true, autoRefreshOnOpen = false, autoConnectOnOpen = false,
+                    autoUpdateCheck = false, autoUpdateSubs = false, deepProbe = false,
+                    disabledBuiltInSources = it.disabledBuiltInSources.filterNot { url -> PublicSources.normalize(url) in urls })
+            })
+            instrumentation.runOnMainSync {
+                val app = context.applicationContext as Application
+                ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
+            }
+            val deadline = SystemClock.elapsedRealtime() + 5_000
+            while (SystemClock.elapsedRealtime() < deadline && urls.any { url ->
+                    Repo.subs.value.none { PublicSources.normalize(it.url) == url }
+                }) SystemClock.sleep(50)
+            urls.forEach { url ->
+                assertEquals("Startup must not duplicate an already registered source: $url", 1,
+                    Repo.subs.value.count { PublicSources.normalize(it.url) == url })
+            }
+            assertFalse("Registering sources must not start a VPN", Repo.tunnel.value.isActive)
+        } finally {
+            instrumentation.runOnMainSync { store.clear() }
+            Repo.subs.value.filter { it.id !in previousIds && it.builtIn }.forEach { Repo.removeSubscription(it.id) }
+            Repo.saveSettings(previousSettings)
+        }
+    }
+
     @Test fun disabledAutoConnectDoesNotStartAnUnrequestedScan() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val context = instrumentation.targetContext
@@ -124,7 +163,7 @@ class AndroidSubscriptionWorkerTest {
                 val app = context.applicationContext as Application
                 vm = ViewModelProvider(store, ViewModelProvider.AndroidViewModelFactory.getInstance(app))[AppViewModel::class.java]
                 vm.requestConnect(selected.id)
-                assertTrue("No VPN permission request was recorded", vm.pendingVpnRequest.value)
+                assertTrue("No VPN permission request was recorded", vm.vpnPermissionState.value.pendingId != null)
                 vm.onQrScanned(url)
                 vm.onQrScanned("vless://11111111-2222-3333-4444-555555555555@$qrHost:443?security=tls#QR")
             }
@@ -132,17 +171,20 @@ class AndroidSubscriptionWorkerTest {
             while (SystemClock.elapsedRealtime() < deadline &&
                 (Repo.subs.value.none { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } } ||
                     Repo.servers.value.none { it.address == qrHost })) {
-                assertTrue("Import discarded the pending permission request", vm.pendingVpnRequest.value)
+                assertTrue("Import discarded the pending permission request", vm.vpnPermissionState.value.pendingId != null)
                 SystemClock.sleep(50)
             }
             assertTrue("Subscription import failed: ${vm.message.value}",
                 Repo.subs.value.any { sub -> sub.url == url && Repo.servers.value.any { it.subId == sub.id } })
             assertTrue("Profile import failed: ${vm.message.value}", Repo.servers.value.any { it.address == qrHost })
-            assertTrue("Import discarded the pending permission request", vm.pendingVpnRequest.value)
+            assertTrue("Import discarded the pending permission request", vm.vpnPermissionState.value.pendingId != null)
             assertEquals("Import changed the selected profile", selected.id, Repo.selectedId.value)
             assertEquals("Import started a connection", generation, V2maxVpnService.currentActionGeneration())
-            instrumentation.runOnMainSync { vm.onVpnPermissionResult(false) }
-            assertFalse(vm.pendingVpnRequest.value)
+            instrumentation.runOnMainSync {
+                assertTrue(vm.claimVpnPermissionRequest())
+                vm.onVpnPermissionResult(false)
+            }
+            assertTrue(vm.vpnPermissionState.value.pendingId == null)
             assertFalse("A denied permission started a tunnel", Repo.tunnel.value.isActive)
         } finally {
             instrumentation.runOnMainSync { store.clear() }

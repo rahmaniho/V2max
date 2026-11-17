@@ -1,24 +1,14 @@
 package ir.v2max.core.domain
 
 /**
- * Turns the real state of a connection into findings a user can act on.
- *
- * Extracted from the app's `Diagnostics`, which mixed this pure decision logic
- * with the OkHttp calls that gather the inputs. The probes stayed behind —
- * they need a network — but the rules are what needed tests: eleven inputs,
- * nine independent conditions, and an ordering the UI renders top to bottom.
- *
- * Note what these rules cannot do. Detecting a DNS *leak* conclusively from
- * inside an Android app is not possible, because the system resolvers are not
- * observable. What is checked instead is that DNS requests do travel through
- * the tunnel (a valid DoH answer comes back) and that the exit IP is the
- * server's.
+ * Describe only the state the app actually knows. A successful Xray outbound
+ * probe is useful, but cannot prove that another application's traffic crossed
+ * Android's TUN. A missing or historical measurement is not a failed server.
  */
 object ConnectionAdvice {
+    enum class Severity { INFO, WARN, CRITICAL }
+    enum class State { DISCONNECTED, CONNECTING, CONNECTED, DISCONNECTING, ERROR }
 
-    enum class Severity { OK, INFO, WARN, CRITICAL }
-
-    /** A single diagnostic finding, with the action the UI should offer. */
     data class Finding(
         val title: String,
         val detail: String,
@@ -27,179 +17,93 @@ object ConnectionAdvice {
         val actionLabel: String = "",
     )
 
-    /** Action identifiers; the UI maps these onto real operations. */
     object Action {
         const val SMART_CONNECT = "smart_connect"
-        const val AGGRESSIVE_FRAGMENT = "aggressive_fragment"
-        const val REFRESH_SUBS = "refresh_subs"
+        const val TEST_SERVERS = "test_servers"
         const val SYNC_GEO = "sync_geo"
         const val UNBLOCK = "unblock"
-        const val DISABLE_BALANCER = "disable_balancer"
-        const val CHECK_UPDATE = "check_update"
     }
 
-    /** Where the tunnel actually exits, as read from the exit probe. */
-    data class ExitInfo(
-        val ip: String = "",
-        val country: String = "",
-        val colo: String = "",
-        val ok: Boolean = false,
-        val error: String = "",
+    data class Observation(
+        val state: State,
+        val killSwitchRetained: Boolean,
+        /** Historical successful protocol measurements, not currently healthy servers. */
+        val recordedRealPings: Int,
+        val totalServers: Int,
+        val geoRequired: Boolean,
+        /** Null means the local files have not yet been inspected. */
+        val geoReady: Boolean?,
     )
 
-    /** Secure-DNS answer compared against the system resolver. */
-    data class DnsInfo(
-        val dohAnswer: String = "",
-        val systemAnswer: String = "",
-        val dohOk: Boolean = false,
-        val consistent: Boolean = false,
-    )
+    fun stateLabel(state: State): String = when (state) {
+        State.DISCONNECTED -> "قطع"
+        State.CONNECTING -> "در حال اتصال"
+        State.CONNECTED -> "متصل طبق وضعیت برنامه"
+        State.DISCONNECTING -> "در حال قطع"
+        State.ERROR -> "خطای اتصال"
+    }
 
-    /**
-     * Builds the findings for the current state.
-     *
-     * Conditions are independent, not a cascade: several can fire at once, and
-     * the order they are added in is the order the UI shows them, worst first.
-     * When nothing fires the caller gets a single OK finding rather than an
-     * empty list, so the screen is never blank.
-     */
-    fun advise(
-        connected: Boolean,
-        connecting: Boolean,
-        killSwitchBlocked: Boolean,
-        exitOk: Boolean,
-        dnsDohOk: Boolean,
-        dnsConsistent: Boolean,
-        totalServers: Int,
-        aliveServers: Int,
-        balancerEnabled: Boolean,
-        geoReady: Boolean,
-        fragmentProfile: String,
-    ): List<Finding> {
+    fun advise(observation: Observation): List<Finding> {
         val out = ArrayList<Finding>()
-
-        if (killSwitchBlocked) {
+        if (observation.killSwitchRetained) {
             out += Finding(
-                title = "رابط VPN حفظ شده است (Kill Switch)",
-                detail = "هسته متوقف شده است؛ برنامه‌های مستثنا ممکن است مستقیم وصل شوند و این حفاظت با توقف سرویس پایان می‌یابد.",
+                title = "رابط VPN حفظ شده است",
+                detail = "هسته متوقف شده است؛ برنامه‌های مستثنا ممکن است مستقیم وصل شوند و حفاظت با توقف سرویس پایان می‌یابد.",
                 severity = Severity.CRITICAL,
                 actionId = Action.UNBLOCK,
                 actionLabel = "قطع VPN",
             )
         }
 
-        if (!connected && !connecting && !killSwitchBlocked) {
-            out += Finding(
-                title = "اتصال برقرار نیست",
-                detail = "با یک ضربه، تست کامل انجام و بهترین سرور انتخاب می‌شود.",
+        when (observation.state) {
+            State.CONNECTED -> out += Finding(
+                title = "برنامه وضعیت اتصال را متصل گزارش می‌کند",
+                detail = "پاسخ هسته به‌تنهایی عبور ترافیک برنامه‌های دیگر از VPN را ثابت نمی‌کند.",
                 severity = Severity.INFO,
-                actionId = Action.SMART_CONNECT,
-                actionLabel = "اتصال هوشمند",
             )
-        }
-
-        if (connected && !exitOk) {
-            out += Finding(
-                title = "ترافیک از تانل عبور نمی‌کند",
-                detail = "هسته بالا آمده ولی درخواست خروجی پاسخ نگرفت. اغلب با پروفایل فرگمنت قوی‌تر حل می‌شود.",
-                severity = Severity.CRITICAL,
-                actionId = Action.AGGRESSIVE_FRAGMENT,
-                actionLabel = "اعمال پروفایل قوی",
-            )
-        }
-
-        if (connected && exitOk && !dnsDohOk) {
-            out += Finding(
-                title = "DNS امن پاسخ نمی‌دهد",
-                detail = "پاسخ DoH از مسیر تانل دریافت نشد؛ ممکن است برخی سایت‌ها باز نشوند.",
-                severity = Severity.WARN,
-                actionId = Action.AGGRESSIVE_FRAGMENT,
-                actionLabel = "تغییر پروفایل فرگمنت",
-            )
-        }
-
-        if (connected && dnsDohOk && !dnsConsistent) {
-            out += Finding(
-                title = "نتیجه‌ی DNS یکسان نیست",
-                detail = "پاسخ DNS سیستم و DNS امن متفاوت است؛ احتمال دخالت DNS اپراتور وجود دارد.",
-                severity = Severity.WARN,
-            )
-        }
-
-        if (totalServers > 0 && aliveServers * 4 < totalServers) {
-            out += Finding(
-                title = "بیشتر سرورها از کار افتاده‌اند",
-                detail = "$aliveServers از $totalServers سرور سالم است؛ منابع را دوباره دریافت کنید.",
-                severity = Severity.WARN,
-                actionId = Action.REFRESH_SUBS,
-                actionLabel = "به‌روزرسانی اشتراک‌ها",
-            )
-        }
-
-        if (balancerEnabled && aliveServers in 1..2) {
-            out += Finding(
-                title = "سرور سالم برای استخر کم است",
-                detail = "برای پایداری بیشتر، تعداد سرور در استخر را کم کنید یا منابع بیشتری اضافه کنید.",
+            State.CONNECTING -> out += Finding(
+                title = "اتصال در حال آماده‌سازی است",
+                detail = "تا پایان تست‌های فعال و راه‌اندازی سرویس صبر کنید.",
                 severity = Severity.INFO,
-                actionId = Action.DISABLE_BALANCER,
-                actionLabel = "خاموش‌کردن استخر",
+            )
+            State.DISCONNECTING -> out += Finding(
+                title = "اتصال در حال قطع‌شدن است",
+                detail = "تا پایان توقف سرویس صبر کنید.",
+                severity = Severity.INFO,
+            )
+            State.DISCONNECTED, State.ERROR -> if (!observation.killSwitchRetained) {
+                out += Finding(
+                    title = if (observation.state == State.ERROR) "اتصال با خطا متوقف شد" else "اتصال برقرار نیست",
+                    detail = "اتصال هوشمند پس از تکمیل تست‌های فعال یک سرور پاسخ‌گو را انتخاب می‌کند.",
+                    severity = Severity.INFO,
+                    actionId = Action.SMART_CONNECT,
+                    actionLabel = "اتصال هوشمند",
+                )
+            }
+        }
+
+        val total = observation.totalServers.coerceIn(0, 1_000_000)
+        val recorded = observation.recordedRealPings.coerceIn(0, total)
+        if (total > 0) {
+            out += Finding(
+                title = "نتایج ثبت‌شدهٔ سرورها",
+                detail = "$recorded از $total سرور پینگ واقعی ثبت‌شده دارند؛ نتیجه ممکن است قدیمی باشد و بقیه الزاماً خراب نیستند.",
+                severity = Severity.INFO,
             )
         }
 
-        if (!geoReady) {
+        if (observation.geoRequired && observation.geoReady != true) {
             out += Finding(
-                title = "فایل‌های مسیریابی ایران نصب نشده",
-                detail = "با دانلود geoip/geosite، سایت‌های ایرانی مستقیم و سریع‌تر باز می‌شوند.",
+                title = if (observation.geoReady == false) "برچسب‌های لازم همهٔ فایل‌ها پیدا نشدند"
+                    else "وضعیت فایل‌های مسیریابی نامشخص است",
+                detail = (if (observation.geoReady == false) "برای قواعد جغرافیایی فعال، geoip و geosite لازم‌اند. "
+                    else "بررسی ممکن است هنوز در حال انجام باشد یا کامل نشده باشد. ") +
+                    "دریافت احتمالی از GitHub خارج از تونل همین برنامه انجام می‌شود و ممکن است IP شبکه را نشان دهد.",
                 severity = Severity.INFO,
                 actionId = Action.SYNC_GEO,
-                actionLabel = "دانلود فایل‌ها",
-            )
-        }
-
-        if (fragmentProfile == "LIGHT" && connected && !exitOk) {
-            out += Finding(
-                title = "پروفایل فرگمنت سبک انتخاب شده",
-                detail = "برای شبکه‌های دارای DPI، پروفایل قوی‌تر احتمال موفقیت بیشتری دارد.",
-                severity = Severity.WARN,
-                actionId = Action.AGGRESSIVE_FRAGMENT,
-                actionLabel = "اعمال پروفایل قوی",
-            )
-        }
-
-        if (out.isEmpty()) {
-            out += Finding(
-                title = "همه‌چیز سالم است",
-                detail = "خروجی، DNS و سرورها وضعیت مناسبی دارند.",
-                severity = Severity.OK,
+                actionLabel = "بررسی فایل‌ها",
             )
         }
         return out
-    }
-
-    /** A shareable text report for support. Pure string building. */
-    fun buildReport(
-        appVersion: String,
-        coreVersion: String,
-        deviceInfo: String,
-        serverLabel: String,
-        tunnelStatus: String,
-        exit: ExitInfo,
-        dns: DnsInfo,
-        logs: List<String>,
-    ): String = buildString {
-        appendLine("=== گزارش عیب‌یابی V2max ===")
-        appendLine("برنامه: $appVersion")
-        appendLine("هسته: $coreVersion")
-        appendLine("دستگاه: $deviceInfo")
-        appendLine("سرور: $serverLabel")
-        appendLine("وضعیت تانل: $tunnelStatus")
-        appendLine("IP خروجی: ${exit.ip.ifBlank { "نامشخص" }}")
-        appendLine("کشور خروجی: ${exit.country.ifBlank { "نامشخص" }}")
-        appendLine("نود Cloudflare: ${exit.colo.ifBlank { "-" }}")
-        appendLine("DNS امن (DoH): ${if (dns.dohOk) "پاسخ گرفت (${dns.dohAnswer})" else "بدون پاسخ"}")
-        appendLine("DNS سیستم: ${dns.systemAnswer.ifBlank { "نامشخص" }}")
-        appendLine("هم‌خوانی DNS: ${if (dns.consistent) "بله" else "خیر/نامشخص"}")
-        appendLine("---- لاگ هسته ----")
-        if (logs.isEmpty()) appendLine("(خالی)") else logs.takeLast(200).forEach { appendLine(it) }
     }
 }

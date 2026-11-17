@@ -23,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -46,6 +47,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -53,12 +55,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ir.v2max.app.data.ScanState
 import ir.v2max.app.data.ServerConfig
+import ir.v2max.app.data.ServerDisplayOrder
 import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.data.TunnelUiState
 import ir.v2max.core.format.Format
 
 private enum class SortMode(val label: String) {
-    FASTEST("بهترین امتیاز"),
+    FASTEST("کمترین پینگ"),
     SPEED("سرعت"),
     STABLE("پایداری"),
     NAME("نام"),
@@ -103,7 +106,7 @@ fun ServersScreen(
             }
             .sortedWith(
                 when (sort) {
-                    SortMode.FASTEST -> compareBy<ServerConfig> { it.score() }
+                    SortMode.FASTEST -> ServerDisplayOrder.fastest
                     SortMode.SPEED -> compareByDescending<ServerConfig> { it.speedKbps }
                     SortMode.STABLE -> compareByDescending<ServerConfig> { it.stability() }
                     SortMode.NAME -> compareBy<ServerConfig> { it.displayName() }
@@ -112,7 +115,7 @@ fun ServersScreen(
             )
     }
 
-    val alive = servers.count { it.tcpPing > 0 || it.realPing > 0 }
+    val measured = servers.count { it.recordedRealPing() > 0 }
 
     LazyColumn(
         modifier = Modifier
@@ -126,7 +129,7 @@ fun ServersScreen(
                 Column(Modifier.weight(1f)) {
                     Text("سرورها", style = MaterialTheme.typography.headlineMedium, color = V2.TextPrimary)
                     Text(
-                        "${Format.number(servers.size)} کانفیگ • ${Format.number(alive)} سالم",
+                        "${Format.number(servers.size)} کانفیگ • ${Format.number(measured)} پینگ واقعی ثبت‌شده",
                         style = MaterialTheme.typography.bodySmall,
                         color = V2.TextMuted
                     )
@@ -150,6 +153,17 @@ fun ServersScreen(
         }
 
         item { ScanBanner(scan) }
+
+        if (servers.isNotEmpty()) {
+            item {
+                Text(
+                    if (selectionMode) "سرورها را برای عملیات گروهی انتخاب کنید"
+                    else "برای اتصال، سرور موردنظر را لمس کنید؛ پینگ‌ها ممکن است قدیمی باشند و تست‌های فعال دوباره کامل می‌شوند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = V2.TextSecondary
+                )
+            }
+        }
 
         item {
             OutlinedTextField(
@@ -346,7 +360,11 @@ private fun ServerRow(
                 )
             )
             .border(1.dp, borderColor, RoundedCornerShape(18.dp))
-            .clickable { onClick() }
+            .clickable(
+                role = Role.Button,
+                onClickLabel = if (selectable) "انتخاب ${server.displayName()}" else "اتصال به ${server.displayName()}",
+                onClick = onClick
+            )
     ) {
         Row(
             Modifier
@@ -435,11 +453,21 @@ private fun ServerRow(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            PingBadge(server.bestPing(), compact = true)
+            PingBadge(server.recordedRealPing(), compact = true)
+            if (!selectable) {
+                IconButton(onClick = onConnect, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = "اتصال به ${server.displayName()}",
+                        tint = V2.Mint,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
             IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
                 Icon(
                     Icons.Filled.Star,
-                    contentDescription = null,
+                    contentDescription = if (server.favorite) "حذف از علاقه‌مندی‌ها" else "افزودن به علاقه‌مندی‌ها",
                     tint = if (server.favorite) V2.Amber else V2.TextMuted,
                     modifier = Modifier.size(17.dp)
                 )
@@ -448,7 +476,7 @@ private fun ServerRow(
                 IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(34.dp)) {
                     Icon(
                         Icons.Filled.MoreVert,
-                        contentDescription = null,
+                        contentDescription = "گزینه‌های ${server.displayName()}",
                         tint = V2.TextMuted,
                         modifier = Modifier.size(18.dp)
                     )

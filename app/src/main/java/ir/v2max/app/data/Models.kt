@@ -2,6 +2,7 @@ package ir.v2max.app.data
 
 import ir.v2max.core.model.Endpoint
 import ir.v2max.core.model.ServerHealth
+import ir.v2max.core.domain.SubscriptionHealthEvidence
 import java.util.UUID
 
 /** پروتکل‌های پشتیبانی‌شده */
@@ -149,6 +150,10 @@ data class ServerConfig(
     fun bestPing(): Int =
         ServerHealth.bestPing(tcpPing, realPing, googlePing, instagramPing, youtubePing)
 
+    /** Last recorded protocol success, not a fresh connection authorization. */
+    fun recordedRealPing(): Int =
+        if (realPing > 0 && testedAt > 0 && testedUrl.isNotBlank()) realPing else -1
+
     fun displayName(): String = name.ifBlank { endpoint }
 
     fun proxyHost(): String = host.ifBlank { address }
@@ -191,11 +196,27 @@ data class Subscription(
     var expireAt: Long = 0L,
     var lastError: String = "",
     /** اشتراک داخلی برنامه (منبع رایگان عمومی) */
-    var builtIn: Boolean = false
+    var builtIn: Boolean = false,
+    /** Evidence from complete, successfully refreshed startup checks only. */
+    var healthFirstFailureAt: Long = 0L,
+    var healthLastFailureAt: Long = 0L,
+    var healthFailureChecks: Int = 0,
+    var healthCheckedRevision: Long = 0L,
+    var healthDismissedAt: Long = 0L
 ) {
     val usedBytes: Long get() = upload + download
 
     fun usedPercent(): Float = if (total <= 0L) 0f else (usedBytes.toFloat() / total.toFloat()).coerceIn(0f, 1f)
+
+    fun healthEvidence() = SubscriptionHealthEvidence(
+        healthFirstFailureAt, healthLastFailureAt, healthFailureChecks, healthCheckedRevision, healthDismissedAt
+    )
+
+    fun withHealthEvidence(evidence: SubscriptionHealthEvidence) = copy(
+        healthFirstFailureAt = evidence.firstFailureAt, healthLastFailureAt = evidence.lastFailureAt,
+        healthFailureChecks = evidence.failureChecks, healthCheckedRevision = evidence.checkedRevision,
+        healthDismissedAt = evidence.dismissedAt
+    )
 }
 
 /** حالت پروکسی برنامه‌به‌برنامه */
@@ -230,6 +251,9 @@ data class AppSettings(
 
     /** منابع رایگان عمومی به‌صورت پیش‌فرض به لیست اشتراک‌ها اضافه شوند */
     var useFreeSources: Boolean = true,
+
+    /** Explicitly removed catalogue entries must not reappear on the next launch. */
+    var disabledBuiltInSources: List<String> = emptyList(),
 
     /** در هر بار باز شدن برنامه، همه‌ی اشتراک‌ها به‌روزرسانی و بهترین سرور انتخاب شود */
     var autoRefreshOnOpen: Boolean = true,
@@ -491,7 +515,9 @@ data class ScanState(
     val bestName: String = "",
     val message: String = "",
     val finished: Boolean = false,
-    val finishedAt: Long = 0L
+    val finishedAt: Long = 0L,
+    /** In-memory snapshot of a completed group scan; not persisted or used to connect. */
+    val diagnosticCounts: ir.v2max.core.domain.ServerProbeCounts? = null
 ) {
     val progress: Float get() = if (total <= 0) 0f else (done.toFloat() / total.toFloat()).coerceIn(0f, 1f)
 }

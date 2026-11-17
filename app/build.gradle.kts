@@ -73,6 +73,8 @@ val keystoreProps = Properties().apply {
 fun signingValue(environment: String, property: String): String? =
     System.getenv(environment)?.takeIf { it.isNotBlank() } ?: keystoreProps.getProperty(property)
 val signingStoreFile = signingValue("V2MAX_RELEASE_KEYSTORE", "storeFile")
+// CI creates this separate, throwaway key only for the isolated preview APK.
+val previewStoreFile = System.getenv("V2MAX_PREVIEW_KEYSTORE")?.takeIf { it.isNotBlank() }
 
 // Optional, debug-only version bump for the disposable emulator update test.
 // It never changes release variants or the package installed on real users' devices.
@@ -114,6 +116,14 @@ android {
                 keyPassword = signingValue("V2MAX_RELEASE_KEY_PASSWORD", "keyPassword")
             }
         }
+        if (previewStoreFile != null) {
+            create("preview") {
+                storeFile = rootProject.file(previewStoreFile)
+                storePassword = System.getenv("V2MAX_PREVIEW_STORE_PASSWORD")
+                keyAlias = System.getenv("V2MAX_PREVIEW_KEY_ALIAS")
+                keyPassword = System.getenv("V2MAX_PREVIEW_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -128,7 +138,25 @@ android {
             applicationIdSuffix = ".debug"
             if (emulatorUpgradeCode != null) versionNameSuffix = "-emulator-upgrade"
         }
+        create("preview") {
+            // An isolated, non-debuggable app for voluntary device testing. It is
+            // never an update of the official package and never uses the release key.
+            initWith(getByName("release"))
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            signingConfig = signingConfigs.findByName("preview") ?: signingConfigs.getByName("debug")
+            isDebuggable = false
+            // Keep the instrumentation target unobfuscated. The production release
+            // is still built and checked separately with R8/resource shrinking.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            matchingFallbacks += listOf("release")
+        }
     }
+
+    // Only the dedicated preview smoke invocation changes the instrumentation
+    // target; all existing Android tests continue to target the debug variant.
+    testBuildType = if (providers.gradleProperty("v2maxPreviewInstrumentation").orNull == "true") "preview" else "debug"
 
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
@@ -175,6 +203,10 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.biometric:biometric:1.1.0")
+    // Biometric's old transitive FragmentActivity rejects the 32-bit request
+    // codes used by Activity Result APIs. Pin a modern fragment so VPN consent,
+    // document pickers and runtime permissions can actually open.
+    implementation("androidx.fragment:fragment:1.8.5")
     testImplementation("junit:junit:4.13.2")
     // Test-only on purpose. ConfigGeneratorTests compares core's XrayConfig
     // against the app's ConfigBuilder to prove they agree before any call site

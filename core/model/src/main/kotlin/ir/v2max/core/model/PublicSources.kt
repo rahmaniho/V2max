@@ -1,8 +1,8 @@
 package ir.v2max.core.model
 
 /**
- * منابع عمومی و رایگان کانفیگ که به‌صورت پیش‌فرض در برنامه ثبت می‌شوند.
- * این لیست به‌روزرسانی مداوم دارد؛ برنامه در هر بار باز شدن، آن‌ها را تازه می‌کند.
+ * فهرست منابع عمومی شخص ثالث؛ فقط مجموعهٔ DEFAULT در صورت فعال‌بودن منابع رایگان
+ * خودکار اضافه می‌شود. دریافت در شروع نیز تابع تنظیم به‌روزرسانی خودکار است.
  */
 data class PublicSource(
     val name: String,
@@ -37,7 +37,7 @@ object PublicSources {
      */
     val DEFAULT: List<PublicSource> by lazy { ALL.take(DEFAULT_COUNT) }
 
-    private const val DEFAULT_COUNT = 6
+    private const val DEFAULT_COUNT = 8
 
     val ALL: List<PublicSource> = listOf(
         PublicSource(
@@ -68,6 +68,16 @@ object PublicSources {
         PublicSource(
             name = "🏅 MohammadBahemmat (تست‌شده)",
             url = "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/Tested.txt",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🌐 iBoxz (Free V2Ray Collector)",
+            url = "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix",
+            maxConfigs = 150
+        ),
+        PublicSource(
+            name = "🇮🇷 توماس (ساب‌لیست)",
+            url = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt",
             maxConfigs = 150
         ),
         PublicSource(
@@ -133,11 +143,6 @@ object PublicSources {
         PublicSource(
             name = "🇮🇷 ماهان (Freedom-V2Ray)",
             url = "https://raw.githubusercontent.com/MahanKenway/Freedom-V2Ray/main/configs/mix_sub.txt",
-            maxConfigs = 150
-        ),
-        PublicSource(
-            name = "🇮🇷 توماس (ساب‌لیست)",
-            url = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt",
             maxConfigs = 150
         ),
         PublicSource(

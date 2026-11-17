@@ -37,6 +37,13 @@ object ServerListPolicy {
      * a live tunnel) always survive even if that exceeds the limit. The
      * rest are ranked by [Server.score], so the worst performers go first.
      *
+     * When [sourceReserve] is positive, a bounded share is also reserved for
+     * each represented public source. This helps prevent a full older catalogue
+     * from discarding every candidate of a newly refreshed source before the
+     * user has a chance to test it. Protected records count toward the share.
+     * A share may exceed the soft limit when protected records already fill it;
+     * at most [limit] additional unprotected records are reserved in total.
+     *
      * Returns the input unchanged when nothing needs trimming.
      */
     fun capBuiltIn(
@@ -45,12 +52,14 @@ object ServerListPolicy {
         selectedId: String = "",
         limit: Int = MAX_BUILT_IN_SERVERS,
         protectedIds: Set<String> = emptySet(),
+        sourceReserve: Int = 0,
     ): List<Server> = capBuiltIn(
         list = list,
         builtInSubscriptionIds = builtInSubscriptionIds,
         selectedId = selectedId,
         limit = limit,
         protectedIds = protectedIds,
+        sourceReserve = sourceReserve,
         idOf = { it.id },
         subscriptionIdOf = { it.subscriptionId },
         isFavorite = { it.favorite },
@@ -72,6 +81,7 @@ object ServerListPolicy {
         selectedId: String = "",
         limit: Int = MAX_BUILT_IN_SERVERS,
         protectedIds: Set<String> = emptySet(),
+        sourceReserve: Int = 0,
         idOf: (T) -> String,
         subscriptionIdOf: (T) -> String,
         isFavorite: (T) -> Boolean,
@@ -80,16 +90,40 @@ object ServerListPolicy {
         if (builtInSubscriptionIds.isEmpty()) return list
 
         val builtIn = list.filter { subscriptionIdOf(it) in builtInSubscriptionIds }
-        if (builtIn.size <= limit) return list
+        val capacity = limit.coerceAtLeast(0)
+        if (builtIn.size <= capacity) return list
 
         fun isProtected(s: T) = isFavorite(s) || idOf(s) == selectedId || idOf(s) in protectedIds
 
         val protected = builtIn.filter(::isProtected)
         val remaining = builtIn.filterNot(::isProtected).sortedBy { scoreOf(it) }
+        val keep = protected.mapTo(HashSet()) { idOf(it) }
 
-        val keep = (protected + remaining.take((limit - protected.size).coerceAtLeast(0)))
-            .map { idOf(it) }
-            .toHashSet()
+        if (sourceReserve > 0 && capacity > 0) {
+            // Apportion at most the normal capacity across the represented
+            // sources; a tiny custom capacity can only reserve a subset. Do not
+            // spend slots for empty catalogue subscriptions.
+            val sourceCount = builtIn.mapTo(HashSet()) { subscriptionIdOf(it) }.size
+            val quota = minOf(sourceReserve, (capacity / sourceCount).coerceAtLeast(1))
+            val protectedCounts = protected.groupingBy { subscriptionIdOf(it) }.eachCount()
+            val groups = remaining.groupBy { subscriptionIdOf(it) }
+            var reserved = 0
+            for ((source, candidates) in groups) {
+                val need = (quota - (protectedCounts[source] ?: 0)).coerceAtLeast(0)
+                for (candidate in candidates.take(need)) {
+                    if (reserved >= capacity) break
+                    if (keep.add(idOf(candidate))) reserved++
+                }
+                if (reserved >= capacity) break
+            }
+        }
+
+        // After protecting source shares, fill any remaining capacity by score.
+        var slots = (capacity - keep.size).coerceAtLeast(0)
+        for (candidate in remaining) {
+            if (slots == 0) break
+            if (keep.add(idOf(candidate))) slots--
+        }
 
         // Personal servers are untouched regardless of the cap.
         return list.filter { subscriptionIdOf(it) !in builtInSubscriptionIds || idOf(it) in keep }

@@ -8,6 +8,7 @@ import ir.v2max.app.data.TunnelStatus
 import ir.v2max.app.net.CarrierProbe
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbePlanner
+import ir.v2max.app.net.ScanDiagnostics
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,29 +40,31 @@ object SmartConnect {
 
     /** بررسی عمیق شبکه (اپراتور، DNS، DPI، تأخیر/لرزش) و انتشار نتیجه برای رابط کاربری */
     suspend fun assessNetwork(context: Context, force: Boolean = false): Boolean {
-        return probeMutex.withLock {
-            val before = CarrierProbe.networkHandle(context) ?: return@withLock false
-            if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
-            Repo.scan.value = Repo.scan.value.copy(
-                phase = "بررسی عمیق شبکه‌ی اپراتور",
-                message = "سنجش DNS، DPI، تأخیر و لرزش شبکه…"
-            )
-            val result = try {
-                CarrierProbe.assess(context)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                return@withLock false
+        return ConnectionTestBarrier.tests {
+            probeMutex.withLock {
+                val before = CarrierProbe.networkHandle(context) ?: return@withLock false
+                if (!force && before == assessmentNetwork && Repo.network.value.fresh) return@withLock true
+                Repo.scan.value = Repo.scan.value.copy(
+                    phase = "بررسی عمیق شبکه‌ی اپراتور",
+                    message = "سنجش نمونه‌های DNS، TCP و TLS شبکه…"
+                )
+                val result = try {
+                    CarrierProbe.assess(context)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    return@withLock false
+                }
+                val after = CarrierProbe.networkHandle(context)
+                if (before != after) {
+                    assessmentNetwork = null
+                    Repo.network.value = ir.v2max.app.data.NetworkAssessment()
+                    return@withLock false
+                }
+                assessmentNetwork = after
+                Repo.network.value = result
+                true
             }
-            val after = CarrierProbe.networkHandle(context)
-            if (before != after) {
-                assessmentNetwork = null
-                Repo.network.value = ir.v2max.app.data.NetworkAssessment()
-                return@withLock false
-            }
-            assessmentNetwork = after
-            Repo.network.value = result
-            true
         }
     }
 
@@ -81,9 +84,12 @@ object SmartConnect {
         limit: Int = 0,
         preferredId: String? = null,
         excludedIds: Set<String> = emptySet(),
-        exhaustive: Boolean = false
+        exhaustive: Boolean = false,
+        preferFastest: Boolean = false,
+        manualFailure: String? = null
     ): VerifiedSelection? {
         val job = currentCoroutineContext()[Job]
+        var handedOff = false
         if (job != null) scanJobs.add(job)
         try {
             return scanMutex.withLock {
@@ -135,6 +141,9 @@ object SmartConnect {
                     val rememberedId = if (preferredId == null && settings.rememberNetworks && profileKey.isNotBlank()) {
                         Repo.profileFor(profileKey)?.serverId
                     } else null
+                    // Keep diagnostic evidence separate from connection receipts. TCP,
+                    // skipped tests and setup failures must never become proxy failures.
+                    val diagnosticScan = ScanDiagnostics(servers.size)
                     val outcome = try {
                         HealthScanner.scan(
                             context = context,
@@ -144,10 +153,13 @@ object SmartConnect {
                             rememberedId = rememberedId,
                             limit = limit,
                             exhaustive = exhaustive,
+                            fastestRecentFirst = preferFastest,
                             onTcp = { cfg, ping -> Repo.setPretest(cfg.id, ping, cfg.fingerprint()) },
                             onReal = { cfg, result ->
+                                diagnosticScan.onReal(cfg.id, result)
                                 Repo.setVerifiedResult(cfg.id, result, expectedFingerprint = cfg.fingerprint())
                             },
+                            onIndeterminate = { cfg -> diagnosticScan.onIndeterminate(cfg.id) },
                             onSpeed = { cfg, kbps ->
                                 Repo.setSpeed(cfg.id, kbps, persist = false, expectedFingerprint = cfg.fingerprint())
                             },
@@ -167,13 +179,13 @@ object SmartConnect {
                             onAlive = { alive -> Repo.scan.value = Repo.scan.value.copy(alive = alive) }
                         )
                     } catch (e: CancellationException) {
-                        Repo.scan.value = Repo.scan.value.copy(running = false, message = "تست لغو شد")
+                        Repo.scan.value = Repo.scan.value.copy(running = false, diagnosticCounts = null, message = "تست لغو شد")
                         throw e
-                    } catch (t: Exception) {
+                    } catch (_: Exception) {
                         Repo.scan.value = Repo.scan.value.copy(
                             running = false,
                             finished = true,
-                            message = "اسکن متوقف شد: ${t.message ?: "خطا"}"
+                            message = "اسکن با خطا متوقف شد؛ دوباره تلاش کنید"
                         )
                         return@withLock null
                     }
@@ -200,7 +212,7 @@ object SmartConnect {
                     val chosen = when {
                         best == null -> null
                         // Do not override a fresh download comparison with old network memory.
-                        !outcome.speedCompared && remembered != null &&
+                        !preferFastest && !outcome.speedCompared && remembered != null &&
                             ProbePlanner.latencyScore(remembered) <= ProbePlanner.latencyScore(best) + 60 -> remembered
                         else -> best
                     }
@@ -212,14 +224,23 @@ object SmartConnect {
                         alive = qualified.size,
                         done = outcome.testedCount,
                         total = outcome.testedCount,
+                        // An interrupted optional test can return before evidence is
+                        // published. In that case there is no complete scan summary.
+                        diagnosticCounts = diagnosticScan.complete(outcome.testedCount),
                         bestName = chosen?.displayName().orEmpty(),
                         phase = "پایان",
                         message = when {
-                            chosen == null && outcome.best != null -> "فهرست هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                            chosen == null && outcome.best != null ->
+                                "فهرست هنگام تست تغییر کرد؛ دوباره تلاش کنید"
+                            chosen == null && manualFailure != null ->
+                                "سرور انتخابی تأیید نشد. $manualFailure بررسی جایگزین: ${outcome.message}"
                             chosen == null -> outcome.message
                             else -> buildString {
-                                if (preferredId != null && chosen.id != preferredId) append("سرور انتخابی پاسخ نداد؛ جایگزین: ")
-                                else append("سرور تأییدشده: ")
+                                if (manualFailure != null || (preferredId != null && chosen.id != preferredId)) {
+                                    append("سرور انتخابی تأیید نشد؛ جایگزین تأییدشده: ")
+                                } else if (preferFastest && !settings.speedTest) {
+                                    append("کم‌تأخیرترین سرورِ بررسی‌شده: ")
+                                } else append("سرور تأییدشده: ")
                                 append("${chosen.displayName()} (${chosen.realPing}ms)")
                                 append(" · ${outcome.testedCount} تست واقعی · اسکن ${outcome.elapsedMs}ms")
                                 append(" · ${outcome.message}")
@@ -236,7 +257,7 @@ object SmartConnect {
                         val sameAsRunning = connected && current?.id == selection.id &&
                             TunnelController.matchesActiveProfile(selection.server(), settings)
                         // Avoid interrupting a working, comparable connection.
-                        val keepCurrent = preferredId == null && connected && current != null &&
+                        val keepCurrent = preferredId == null && !preferFastest && connected && current != null &&
                             !sameAsRunning && current.bestPing() > 0 &&
                             ProbePlanner.latencyScore(current) <= ProbePlanner.latencyScore(chosen) * 1.35f
                         when {
@@ -244,7 +265,10 @@ object SmartConnect {
                             keepCurrent -> Unit
                             else -> synchronized(scanJobs) {
                                 // Cancellation and receipt hand-off must not cross.
-                                if (job?.isActive != false) TunnelController.startVerified(context, selection)
+                                if (job?.isActive != false) {
+                                    TunnelController.startVerified(context, selection)
+                                    handedOff = true
+                                }
                             }
                         }
                     }
@@ -253,8 +277,10 @@ object SmartConnect {
                     selection
                 } finally {
                     if (activeScanJob === job) activeScanJob = null
-                    if (job?.isCancelled == true) {
-                        Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, message = "تست لغو شد")
+                    // The service intentionally cancels superseded startup work
+                    // after accepting its receipt; that is not a canceled test.
+                    if (job?.isCancelled == true && !handedOff) {
+                        Repo.scan.value = Repo.scan.value.copy(running = false, finished = true, diagnosticCounts = null, message = "تست لغو شد")
                     }
                 }
             }
@@ -264,29 +290,40 @@ object SmartConnect {
     }
 
     /** Test the selected server first; try other verified candidates if it fails. */
-    suspend fun quickConnect(context: Context) {
+    suspend fun quickConnect(context: Context): Boolean {
         val selected = Repo.selectedServer()
-        if (selected != null) connectVerified(context, selected.id)
-        else scanAndConnect(context, autoConnect = true)
+        return if (selected != null) connectVerified(context, selected.id)
+        else scanAndConnect(context, autoConnect = true) != null
     }
 
     /** An explicit selection is honored whenever that same server passes the real test. */
     suspend fun connectVerified(context: Context, serverId: String): Boolean {
-        if (Repo.serverById(serverId) == null) return false
+        if (Repo.serverById(serverId) == null) {
+            Repo.scan.value = ScanState(finished = true, message = "سرور انتخاب‌شده دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+            return false
+        }
         // A manual choice should not wait for hundreds of unrelated public configs.
         if (scanAndConnect(context, autoConnect = true, limit = 1, preferredId = serverId) != null) return true
         currentCoroutineContext().ensureActive()
+        // Keep the actual preflight reason (e.g. incompatible TLS settings or a
+        // changed network), rather than replacing it with an unsupported claim
+        // that the server is dead.
+        val manualFailure = Repo.scan.value.message.ifBlank { "تست پیش از اتصال کامل نشد." }
         if (Repo.servers.value.none { it.id != serverId }) {
-            Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد و جایگزینی وجود ندارد")
+            Repo.scan.value = Repo.scan.value.copy(
+                message = "سرور انتخابی تأیید نشد و جایگزینی وجود ندارد. $manualFailure"
+            )
             return false
         }
-        Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی پاسخ نداد؛ جستجوی جایگزین…")
-        return scanAndConnect(context, autoConnect = true, excludedIds = setOf(serverId)) != null
+        Repo.scan.value = Repo.scan.value.copy(message = "سرور انتخابی تأیید نشد؛ جستجوی جایگزین…")
+        return scanAndConnect(
+            context, autoConnect = true, excludedIds = setOf(serverId), preferFastest = true, manualFailure = manualFailure
+        ) != null
     }
 
     /**
      * «ری‌استارت جستجو»: نتایج قبلی پاک می‌شوند و کل چرخه از نو اجرا می‌شود.
-     * اتصال فعلی تا پیدا شدن گزینه‌ی بهتر برقرار می‌ماند (بدون قطعی برای کاربر).
+     * اتصال فعلی تا آماده‌شدن گزینهٔ جایگزین حفظ می‌شود؛ تغییر مسیر ممکن است وقفه داشته باشد.
      */
     internal suspend fun restart(context: Context, autoConnect: Boolean = true): VerifiedSelection? {
         Failover.reset()

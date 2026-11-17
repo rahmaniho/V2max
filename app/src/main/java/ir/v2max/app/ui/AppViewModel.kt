@@ -15,26 +15,23 @@ import ir.v2max.app.net.LinkParser
 import ir.v2max.app.net.UpdateChecker
 import ir.v2max.app.net.UpdateCoordinator
 import ir.v2max.app.net.SubscriptionFetcher
-import ir.v2max.app.net.SubscriptionBootstrap
+import ir.v2max.app.net.StartupMaintenance
 import ir.v2max.app.net.SubscriptionPolicy
+import ir.v2max.app.net.SubscriptionRefresh
+import ir.v2max.app.net.SubscriptionSyncGate
 import ir.v2max.core.format.Format
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -55,18 +52,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy.asStateFlow()
 
-    private val _pendingVpnRequest = MutableStateFlow(false)
-    val pendingVpnRequest: StateFlow<Boolean> = _pendingVpnRequest.asStateFlow()
+    private sealed class VpnAction {
+        data class Server(val id: String) : VpnAction()
+        data class Smart(
+            val subscriptionId: String?, val automaticOnOpen: Boolean = false, val startupToken: Long? = null
+        ) : VpnAction()
+        object Quick : VpnAction()
+        object Restart : VpnAction()
+    }
 
-    private var pendingServerId: String? = null
-    private var pendingScanSubId: String? = null
-    private var pendingSmartScan = false
-    private var pendingRestart = false
-    private var pendingQuickConnect = false
+    private val vpnPermissions = VpnPermissionQueue<VpnAction>()
+    private val _vpnPermissionState = MutableStateFlow(vpnPermissions.snapshot())
+    internal val vpnPermissionState: StateFlow<VpnPermissionState> = _vpnPermissionState.asStateFlow()
+    private val _notificationPermissionInFlight = MutableStateFlow(false)
+    internal val notificationPermissionInFlight: StateFlow<Boolean> = _notificationPermissionInFlight.asStateFlow()
+    private var notificationPermissionAttempted = false
+    internal var lastVpnPermissionLaunchError: String = ""
+        private set
     private var startupJob: Job? = null
-    private var startupRefreshJob: Job? = null
+    private var editingServerId: String? = null
     private val dataJobs = java.util.Collections.synchronizedSet(mutableSetOf<Job>())
-    private val syncMutex = kotlinx.coroutines.sync.Mutex()
     private val updateDownloadLock = Any()
     private var updateDownloadActive = false
     private var updateDownloadAttempt = 0L
@@ -82,10 +87,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Importing data does not cancel an unrelated VPN or its recovery. */
     private fun cancelStartup() {
+        // Invalidate and cancel all housekeeping (including a periodic or manual
+        // refresh) so a newer user action or recovery does not wait behind it.
+        // An unrelated live VPN itself is not stopped.
+        StartupMaintenance.cancelAll()
         startupJob?.cancel()
         startupJob = null
-        startupRefreshJob?.cancel()
-        startupRefreshJob = null
     }
 
     private fun requireWritableData(): Boolean {
@@ -111,82 +118,120 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val errorHandler = CoroutineExceptionHandler { _, throwable ->
         ir.v2max.app.util.CrashLog.record(throwable, "viewModel")
         runCatching { _busy.value = false }
-        val text = throwable.message.orEmpty().take(120)
-        _message.value = if (text.isBlank()) "خطای غیرمنتظره رخ داد؛ دوباره تلاش کنید" else "خطا: $text"
+        _message.value = "خطای غیرمنتظره رخ داد؛ دوباره تلاش کنید"
     }
 
     init {
-        startupJob = viewModelScope.launch(errorHandler) { startup() }
+        // Capture before scheduling: a service action can supersede startup
+        // before its coroutine has even begun or registered with maintenance.
+        val startupToken = Repo.startupHealthToken()
+        startupJob = viewModelScope.launch(errorHandler) { startup(startupToken) }
     }
 
-    /** Use cached profiles immediately; network refresh never certifies a profile. */
-    private suspend fun startup() {
+    /** Refresh, then protocol health, then the separate full connection preflight. */
+    private suspend fun startup(token: Long) {
+        if (!Repo.startupHealthIsCurrent(token)) return
         val app = getApplication<Application>()
         val settings = Repo.settings.value
-        val crash = runCatching { ir.v2max.app.util.CrashLog.lastSummary() }.getOrDefault("")
-        if (crash.isNotBlank()) showMessage("دفعه‌ی قبل برنامه بسته شد: $crash")
+        if (ir.v2max.app.util.CrashLog.hasRecorded()) {
+            showMessage("یک خطای محلی ثبت شده است؛ خلاصهٔ خصوصی در تنظیمات موجود است")
+        }
         if (settings.useFreeSources) runCatching { Repo.ensureBuiltInSources(requireEnabled = true) }
         if (settings.autoUpdateCheck) checkUpdates(manual = false)
 
-        val now = System.currentTimeMillis()
-        val refreshPermit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC)
-        val refresh = refreshPermit != null && Repo.subs.value.any {
-            now - it.updatedAt > 3 * 60 * 60 * 1000L
+        if (!Repo.startupHealthIsCurrent(token)) return
+        val permit = Repo.beginAutomaticRefresh(Repo.AutomaticRefresh.STARTUP_OR_PERIODIC)
+        if (permit != null && Repo.subs.value.isNotEmpty()) {
+            // Attempt all current sources, even recently updated ones. User
+            // actions and service recovery can cancel this entire phase.
+            val complete = StartupMaintenance.track(token) {
+                SubscriptionSyncGate.mutex.withLock {
+                    Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "آماده‌سازی اشتراک‌ها…")
+                    try {
+                        // A service action may have invalidated startup just
+                        // before this job registered or acquired the gate.
+                        if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
+                        val refreshed = refreshLocked(Repo.subs.value, permit.dataEpoch, token, permit)
+                        currentCoroutineContext().ensureActive()
+                        if (!Repo.startupHealthIsCurrent(token) || !Repo.automaticRefreshIsCurrent(permit)) return@withLock false
+                        if (refreshed.sources.isEmpty()) {
+                            showMessage("به‌روزرسانی اشتراک‌ها انجام نشد؛ فهرست قبلی حفظ شد و اتصال خودکار آغاز نشد")
+                            return@withLock false
+                        }
+                        Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                        val checked = try {
+                            withContext(Dispatchers.IO) {
+                                StartupMaintenance.finish(app, refreshed.sources, permit.dataEpoch, permit, token) { phase, done, total ->
+                                    Repo.sync.value = Repo.sync.value.copy(
+                                        done = done, total = total,
+                                        message = if (phase.startsWith("پیش")) "پیش‌بررسی سرورهای اشتراک…"
+                                            else "سنجش واقعی سرورهای اشتراک…"
+                                    )
+                                }
+                            }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            showMessage("سنجش اشتراک‌ها کامل نشد؛ فهرست حفظ شد و اتصال خودکار آغاز نشد")
+                            return@withLock false
+                        }
+                        currentCoroutineContext().ensureActive()
+                        when (checked.status) {
+                            StartupMaintenance.Status.COMPLETE -> {
+                                when {
+                                    checked.health.healthy == 0 && checked.health.unknownSources > 0 -> showMessage(
+                                        "هیچ تستی موفق نشد و نتیجهٔ برخی بررسی‌ها نامشخص بود؛ کانفیگ‌ها حفظ شدند"
+                                    )
+                                    checked.health.healthy == 0 -> showMessage(
+                                        "هیچ سروری در این نوبت پاسخ نداد؛ مشکل ممکن است از شبکه یا مقصد تست باشد و کانفیگ‌ها حفظ شدند"
+                                    )
+                                    checked.health.removed > 0 -> showMessage(
+                                        "${Format.number(checked.health.removed)} کانفیگ اشتراک در این بررسی پاسخ نداد و کنار گذاشته شد"
+                                    )
+                                    checked.health.unknownSources > 0 -> showMessage(
+                                        "سنجش برخی اشتراک‌ها کامل نبود؛ کانفیگ‌های نامشخص حفظ شدند"
+                                    )
+                                }
+                                true
+                            }
+                            StartupMaintenance.Status.NO_NETWORK -> {
+                                showMessage("شبکه‌ای برای سنجش پیدا نشد؛ کانفیگ‌ها حفظ شدند")
+                                false
+                            }
+                            StartupMaintenance.Status.NO_PROFILES -> {
+                                showMessage("کانفیگ‌های دریافت‌شده برای سنجش در دسترس نبودند؛ اتصال خودکار آغاز نشد")
+                                false
+                            }
+                            StartupMaintenance.Status.INCOMPLETE, StartupMaintenance.Status.CHANGED -> {
+                                showMessage("سنجش کامل نشد یا شبکه و تنظیمات تغییر کردند؛ اتصال خودکار آغاز نشد")
+                                false
+                            }
+                        }
+                    } finally {
+                        // The indicator is owned only while holding the gate;
+                        // a canceled pass cannot hide a newer manual refresh.
+                        Repo.sync.value = Repo.sync.value.copy(running = false)
+                    }
+                }
+            }
+            if (!complete) return
         }
-        var syncFinished = false
-        try {
-            if (refresh && refreshPermit != null && Repo.automaticRefreshIsCurrent(refreshPermit) && Repo.servers.value.isEmpty()) {
-                // First install: race sources, but still test the obtained configs with Xray.
-                val epoch = refreshPermit.dataEpoch
-                val sources = Repo.subs.value.sortedBy { it.builtIn }
-                Repo.sync.value = ir.v2max.app.data.SyncState(
-                    running = true, total = sources.size, message = "دریافت نخستین منبع قابل استفاده…"
-                )
-                val first = try {
-                    SubscriptionBootstrap.firstUsable(sources) { done, total ->
-                        Repo.sync.value = Repo.sync.value.copy(done = done, total = total)
-                    }
-                } finally {
-                    Repo.sync.value = Repo.sync.value.copy(running = false)
-                }
-                if (first != null) {
-                    withContext(Dispatchers.IO) {
-                        applyFetchedSubscription(first.subscription, first.result, epoch, automaticPermit = refreshPermit)
-                    }
-                } else {
-                    syncFinished = true // all sources were already attempted
-                    Repo.sync.value = Repo.sync.value.copy(message = "دریافت منابع ناموفق بود؛ دوباره تلاش کنید")
-                }
-            }
 
-            // With auto-connect off, do not launch unsolicited preflight probes.
-            if (!Repo.settings.value.autoConnectOnOpen || Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
-            // Do not restart a connection or compete with a scan the user already started.
-            if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
-            if (VpnService.prepare(app) != null) {
-                if (settings.autoConnectOnOpen) requestSmartConnectInternal()
-                return
+        currentCoroutineContext().ensureActive()
+        if (!Repo.startupHealthIsCurrent(token) || !Repo.settings.value.autoConnectOnOpen ||
+            Repo.servers.value.isEmpty() || !autoConnectAllowed(app)) return
+        // Never restart a working or recovering connection while opening the UI.
+        if (Repo.tunnel.value.isActive || Repo.scan.value.running) return
+        val needsPermission = vpnPermissionRequired() ?: return
+        if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
+            if (Repo.settings.value.autoConnectOnOpen) {
+                requestSmartConnectInternal(automaticOnOpen = true, startupToken = token)
             }
-
-            val best = SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
-            // If the first source or all cached profiles fail, refresh the other stale
-            // sources and retry once rather than leaving the user disconnected.
-            if (best == null && refresh && refreshPermit != null && !syncFinished) {
-                syncFinished = true
-                val (updated, _) = syncAll(announce = false, onlyStale = true, automaticPermit = refreshPermit)
-                if (updated > 0 && !Repo.tunnel.value.isActive && !Repo.scan.value.running) {
-                    SmartConnect.scanAndConnect(app, autoConnect = settings.autoConnectOnOpen, limit = 450)
-                }
-            }
-        } finally {
-            // Fetching unrelated subscriptions is not a pre-connect test. Keep it off
-            // the hot path and preserve the selected/live profile while it runs.
-            if (currentCoroutineContext().isActive && refresh && refreshPermit != null && !syncFinished &&
-                Repo.automaticRefreshIsCurrent(refreshPermit)) {
-                startupRefreshJob = viewModelScope.launch(errorHandler) {
-                    syncAll(announce = false, onlyStale = true, automaticPermit = refreshPermit)
-                }
-            }
+            return
+        }
+        // Keep automatic preflight cancellable by a newer service action too.
+        StartupMaintenance.track(token) {
+            SmartConnect.scanAndConnect(app, autoConnect = true, limit = 450, preferFastest = true)
         }
     }
 
@@ -237,27 +282,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         TunnelController.stop(getApplication())
     }
 
-    /** درخواست اتصال؛ در صورت نیاز مجوز VPN از کاربر گرفته می‌شود */
+    /** A row or its explicit connect control selects and tests that same profile. */
     fun requestConnect(serverId: String?) {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = serverId
-            pendingScanSubId = null
-            pendingSmartScan = false
-            pendingQuickConnect = false
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            return
-        }
         if (serverId == null) {
-            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
-            return
-        }
-        // پیش از اتصال، همان سرور تست می‌شود (یا در صورت خرابی، چرخه‌ی کامل اجرا می‌شود)
-        viewModelScope.launch(errorHandler) {
-            val ok = SmartConnect.connectVerified(app, serverId)
-            if (!ok) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+            if (hasServers()) runOrRequestVpn(VpnAction.Quick)
+        } else if (Repo.serverById(serverId) == null) {
+            showMessage("سرور انتخاب‌شده دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+        } else {
+            Repo.setSelected(serverId)
+            if (Repo.isStorageReadOnly()) showMessage("انتخاب سرور تا بستن برنامه موقت است؛ داده‌ها فقط‌خواندنی‌اند")
+            runOrRequestVpn(VpnAction.Server(serverId))
         }
     }
 
@@ -266,79 +301,142 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         requestSmartConnectInternal(subscriptionId)
     }
 
-    private fun requestSmartConnectInternal(subscriptionId: String? = null) {
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = null
-            pendingSmartScan = true
-            pendingQuickConnect = false
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            pendingScanSubId = subscriptionId
+    private fun requestSmartConnectInternal(
+        subscriptionId: String? = null, automaticOnOpen: Boolean = false, startupToken: Long? = null
+    ) {
+        if (hasServers(subscriptionId)) runOrRequestVpn(VpnAction.Smart(subscriptionId, automaticOnOpen, startupToken))
+    }
+
+    private fun hasServers(subscriptionId: String? = null): Boolean {
+        if (Repo.servers.value.any { subscriptionId == null || it.subId == subscriptionId }) return true
+        val text = "سروری برای اتصال وجود ندارد؛ ابتدا یک اشتراک یا کانفیگ اضافه کنید"
+        Repo.scan.value = ir.v2max.app.data.ScanState(finished = true, message = text)
+        showMessage(text)
+        return false
+    }
+
+    /** Keep a permission failure visible after its short snackbar disappears. */
+    private fun showVpnPermissionProblem(text: String) {
+        if (!Repo.tunnel.value.isActive) {
+            Repo.scan.value = ir.v2max.app.data.ScanState(finished = true, message = text)
+        }
+        showMessage(text)
+    }
+
+    /** Null means Android could not determine consent; never start a tunnel in that case. */
+    private fun vpnPermissionRequired(): Boolean? = try {
+        VpnService.prepare(getApplication<Application>()) != null
+    } catch (_: Exception) {
+        showVpnPermissionProblem("بررسی مجوز VPN ممکن نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+        null
+    }
+
+    private fun runOrRequestVpn(action: VpnAction) {
+        if (!automaticActionIsCurrent(action)) return
+        val needsPermission = vpnPermissionRequired() ?: return
+        if (needsPermission || vpnPermissions.snapshot().inFlightId != null) {
+            vpnPermissions.enqueue(action)
+            _vpnPermissionState.value = vpnPermissions.snapshot()
         } else {
-            launchSmartConnect(subscriptionId)
+            executeVpnAction(action)
         }
     }
 
     private fun clearPendingVpnRequest() {
-        _pendingVpnRequest.value = false
-        pendingServerId = null
-        pendingScanSubId = null
-        pendingSmartScan = false
-        pendingQuickConnect = false
-        pendingRestart = false
+        vpnPermissions.cancel()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
     }
 
-    fun onVpnPermissionResult(granted: Boolean) {
-        // Ignore a permission result arriving after the request was cancelled/reset.
-        if (!_pendingVpnRequest.value) return
-        val id = pendingServerId
-        val subscriptionId = pendingScanSubId
-        val restart = pendingRestart
-        val quickConnect = pendingQuickConnect
-        val smartScan = pendingSmartScan
-        clearPendingVpnRequest()
+    private fun automaticActionIsCurrent(action: VpnAction): Boolean =
+        action !is VpnAction.Smart || !action.automaticOnOpen ||
+            (action.startupToken != null && Repo.startupHealthIsCurrent(action.startupToken) &&
+                Repo.settings.value.autoConnectOnOpen && !Repo.tunnel.value.isActive)
+
+    /** Claim before launching so recreation does not launch a second system dialog. */
+    internal fun claimVpnPermissionRequest(): Boolean {
+        vpnPermissions.cancelIf { !automaticActionIsCurrent(it) }
+        val claimed = vpnPermissions.claim()
+        if (claimed) lastVpnPermissionLaunchError = ""
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        return claimed
+    }
+
+    internal fun onVpnPermissionResult(granted: Boolean) {
+        val action = vpnPermissions.complete()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        // A canceled or superseded request must not consume this old dialog result.
+        if (action == null || !automaticActionIsCurrent(action)) return
         if (!granted) {
-            showMessage("برای اتصال، اجازه‌ی ساخت VPN لازم است")
+            showVpnPermissionProblem("برای اتصال، اجازه‌ی ساخت VPN لازم است؛ اگر پنجره باز نشد، VPN همیشه‌روشن یا محدودیت دستگاه را بررسی کنید")
             return
         }
-        if (restart) {
-            launchRestart()
-        } else if (quickConnect) {
-            viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(getApplication()) }
-        } else if (smartScan) {
-            launchSmartConnect(subscriptionId)
-        } else {
-            viewModelScope.launch(errorHandler) {
-                val app = getApplication<Application>()
-                if (id == null) SmartConnect.quickConnect(app)
-                else if (!SmartConnect.connectVerified(app, id)) {
+        when (vpnPermissionRequired()) {
+            false -> executeVpnAction(action)
+            true -> showVpnPermissionProblem("مجوز VPN فعال نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+            null -> Unit // vpnPermissionRequired already reported the failure
+        }
+    }
+
+    internal fun onVpnPermissionLaunchFailure(error: Throwable) {
+        // The system VPN intent contains no server credentials. Keep this only
+        // in process memory for diagnostics, never in the user-facing message.
+        lastVpnPermissionLaunchError = "${error.javaClass.simpleName}: ${error.message.orEmpty().take(240)}"
+        val action = vpnPermissions.complete()
+        _vpnPermissionState.value = vpnPermissions.snapshot()
+        if (action != null && automaticActionIsCurrent(action)) {
+            showVpnPermissionProblem("پنجره‌ی مجوز VPN باز نشد؛ محدودیت‌های دستگاه و VPNهای دیگر را بررسی کنید")
+        }
+    }
+
+    /** The optional notification prompt must not overlap the VPN consent dialog. */
+    internal fun claimNotificationPermission(): Boolean {
+        if (notificationPermissionAttempted || vpnPermissions.snapshot().inFlightId != null) return false
+        notificationPermissionAttempted = true
+        _notificationPermissionInFlight.value = true
+        return true
+    }
+
+    internal fun onNotificationPermissionResult() {
+        _notificationPermissionInFlight.value = false
+    }
+
+    private fun executeVpnAction(action: VpnAction) {
+        when (action) {
+            is VpnAction.Server -> viewModelScope.launch(errorHandler) {
+                if (!SmartConnect.connectVerified(getApplication(), action.id)) {
                     showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
                 }
             }
+            is VpnAction.Smart -> {
+                if (automaticActionIsCurrent(action)) {
+                    launchSmartConnect(action.subscriptionId, action.automaticOnOpen, action.startupToken)
+                }
+            }
+            VpnAction.Quick -> viewModelScope.launch(errorHandler) {
+                if (!SmartConnect.quickConnect(getApplication())) {
+                    showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
+                }
+            }
+            VpnAction.Restart -> launchRestart()
         }
     }
 
-    private fun launchSmartConnect(subscriptionId: String?) {
-        viewModelScope.launch(errorHandler) {
-            val best = SmartConnect.scanAndConnect(getApplication(), autoConnect = true, subscriptionId = subscriptionId)
+    private fun launchSmartConnect(subscriptionId: String?, automaticOnOpen: Boolean = false, startupToken: Long? = null) {
+        val job = viewModelScope.launch(errorHandler) {
+            if (automaticOnOpen && (startupToken == null || !Repo.startupHealthIsCurrent(startupToken) ||
+                    !Repo.settings.value.autoConnectOnOpen || Repo.tunnel.value.isActive)) return@launch
+            suspend fun scan() = SmartConnect.scanAndConnect(
+                getApplication(), autoConnect = true, subscriptionId = subscriptionId, preferFastest = true
+            )
+            val best = if (automaticOnOpen) StartupMaintenance.track(requireNotNull(startupToken)) { scan() } else scan()
             if (best == null) showMessage(Repo.scan.value.message.ifBlank { "سرور سالمی پیدا نشد" })
         }
+        if (automaticOnOpen) startupJob = job
     }
 
     fun quickConnect() {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingSmartScan = false
-            pendingScanSubId = null
-            pendingServerId = null
-            pendingQuickConnect = true
-            pendingRestart = false
-            _pendingVpnRequest.value = true
-            return
-        }
-        viewModelScope.launch(errorHandler) { SmartConnect.quickConnect(app) }
+        if (hasServers()) runOrRequestVpn(VpnAction.Quick)
     }
 
     // ----------------------------------------------------------------- tests
@@ -378,17 +476,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun restartScan() {
         cancelStartupForUserAction()
-        val app = getApplication<Application>()
-        if (VpnService.prepare(app) != null) {
-            pendingServerId = null
-            pendingSmartScan = false
-            pendingScanSubId = null
-            pendingQuickConnect = false
-            pendingRestart = true
-            _pendingVpnRequest.value = true
-            return
-        }
-        launchRestart()
+        if (hasServers()) runOrRequestVpn(VpnAction.Restart)
     }
 
     private fun launchRestart() {
@@ -413,7 +501,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             showMessage("آدرس اشتراک را وارد کنید")
             return
         }
+        val existing = Repo.subs.value.firstOrNull { it.url.trim() == cleanUrl }
+        if (existing != null) {
+            showMessage("این اشتراک قبلاً اضافه شده است؛ در حال به‌روزرسانی…")
+            refreshSubscription(existing.id)
+            return
+        }
         val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
             _busy.value = true
             val result = try {
@@ -421,8 +516,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             } finally {
                 _busy.value = false
             }
+            currentCoroutineContext().ensureActive()
             if (!result.ok) {
                 showMessage(result.error)
+                return@launch
+            }
+            val configs = result.configs.filter { it.hasUsableEndpoint() }
+            if (configs.isEmpty()) {
+                showMessage("کانفیگ قابل استفاده‌ای در اشتراک یافت نشد")
                 return@launch
             }
             val title = name.trim().ifBlank {
@@ -432,148 +533,157 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 name = title,
                 url = cleanUrl,
                 updatedAt = System.currentTimeMillis(),
-                count = result.configs.size,
+                count = configs.size,
                 upload = result.upload,
                 download = result.download,
                 total = result.total,
                 expireAt = result.expireAt
             )
-            if (!Repo.addFetchedSubscription(sub, result.configs, epoch)) {
-                if (requireWritableData()) showMessage("داده‌ها هنگام دریافت تغییر کردند؛ دوباره تلاش کنید")
+            // Commit the import immediately, even while an unrelated VPN is
+            // recovering. A racing identical import cannot add a second source.
+            if (!Repo.addFetchedSubscription(sub, configs, epoch, deferBuiltInCap = true)) {
+                if (Repo.subs.value.any { it.url.trim() == cleanUrl }) showMessage("این اشتراک قبلاً اضافه شده است")
+                else if (requireWritableData()) showMessage("داده‌ها هنگام دریافت تغییر کردند؛ دوباره تلاش کنید")
                 return@launch
             }
-            showMessage("${Format.number(result.configs.size)} کانفیگ دریافت شد؛ برای اتصال، سرور را انتخاب کنید")
-            // A completed download is not permission to replace a live or recovering tunnel.
+            showMessage("${Format.number(configs.size)} کانفیگ دریافت شد؛ موارد نامشخص تا سنجش حفظ می‌شوند")
+            // A later user action may supersede housekeeping, but not the import
+            // or the live/recovering tunnel. Never start a late scan in that case.
+            if (!Repo.startupHealthIsCurrent(token) || epoch != Repo.currentDataEpoch()) return@launch
+            val source = Repo.StartupSourceSnapshot(
+                sub.copy(), configs.mapTo(HashSet()) { it.fingerprint() }, SubscriptionPolicy.isComplete(result, configs)
+            )
+            StartupMaintenance.track(token) {
+                SubscriptionSyncGate.mutex.withLock {
+                    if (!Repo.startupHealthIsCurrent(token)) return@withLock
+                    Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                    try {
+                        val checked = withContext(Dispatchers.IO) {
+                            StartupMaintenance.finish(getApplication(), listOf(source), epoch, null, token)
+                        }
+                        currentCoroutineContext().ensureActive()
+                        showMessage(refreshSummary(SyncResult(1, Repo.servers.value.size, configs.size, health = checked)))
+                    } finally {
+                        Repo.sync.value = Repo.sync.value.copy(running = false)
+                    }
+                }
+            }
+            // A completed download or health check is never permission to connect.
         })
     }
 
-    /** Apply only a still-existing source and preserve user subscriptions without a count cap. */
-    private fun applyFetchedSubscription(
-        sub: Subscription, result: SubscriptionFetcher.Result, epoch: Long,
-        automaticPermit: Repo.AutomaticRefreshPermit? = null
-    ): Int {
-        if (!result.ok) return 0
-        val configs = SubscriptionPolicy.candidates(sub, result.configs)
-        if (configs.isEmpty()) return 0
-        return if (Repo.commitSubscriptionRefresh(
-                sub, configs, result.upload, result.download, result.total, result.expireAt,
-                expectedEpoch = epoch, automaticPermit = automaticPermit
-            )) configs.size else 0
+    private data class SyncResult(
+        val updated: Int = 0,
+        val total: Int = 0,
+        val received: Int = 0,
+        val firstError: String = "",
+        val health: StartupMaintenance.Result? = null
+    )
+
+    /** The caller owns SubscriptionSyncGate through the later health pass. */
+    private suspend fun refreshLocked(
+        targets: List<Subscription>, epoch: Long, token: Long,
+        permit: Repo.AutomaticRefreshPermit? = null
+    ): SubscriptionRefresh.Result {
+        Repo.sync.value = ir.v2max.app.data.SyncState(
+            running = true, total = targets.size,
+            message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
+        )
+        return SubscriptionRefresh.run(targets, epoch, token, permit) { done, total ->
+            Repo.sync.value = Repo.sync.value.copy(
+                done = done, total = total,
+                message = "دریافت منابع (${Format.number(done)}/${Format.number(total)})"
+            )
+        }
+    }
+
+    private suspend fun refreshManually(
+        targets: List<Subscription>, epoch: Long, token: Long
+    ): SyncResult = StartupMaintenance.track(token) {
+        SubscriptionSyncGate.mutex.withLock {
+            try {
+                val fetched = refreshLocked(targets, epoch, token)
+                currentCoroutineContext().ensureActive()
+                if (fetched.sources.isEmpty()) {
+                    return@withLock SyncResult(total = Repo.servers.value.size, firstError = fetched.firstError)
+                }
+                Repo.sync.value = ir.v2max.app.data.SyncState(running = true, message = "سنجش سرورهای اشتراک…")
+                val checked = withContext(Dispatchers.IO) {
+                    StartupMaintenance.finish(getApplication(), fetched.sources, epoch, null, token) { phase, done, total ->
+                        Repo.sync.value = Repo.sync.value.copy(
+                            done = done, total = total,
+                            message = if (phase.startsWith("پیش")) "پیش‌بررسی سرورهای اشتراک…"
+                                else "سنجش واقعی سرورهای اشتراک…"
+                        )
+                    }
+                }
+                SyncResult(fetched.updated, Repo.servers.value.size, fetched.received, fetched.firstError, checked)
+            } finally {
+                // The gate owner alone can clear its indicator; cancellation of an
+                // older refresh cannot hide a newer one.
+                Repo.sync.value = Repo.sync.value.copy(running = false)
+            }
+        }
+    }
+
+    private fun refreshSummary(result: SyncResult): String {
+        if (result.updated == 0) return result.firstError.ifBlank {
+            "به‌روزرسانی انجام نشد یا اشتراک تغییر کرده است؛ فهرست فعلی حفظ شد"
+        }
+        val prefix = "${Format.number(result.updated)} منبع به‌روزرسانی شد · ${Format.number(result.total)} کانفیگ"
+        val checked = result.health ?: return "$prefix؛ سنجش انجام نشد"
+        val duplicates = if (checked.duplicatesRemoved > 0)
+            " · ${Format.number(checked.duplicatesRemoved)} تکراری حذف شد" else ""
+        val detail = when (checked.status) {
+            StartupMaintenance.Status.COMPLETE -> when {
+                checked.health.healthy == 0 -> "؛ هیچ تست واقعی موفق نشد و سرورهای نامطمئن حفظ شدند"
+                checked.health.unknownSources > 0 -> "؛ نتیجهٔ برخی تست‌ها نامشخص بود و حفظ شدند"
+                checked.health.removed > 0 -> " · ${Format.number(checked.health.removed)} کانفیگ بی‌پاسخ حذف شد"
+                else -> ""
+            }
+            StartupMaintenance.Status.NO_NETWORK -> "؛ شبکه برای سنجش در دسترس نبود و کانفیگ‌ها حفظ شدند"
+            StartupMaintenance.Status.NO_PROFILES -> "؛ کانفیگی برای سنجش در دسترس نبود"
+            StartupMaintenance.Status.INCOMPLETE, StartupMaintenance.Status.CHANGED ->
+                "؛ سنجش کامل نشد و نتایج نامطمئن حفظ شدند"
+        }
+        return prefix + duplicates + detail
     }
 
     fun refreshSubscription(id: String) {
         if (!requireWritableData()) return
+        cancelStartup()
         val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         val sub = Repo.subById(id) ?: return
         trackDataJob(viewModelScope.launch(errorHandler) {
             _busy.value = true
-            val result = try {
-                withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
+            try {
+                showMessage(refreshSummary(refreshManually(listOf(sub), epoch, token)))
             } finally {
                 _busy.value = false
-            }
-            if (!result.ok) {
-                Repo.recordSubscriptionRefreshError(sub, result.error, expectedEpoch = epoch)
-                showMessage(result.error)
-                return@launch
-            }
-            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result, epoch) }
-            if (count == 0) {
-                Repo.recordSubscriptionRefreshError(sub, "کانفیگ قابل استفاده‌ای دریافت نشد", expectedEpoch = epoch)
-                showMessage("کانفیگ قابل استفاده‌ای دریافت نشد یا اشتراک هم‌زمان تغییر کرد؛ فهرست فعلی حفظ شد")
-            } else {
-                showMessage("اشتراک به‌روزرسانی شد (${Format.number(count)} کانفیگ)")
             }
         })
     }
 
     fun refreshAllSubscriptions(silent: Boolean = false) {
         if (!requireWritableData()) return
+        cancelStartup()
         if (Repo.subs.value.isEmpty()) {
             if (!silent) showMessage("اشتراکی برای به‌روزرسانی وجود ندارد")
             return
         }
+        // Capture both before scheduling so a newer user/service action wins.
+        val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val (updated, configs) = syncAll(announce = !silent)
-            if (!silent) {
-                showMessage(
-                    if (updated == 0) "به‌روزرسانی ناموفق بود؛ اتصال اینترنت را بررسی کنید"
-                    else "${Format.number(updated)} منبع به‌روزرسانی شد · ${Format.number(configs)} کانفیگ"
-                )
-            }
+            syncAll(announce = !silent, epoch = epoch, token = token)
         })
     }
 
-    /**
-     * دریافت موازی همه‌ی اشتراک‌ها (حداکثر ۶ درخواست همزمان)، حذف تکراری‌ها
-     * و ذخیره‌ی نتیجه.
-     * @return (تعداد منابع موفق، تعداد کل کانفیگ‌ها)
-     */
-    private suspend fun syncAll(
-        announce: Boolean, onlyStale: Boolean = false, automaticPermit: Repo.AutomaticRefreshPermit? = null
-    ): Pair<Int, Int> = syncMutex.withLock {
-        if (Repo.isStorageReadOnly() || (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit))) {
-            return@withLock 0 to Repo.servers.value.size
-        }
-        val epoch = automaticPermit?.dataEpoch ?: Repo.currentDataEpoch()
-        val now = System.currentTimeMillis()
-        val targets = Repo.subs.value.filter { !onlyStale || now - it.updatedAt > 3 * 60 * 60 * 1000L }
-        if (targets.isEmpty()) return@withLock 0 to Repo.servers.value.size
-
-        Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = true, done = 0, total = targets.size,
-            message = "به‌روزرسانی ${Format.number(targets.size)} منبع…"
-        )
-        val semaphore = Semaphore(6)
-        val doneCount = java.util.concurrent.atomic.AtomicInteger(0)
-        val okCount = java.util.concurrent.atomic.AtomicInteger(0)
-        Repo.suspendPersist(true)
-        try {
-            coroutineScope {
-                targets.map { sub ->
-                    async(Dispatchers.IO) {
-                        val result = semaphore.withPermit {
-                            if (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit)) return@async
-                            SubscriptionPolicy.fetch(sub)
-                        }
-                        currentCoroutineContext().ensureActive()
-                        if (automaticPermit != null && !Repo.automaticRefreshIsCurrent(automaticPermit)) return@async
-                        val count = if (result.ok) applyFetchedSubscription(sub, result, epoch, automaticPermit) else 0
-                        if (count > 0) {
-                            okCount.incrementAndGet()
-                        } else {
-                            val error = result.error.ifBlank { "کانفیگ قابل استفاده‌ای دریافت نشد" }
-                            Repo.recordSubscriptionRefreshError(sub, error, expectedEpoch = epoch, automaticPermit = automaticPermit)
-                        }
-                        val done = doneCount.incrementAndGet()
-                        Repo.sync.value = Repo.sync.value.copy(
-                            done = done,
-                            message = "دریافت منابع (${Format.number(done)}/${Format.number(targets.size)})"
-                        )
-                    }
-                }.awaitAll()
-            }
-        } finally {
-            Repo.suspendPersist(false)
-            // A cancellation must not lose results already applied in memory.
-            withContext(NonCancellable + Dispatchers.IO) { Repo.persistNow() }
-            Repo.sync.value = Repo.sync.value.copy(running = false)
-        }
-
-        val removed = withContext(Dispatchers.IO) {
-            val n = Repo.dedupeAllServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-            Repo.trimBuiltInServers(expectedEpoch = epoch, automaticPermit = automaticPermit)
-            Repo.persistNow()
-            n
-        }
-        val total = Repo.servers.value.size
-        Repo.sync.value = ir.v2max.app.data.SyncState(
-            running = false, done = targets.size, total = targets.size,
-            message = "${Format.number(okCount.get())} منبع به‌روزرسانی شد · ${Format.number(total)} کانفیگ" +
-                if (removed > 0) " (${Format.number(removed)} تکراری حذف شد)" else ""
-        )
-        if (announce) showMessage(Repo.sync.value.message)
-        okCount.get() to total
+    private suspend fun syncAll(announce: Boolean, epoch: Long, token: Long): SyncResult {
+        val result = refreshManually(Repo.subs.value, epoch, token)
+        if (announce) showMessage(refreshSummary(result))
+        return result
     }
 
     // ------------------------------------------------------- منابع رایگان
@@ -589,15 +699,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         showMessage("منبع اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val result = withContext(Dispatchers.IO) { SubscriptionPolicy.fetch(sub) }
-            val count = withContext(Dispatchers.IO) { applyFetchedSubscription(sub, result, epoch) }
-            if (count == 0) {
-                if (!result.ok) Repo.recordSubscriptionRefreshError(sub, result.error, expectedEpoch = epoch)
-                showMessage(if (!result.ok) result.error else "کانفیگ قابل استفاده‌ای دریافت نشد یا منبع تغییر کرده است")
-            } else {
-                showMessage("${Format.number(count)} کانفیگ دریافت شد؛ برای اتصال، سرور را انتخاب کنید")
-            }
+            showMessage(refreshSummary(refreshManually(listOf(sub), epoch, token)))
         })
     }
 
@@ -611,10 +715,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         showMessage("${Format.number(added)} منبع رایگان اضافه شد؛ در حال دریافت کانفیگ‌ها…")
+        val epoch = Repo.currentDataEpoch()
+        val token = Repo.startupHealthToken()
         trackDataJob(viewModelScope.launch(errorHandler) {
-            val (updated, _) = syncAll(announce = false)
-            showMessage(if (updated > 0) "${Format.number(updated)} منبع به‌روزرسانی شد؛ سرور دلخواه را انتخاب کنید"
-                else "دریافت منابع ناموفق بود؛ برای تلاش مجدد، اشتراک‌ها را به‌روزرسانی کنید")
+            showMessage(refreshSummary(syncAll(announce = false, epoch = epoch, token = token)))
         })
     }
 
@@ -623,7 +727,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!updateSettings { it.copy(useFreeSources = enabled) }) return
         if (enabled) {
             val added = Repo.ensureBuiltInSources(requireEnabled = true)
-            if (added > 0) trackDataJob(viewModelScope.launch(errorHandler) { syncAll(announce = false) })
+            if (added > 0) {
+                cancelStartup()
+                val epoch = Repo.currentDataEpoch()
+                val token = Repo.startupHealthToken()
+                trackDataJob(viewModelScope.launch(errorHandler) { syncAll(announce = false, epoch = epoch, token = token) })
+            }
             showMessage(if (added > 0) "${Format.number(added)} منبع رایگان فعال شد" else "منابع رایگان فعال است")
         } else {
             Repo.removeBuiltInSources()
@@ -635,6 +744,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (!requireWritableData()) return
         Repo.removeSubscription(id)
         showMessage("اشتراک حذف شد")
+    }
+
+    fun deferUnhealthySubscription(sub: Subscription) {
+        if (!Repo.deferUnhealthySubscription(sub)) {
+            showMessage("وضعیت اشتراک تغییر کرده است؛ پیشنهاد دوباره بررسی می‌شود")
+        }
+    }
+
+    fun removeUnhealthySubscription(sub: Subscription) {
+        if (!requireWritableData()) return
+        if (Repo.removeUnhealthySubscription(sub)) showMessage("اشتراک حذف شد")
+        else showMessage("اشتراک تغییر کرده یا در اتصال و ویرایش است؛ حذف نشد")
     }
 
     // ------------------------------------------------------------ import/CRUD
@@ -681,13 +802,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         Repo.setFavorite(id, !server.favorite)
     }
 
-    fun selectServer(id: String) {
-        cancelStartupForUserAction()
-        Repo.setSelected(id)
-        if (Repo.tunnel.value.isActive) {
-            requestConnect(id)
-        }
-        if (Repo.isStorageReadOnly()) showMessage("انتخاب سرور تا بستن برنامه موقت است؛ داده‌ها فقط‌خواندنی‌اند")
+    /** Tapping a server behaves the same whether or not a VPN is already running. */
+    fun selectServer(id: String) = requestConnect(id)
+
+    fun beginServerEdit(id: String): Boolean {
+        if (editingServerId == id) return true
+        if (!Repo.beginServerEdit(id)) return false
+        editingServerId?.let(Repo::endServerEdit)
+        editingServerId = id
+        cancelStartup()
+        return true
+    }
+
+    fun endServerEdit() {
+        editingServerId?.let(Repo::endServerEdit)
+        editingServerId = null
+    }
+
+    override fun onCleared() {
+        endServerEdit()
+        super.onCleared()
     }
 
     fun saveEditedServer(server: ServerConfig, expectedFingerprint: String, expectedEpoch: Long): Boolean {
@@ -876,6 +1010,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val after = Repo.settings.value
         if ((before.autoConnectOnOpen && !after.autoConnectOnOpen) ||
             (before.autoRefreshOnOpen && !after.autoRefreshOnOpen)) cancelStartup()
+        if (before.autoConnectOnOpen && !after.autoConnectOnOpen) {
+            vpnPermissions.cancelIf { it is VpnAction.Smart && it.automaticOnOpen }
+            _vpnPermissionState.value = vpnPermissions.snapshot()
+        }
         if (before.autoRefreshOnOpen != after.autoRefreshOnOpen) syncSubscriptionSchedule()
         if (before.autoUpdateCheck != after.autoUpdateCheck) syncUpdateSchedule()
         return true

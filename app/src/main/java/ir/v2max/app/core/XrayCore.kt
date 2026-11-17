@@ -16,7 +16,16 @@ object XrayCore {
 
     private const val TAG = "V2maxCore"
 
-    /** آخرین خطوط لاگ هسته برای صفحه‌ی عیب‌یابی (حداکثر ۴۰۰ خط) */
+    /** Fixed local events only. Native log messages can contain credentials and addresses. */
+    enum class Event(val text: String) {
+        STARTED("هسته آغاز شد"),
+        STOPPED("هسته متوقف شد"),
+        INIT_FAILED("آماده‌سازی هسته ناموفق بود"),
+        STOP_FAILED("توقف هسته ناموفق بود"),
+        GEO_FALLBACK("فایل مسیریابی جغرافیایی نامعتبر بود؛ اتصال بدون آن امتحان می‌شود"),
+        POOL_FALLBACK("استخر پاسخ نداد؛ بازگشت به سرور انتخابی"),
+    }
+
     private val logLines = java.util.concurrent.ConcurrentLinkedDeque<String>()
     private val logListeners = java.util.concurrent.CopyOnWriteArrayList<(String) -> Unit>()
 
@@ -32,12 +41,12 @@ object XrayCore {
         logListeners.remove(listener)
     }
 
-    /** ثبت یک رویداد هم در logcat و هم در حافظه‌ی نمایشی */
-    fun log(line: String) {
+    /** Keep only app-owned categorical events in the in-memory view. */
+    fun log(event: Event) {
         val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        logLines.addLast("[$stamp] $line")
+        logLines.addLast("[$stamp] ${event.text}")
         while (logLines.size > 400) logLines.pollFirst()
-        logListeners.forEach { runCatching { it(line) } }
+        logListeners.forEach { runCatching { it(event.text) } }
     }
 
     @Volatile
@@ -60,23 +69,18 @@ object XrayCore {
     private val callback = object : CoreCallbackHandler {
         override fun startup(): Long {
             Log.i(TAG, "core started")
-            log("هسته آغاز شد")
+            log(Event.STARTED)
             return 0
         }
 
         override fun shutdown(): Long {
             Log.i(TAG, "core stopped")
-            log("هسته متوقف شد")
+            log(Event.STOPPED)
             return 0
         }
 
-        override fun onEmitStatus(code: Long, message: String?): Long {
-            if (!message.isNullOrBlank()) {
-                Log.i(TAG, "core: $message")
-                log(message)
-            }
-            return 0
-        }
+        // Xray messages may contain server addresses, URL paths and credentials.
+        override fun onEmitStatus(code: Long, message: String?): Long = 0
     }
 
     /** آماده‌سازی محیط نیتیو؛ فقط یک‌بار در هر پروسه */
@@ -90,8 +94,8 @@ object XrayCore {
             GeoAssets.init(context)
             initialized = true
         } catch (t: Throwable) {
-            Log.e(TAG, "init failed", t)
-            log("خطا در آماده‌سازی هسته: ${t.message}")
+            Log.e(TAG, "init failed")
+            log(Event.INIT_FAILED)
             throw t
         }
     }
@@ -152,8 +156,8 @@ object XrayCore {
         speedLease = 0L
         try {
             speedController?.let { if (it.isRunning) it.stopLoop() }
-        } catch (t: Throwable) {
-            Log.e(TAG, "speed test core stop failed", t)
+        } catch (_: Throwable) {
+            Log.e(TAG, "speed test core stop failed")
         }
     }
 
@@ -162,9 +166,9 @@ object XrayCore {
         try {
             val c = controller ?: return
             if (c.isRunning) c.stopLoop()
-        } catch (t: Throwable) {
-            Log.e(TAG, "stop failed", t)
-            log("خطا در توقف هسته: ${t.message}")
+        } catch (_: Throwable) {
+            Log.e(TAG, "stop failed")
+            log(Event.STOP_FAILED)
         }
     }
 
@@ -196,8 +200,8 @@ object XrayCore {
                     "downlink" -> result[1] += value
                 }
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "stats failed: ${t.message}")
+        } catch (_: Throwable) {
+            Log.w(TAG, "stats failed")
         }
         return result
     }
@@ -207,10 +211,11 @@ object XrayCore {
     fun clearProbeProblem() { lastProbeProblem = "" }
     fun probeProblem(): String = lastProbeProblem
 
-    /** تأخیر یک کانفیگ مستقل (بدون اجرای تانل). متن خطاها بدون اطلاعات محرمانه ذخیره می‌شود. */
+    /** تأخیر مستقل؛ خطای نامشخص، مدرک کافی برای حذف کانفیگ نیست. */
     fun measureOutboundDelay(config: String, url: String): Long {
         return try {
-            NativeDelay.normalize(Libv2ray.measureOutboundDelay(config, url))
+            val delay = Libv2ray.measureOutboundDelay(config, url)
+            if (delay < 0) NativeDelay.INDETERMINATE else NativeDelay.normalize(delay)
         } catch (t: Throwable) {
             val reason = t.message.orEmpty()
             val safe = when {
@@ -224,7 +229,7 @@ object XrayCore {
                 else -> ""
             }
             if (safe.isNotBlank()) lastProbeProblem = safe
-            -1L
+            NativeDelay.outboundFailure(reason)
         }
     }
 

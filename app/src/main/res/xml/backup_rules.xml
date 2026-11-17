@@ -2,4 +2,6 @@
 <full-backup-content>
     <!-- Consent for unauthenticated commands must be granted on each device. -->
     <exclude domain="sharedpref" path="v2max_control_consent.xml" />
+    <!-- Older versions may have saved sensitive raw exception details. -->
+    <exclude domain="file" path="crash.log" />
 </full-backup-content>

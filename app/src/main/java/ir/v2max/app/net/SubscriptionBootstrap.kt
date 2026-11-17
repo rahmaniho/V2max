@@ -21,6 +21,10 @@ object SubscriptionPolicy {
         return if (limit > 0) usable.take(limit) else usable
     }
 
+    /** A filtered, capped, or partially parsed response cannot describe omitted profiles. */
+    fun isComplete(result: SubscriptionFetcher.Result, candidates: List<ServerConfig>): Boolean =
+        result.ok && result.fullyParsed && candidates.size == result.configs.size
+
     /** Only exact, predefined public feeds may be sent to a third-party mirror. */
     fun allowPublicMirrors(sub: Subscription): Boolean {
         val url = sub.url.trim()

@@ -8,6 +8,8 @@ import ir.v2max.app.data.Proto
 import ir.v2max.app.data.ServerConfig
 import ir.v2max.app.net.HealthScanner
 import ir.v2max.app.net.ProbePlanner
+import ir.v2max.app.net.ScanDiagnostics
+import ir.v2max.core.domain.ServerProbeCounts
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
@@ -45,6 +47,24 @@ class HealthScannerTest {
         assertEquals(realCalls.toSet(), published.toSet())
         assertEquals(6, outcome.qualified.size)
         assertNotNull(outcome.best)
+    }
+
+    @Test fun `fast switch uses recent real ping only as ordering and repeats every chosen protocol test`() = runBlocking {
+        val now = System.currentTimeMillis()
+        val fast = node(0, "A").copy(realPing = 12, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val other = node(1, "B").copy(realPing = 30, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val slow = node(2, "A").copy(realPing = 300, testedAt = now, testedUrl = PingTargets.GOOGLE.url)
+        val favorite = node(3, "B").copy(favorite = true)
+        val calls = mutableListOf<String>()
+        val result = HealthScanner.scanPrepared(
+            listOf(favorite, slow, other, fast), settings,
+            ops(real = { cfg, _, _ -> calls.add(cfg.id); if (cfg.id == fast.id) 90 else 20 }),
+            fastestRecentFirst = true
+        )
+        assertEquals(listOf(fast.id, other.id, slow.id, favorite.id), calls)
+        assertEquals(4, result.testedCount)
+        assertNotEquals("An old 12ms measurement must not be reused as proof", fast.id, result.best?.id)
+        assertEquals(20, result.best?.realPing)
     }
 
     @Test fun `a tcp failure is deferred not discarded and all windows remain searchable`() = runBlocking {
@@ -110,6 +130,60 @@ class HealthScannerTest {
         assertNull(outcome.best)
         assertTrue(outcome.qualified.isEmpty())
         assertEquals(1, outcome.testedCount)
+    }
+
+    @Test fun `setup failures remain indeterminate unless a later variant succeeds`() = runBlocking {
+        val calls = mutableMapOf<String, Int>()
+        val published = mutableSetOf<String>()
+        val unknown = mutableSetOf<String>()
+        val outcome = HealthScanner.scanPrepared(
+            (0..3).map { node(it) }, settings,
+            ops(real = { cfg, _, _ ->
+                val attempt = (calls[cfg.id] ?: 0) + 1
+                calls[cfg.id] = attempt
+                when (cfg.id) {
+                    "s0" -> 20
+                    "s1" -> -2
+                    "s2" -> if (attempt == 1) -1 else -2
+                    else -> if (attempt == 1) -2 else 30
+                }
+            }), exhaustive = true,
+            onReal = { cfg, _ -> published.add(cfg.id) },
+            onIndeterminate = { cfg -> unknown.add(cfg.id) }
+        )
+        assertEquals(4, outcome.testedCount)
+        assertEquals(setOf("s1", "s2"), outcome.indeterminateIds)
+        assertEquals(outcome.indeterminateIds, unknown)
+        assertEquals(setOf("s0", "s3"), published)
+        assertEquals(setOf("s0", "s3"), outcome.qualified.map { it.id }.toSet())
+        assertEquals(2, calls["s3"])
+    }
+
+    @Test fun `diagnostics distinguish protocol responses no response and indeterminate from tcp only`() = runBlocking {
+        val diagnostics = ScanDiagnostics(4)
+        val outcome = HealthScanner.scanPrepared(
+            (0..3).map { node(it) }, settings,
+            ops(tcp = { if (it.id == "s3") -1 else 10 }, real = { cfg, _, _ ->
+                when (cfg.id) { "s0" -> 30; "s1" -> -1; else -> -2 }
+            }),
+            onReal = { cfg, result -> diagnostics.onReal(cfg.id, result) },
+            onIndeterminate = { cfg -> diagnostics.onIndeterminate(cfg.id) }
+        )
+        assertEquals(3, outcome.testedCount)
+        assertEquals(ServerProbeCounts(responded = 1, noResponse = 1, unknown = 2),
+            diagnostics.complete(outcome.testedCount))
+    }
+
+    @Test fun `a speed setup failure publishes no completed diagnostic summary`() = runBlocking {
+        val diagnostics = ScanDiagnostics(2)
+        val outcome = HealthScanner.scanPrepared(
+            (0..1).map { node(it) }, settings.copy(speedTest = true),
+            ops(speed = { _, _ -> null }),
+            onReal = { cfg, result -> diagnostics.onReal(cfg.id, result) },
+            onIndeterminate = { cfg -> diagnostics.onIndeterminate(cfg.id) }
+        )
+        assertEquals(2, outcome.testedCount)
+        assertNull(diagnostics.complete(outcome.testedCount))
     }
 
     @Test fun `all enabled extra tests finish before any results are published`() = runBlocking {

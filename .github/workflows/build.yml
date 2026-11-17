@@ -23,6 +23,21 @@ on:
         required: false
         type: boolean
         default: false
+      publish_test_release:
+        description: "Publish an isolated, separately signed preview from an arena branch"
+        required: false
+        type: boolean
+        default: false
+      validate_preview:
+        description: "Build and test an isolated preview as an artifact only; never publish"
+        required: false
+        type: boolean
+        default: false
+      ui_diagnostics:
+        description: "Run targeted UI/VPN fixture diagnostics only; never publish"
+        required: false
+        type: boolean
+        default: false
 
 env:
   LIBV2RAY_VERSION: v26.10.21
@@ -43,10 +58,14 @@ jobs:
       - name: Verify automation consent backup exclusions and release guards
         run: |
           python3 scripts/verify-backup-rules.py
+          python3 scripts/test-diagnostic-privacy.py
           python3 scripts/test-apk-payload.py
           python3 scripts/test-release-metadata.py
           python3 scripts/test-release-draft.py
           python3 scripts/test-release-gates.py
+          python3 scripts/test-preview-apk.py
+          python3 scripts/test-preview-release.py
+          python3 scripts/test-android-ui-connect-smoke.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -86,6 +105,7 @@ jobs:
           echo "TEST_XRAY_BIN=$RUNNER_TEMP/xray/xray" >> "$GITHUB_ENV"
 
       - name: Run unit and local Xray integration tests
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -o pipefail
           # :core:testsuite is a plain JVM module, so it has no
@@ -94,6 +114,7 @@ jobs:
           gradle --no-daemon :core:testsuite:test testReleaseUnitTest 2>&1 | tee test-out.log
 
       - name: Verify the core suite actually ran
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -e
           # Guards against the suite being silently skipped again: if the task
@@ -128,6 +149,7 @@ jobs:
           PY
 
       - name: Verify the app unit tests actually ran
+        if: ${{ !inputs.ui_diagnostics }}
         run: |
           set -e
           # Same guard, other direction. Gradle test tasks pick classes up by
@@ -140,26 +162,34 @@ jobs:
           if not paths:
               print('::error title=app-tests::no app test results — testReleaseUnitTest did not run')
               sys.exit(1)
-          total = 0
-          names = set()
-          for p in paths:
-              for tc in ET.parse(p).iter('testcase'):
-                  total += 1
-                  names.add(tc.get('classname') or '')
-          if total < 1:
-              print('::error title=app-tests::app test results contain no test cases')
-              sys.exit(1)
-          required = 'ir.v2max.app.ConfigGeneratorTest'
-          if not any(n.startswith(required) for n in names):
-              print(f'::error title=app-tests::{required} did not execute — '
-                    f'check the test include pattern. Classes seen: {sorted(names)}')
-              sys.exit(1)
-          print(f'app unit tests ran: {total} test case(s) across {len(paths)} file(s)')
-          print(f'{required} confirmed among {len(names)} test class(es)')
+          cases = [tc for p in paths for tc in ET.parse(p).iter('testcase')]
+          required = {
+              'ir.v2max.app.ConfigGeneratorTest': 1,
+              'ir.v2max.app.StartupHealthTest': 20,
+              'ir.v2max.app.StartupMaintenanceTest': 2,
+              'ir.v2max.app.ConnectionTestBarrierTest': 3,
+              'ir.v2max.app.HealthScannerTest': 18,
+              'ir.v2max.app.NativeDelayTest': 2,
+              'ir.v2max.app.NetworkProbeSummaryTest': 1,
+              'ir.v2max.app.ServerFingerprintTest': 2,
+              'ir.v2max.app.RepoConcurrencyTest': 23,
+              'ir.v2max.app.LinkParserCompletenessTest': 2,
+              'ir.v2max.app.SubscriptionBootstrapTest': 15,
+              'ir.v2max.app.SubscriptionRefreshTest': 10,
+              'ir.v2max.app.PreflightTest': 1,
+              'ir.v2max.app.VpnPermissionQueueTest': 1,
+          }
+          for name, minimum in required.items():
+              suite = [tc for tc in cases if (tc.get('classname') or '').startswith(name)]
+              if len(suite) < minimum or any(tc.find('skipped') is not None for tc in suite):
+                  print(f'::error title=app-tests::{name} has {len(suite)} cases or was skipped; expected at least {minimum} unskipped')
+                  sys.exit(1)
+              print(f'{name}: {len(suite)} unskipped test case(s)')
+          print(f'app unit tests ran: {len(cases)} test case(s) across {len(paths)} file(s)')
           PY
 
       - name: Report test failures
-        if: always()
+        if: ${{ always() && !inputs.ui_diagnostics }}
         run: |
           if [ -f test-out.log ]; then
             grep -E "^e: |FAILED|tests completed|AssertionError|Exception|error:" test-out.log | head -40 | while IFS= read -r line; do
@@ -182,6 +212,7 @@ jobs:
           PY
 
       - name: Build CI-only release-variant APKs
+        if: ${{ !inputs.ui_diagnostics }}
         id: build_apk
         # The production key is never available to Gradle, tests or emulators.
         # The default debug signer is ephemeral and cannot update real installs.
@@ -191,7 +222,7 @@ jobs:
         continue-on-error: true
 
       - name: Report compile errors as annotations
-        if: always()
+        if: ${{ always() && !inputs.ui_diagnostics }}
         env:
           BUILD_OUTCOME: ${{ steps.build_apk.outcome }}
         run: |
@@ -213,6 +244,7 @@ jobs:
           fi
 
       - name: Exercise re-signing and reject the CI-only signer
+        if: ${{ !inputs.ui_diagnostics }}
         env:
           V2MAX_RELEASE_KEYSTORE: ${{ runner.temp }}/v2max-resign-test.jks
           V2MAX_RELEASE_STORE_PASSWORD: v2max-ci-only
@@ -236,6 +268,34 @@ jobs:
           fi
           echo 'Release guard correctly rejected the ephemeral CI signer.'
 
+      - name: Build isolated preview and its instrumentation APK
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
+        env:
+          V2MAX_PREVIEW_KEYSTORE: ${{ runner.temp }}/v2max-preview-only.jks
+          V2MAX_PREVIEW_STORE_PASSWORD: v2max-preview-ci-only
+          V2MAX_PREVIEW_KEY_ALIAS: v2max-preview-ci
+          V2MAX_PREVIEW_KEY_PASSWORD: v2max-preview-ci-only
+        run: |
+          set -euo pipefail
+          umask 077
+          trap 'rm -f "$V2MAX_PREVIEW_KEYSTORE"' EXIT
+          keytool -genkeypair -keystore "$V2MAX_PREVIEW_KEYSTORE" -storepass "$V2MAX_PREVIEW_STORE_PASSWORD" \
+            -keypass "$V2MAX_PREVIEW_KEY_PASSWORD" -alias "$V2MAX_PREVIEW_KEY_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 3650 -dname 'CN=V2max isolated preview only' -storetype JKS
+          status=0
+          gradle --no-daemon :app:assemblePreview :app:assemblePreviewAndroidTest -Pv2maxPreviewInstrumentation=true 2>&1 | tee preview-build.log || status=$?
+          if (( status != 0 )); then
+            python3 - <<'PY'
+          import pathlib
+          lines = pathlib.Path('preview-build.log').read_text(errors='replace').splitlines()
+          relevant = [line for line in lines if any(word in line for word in ('e: ', 'error:', 'FAILURE:', 'What went wrong', 'Caused by:', 'Execution failed'))]
+          text = '\n'.join((relevant or lines[-20:])[-20:])[-3400:]
+          text = text.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+          print(f'::error title=Preview build::{text}')
+          PY
+            exit "$status"
+          fi
+
       - name: Enable emulator hardware acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -246,6 +306,8 @@ jobs:
         uses: reactivecircus/android-emulator-runner@v2
         env:
           V2MAX_CAPTURE_UI: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_ui && 'true' || 'false' }}
+          V2MAX_UI_ONLY: ${{ inputs.ui_diagnostics && 'true' || 'false' }}
+          V2MAX_PREVIEW_SMOKE: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics && 'true' || 'false' }}
         with:
           api-level: 30
           arch: x86_64
@@ -254,6 +316,7 @@ jobs:
           script: bash scripts/run-android-vpn-smoke.sh
 
       - name: Android 35 update permission and signer smoke test
+        if: ${{ !inputs.ui_diagnostics }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 35
@@ -262,17 +325,47 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           script: bash scripts/run-android-update-smoke.sh
 
+      - name: Android 35 UI VPN consent and selected-server smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          V2MAX_UI_ONLY: "true"
+        with:
+          api-level: 35
+          arch: x86_64
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/run-android-vpn-smoke.sh
+
       - name: Upload CI-only APKs (not a production update)
+        if: ${{ !inputs.ui_diagnostics }}
         uses: actions/upload-artifact@v4
         with:
           name: v2max-ci-only-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+      - name: Stage the exact preview APK that passed the TUN test
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
+        run: |
+          set -euo pipefail
+          sha256sum --check "$RUNNER_TEMP/v2max-preview-tested.sha256"
+          mkdir -p "$RUNNER_TEMP/v2max-preview"
+          cp app/build/outputs/apk/preview/*universal*preview.apk "$RUNNER_TEMP/v2max-preview/V2max-PREVIEW-universal.apk"
+          python3 scripts/verify-preview-apk.py "$RUNNER_TEMP/v2max-preview/V2max-PREVIEW-universal.apk"
+
+      - name: Upload isolated tested preview APK
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.security_only && !inputs.publish_release && !inputs.ui_diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2max-preview-tested-apk
+          path: ${{ runner.temp }}/v2max-preview/V2max-PREVIEW-universal.apk
+          if-no-files-found: error
+          retention-days: 7
+
   security-smoke:
-    # Run on main pushes, diagnostics, and the explicit release dispatch.
+    # Run on main pushes, diagnostics, and explicit stable/preview dispatches.
     if: >-
-      (github.event_name == 'workflow_dispatch' && (inputs.security_only || (github.ref == 'refs/heads/main' && inputs.publish_release))) ||
+      (github.event_name == 'workflow_dispatch' && (inputs.security_only || (github.ref == 'refs/heads/main' && inputs.publish_release) || (startsWith(github.ref, 'refs/heads/arena/') && (inputs.publish_test_release || inputs.validate_preview) && !inputs.publish_release))) ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
     name: Security emulator API ${{ matrix.api }} (no release APK)
     strategy:
@@ -331,7 +424,7 @@ jobs:
     # A main push or merge can never sign or publish by itself. After owner
     # review, a separate manual dispatch must run both emulator suites first.
     # This job has no repository write access and never runs Gradle with the key.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: [build, security-smoke]
     runs-on: ubuntu-latest
     permissions:
@@ -388,7 +481,7 @@ jobs:
 
   publish:
     # Write access is isolated from Gradle, emulators and the private signing key.
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && vars.V2MAX_RELEASE_APPROVED == 'true'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release && !inputs.security_only && !inputs.publish_test_release && !inputs.validate_preview && !inputs.ui_diagnostics && vars.V2MAX_RELEASE_APPROVED == 'true'
     needs: sign-release
     runs-on: ubuntu-latest
     permissions:
@@ -450,7 +543,12 @@ jobs:
           [ "$tag_sha" = "$GITHUB_SHA" ] || { echo '::error::Unexpected release tag target'; exit 1; }
           gh release create "$TAG" signed-apks/*.apk --verify-tag --draft \
             --title "V2max $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/draft.json"
+          # The REST releases/tags endpoint does not return drafts. Resolve the
+          # draft through gh and read its numeric release endpoint instead.
+          draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)
+          prefix="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/"
+          [[ "$draft_api" == "$prefix"* && "${draft_api#"$prefix"}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Unexpected draft release API URL'; exit 1; }
+          gh api "$draft_api" > "$RUNNER_TEMP/draft.json"
           python3 scripts/verify-release-draft.py "$RUNNER_TEMP/draft.json" signed-apks "$TAG"
           if [ "$(main_sha)" != "$GITHUB_SHA" ]; then
             echo '::error::main advanced during upload; draft left unpublished for owner review'
@@ -458,3 +556,75 @@ jobs:
           fi
           gh release edit "$TAG" --draft=false --latest
           echo "Published verified release $TAG."
+
+  publish-preview:
+    # This is not the production release path. The explicitly requested preview
+    # has a separate app ID and ephemeral signer and can never be marked latest.
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/arena/') && inputs.publish_test_release && !inputs.security_only && !inputs.publish_release && !inputs.validate_preview && !inputs.ui_diagnostics
+    needs: [build, security-smoke]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: v2max-preview-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the tested commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Set up JDK 17 for APK verification
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Download the exact tested preview APK
+        uses: actions/download-artifact@v4
+        with:
+          name: v2max-preview-tested-apk
+          path: preview
+      - name: Verify preview identity and non-production signer
+        id: preview
+        run: python3 scripts/verify-preview-apk.py preview/V2max-PREVIEW-universal.apk
+      - name: Publish a verified prerelease, never latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.preview.outputs.version }}
+        run: |
+          set -euo pipefail
+          trap 'status=$?; echo "::error title=Preview publish::Command failed at script line $LINENO (exit $status)"' ERR
+          branch_sha() { gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$GITHUB_REF_NAME" --jq '.object.sha'; }
+          if [[ "$GITHUB_REF" != refs/heads/arena/* ]] || [[ "$(branch_sha)" != "$GITHUB_SHA" ]]; then
+            echo '::error::Preview branch moved or is not an arena branch; refusing publication'
+            exit 1
+          fi
+          TAG="v${VERSION}-preview.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          cat > "$RUNNER_TEMP/preview-notes.md" <<'NOTES'
+          ## نسخهٔ آزمایشی؛ به‌روزرسانی رسمی نیست
+
+          - این برنامه با شناسهٔ جداگانهٔ `ir.v2max.app.preview` در کنار نسخهٔ رسمی نصب می‌شود و داده‌های آن جداست.
+          - امضای آزمایشی موقت است. این APK نسخهٔ رسمی را به‌روزرسانی نمی‌کند و نسخهٔ آزمایشی بعدی نیز ممکن است نیازمند حذف این برنامه باشد؛ حذف، داده‌های نسخهٔ آزمایشی را پاک می‌کند.
+          - اندروید معمولاً فقط یک VPN فعال دارد؛ اتصال نسخهٔ آزمایشی ممکن است VPN قبلی را قطع کند.
+          - این ساخت بدون R8 و برای آزمون داوطلبانه است. آزمون شبیه‌ساز، عملکرد روی همهٔ گوشی‌ها یا شبکه‌ها را تضمین نمی‌کند.
+          - برای بازگشت، اتصال آزمایشی را قطع و نسخهٔ رسمی را دوباره متصل کنید. کلید انتشار رسمی در این فرایند استفاده نشده است.
+          NOTES
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$GITHUB_SHA" >/dev/null
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq '.object.sha')" = "$GITHUB_SHA"
+          gh release create "$TAG" preview/V2max-PREVIEW-universal.apk --verify-tag --draft --prerelease --latest=false \
+            --title "V2max $VERSION — نسخهٔ آزمایشی مجزا" --notes-file "$RUNNER_TEMP/preview-notes.md"
+          # A draft is visible by its numeric release ID, not releases/tags.
+          draft_api=$(gh release view "$TAG" --json apiUrl --jq .apiUrl)
+          prefix="https://api.github.com/repos/$GITHUB_REPOSITORY/releases/"
+          [[ "$draft_api" == "$prefix"* && "${draft_api#"$prefix"}" =~ ^[1-9][0-9]*$ ]] || { echo '::error::Unexpected draft release API URL'; exit 1; }
+          gh api "$draft_api" > "$RUNNER_TEMP/preview-draft.json"
+          python3 scripts/verify-preview-release.py "$RUNNER_TEMP/preview-draft.json" preview/V2max-PREVIEW-universal.apk "$TAG" draft
+          if [[ "$(branch_sha)" != "$GITHUB_SHA" ]]; then
+            echo '::error::Preview branch advanced; leaving the verified draft unpublished'
+            exit 1
+          fi
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/preview-published.json"
+          python3 scripts/verify-preview-release.py "$RUNNER_TEMP/preview-published.json" preview/V2max-PREVIEW-universal.apk "$TAG" published
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')
+          [[ "$latest" != "$TAG" ]] || { echo '::error::Preview unexpectedly became latest'; exit 1; }
+          echo "Published isolated preview $TAG; latest stable remains $latest."

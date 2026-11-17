@@ -139,7 +139,7 @@ object Migrations {
                 enumField("routingMode", RoutingMode.entries.map { it.name })
                 enumField("fragmentProfile", FragmentProfile.entries.map { it.name })
                 enumField("perAppMode", PerAppMode.entries.map { it.name })
-                listOf("customRoutingRules", "perAppPackages").forEach { key ->
+                listOf("customRoutingRules", "perAppPackages", "disabledBuiltInSources").forEach { key ->
                     require(obj.getAsJsonArray(key).all { it.isJsonPrimitive && it.asJsonPrimitive.isString })
                 }
             }

@@ -57,13 +57,15 @@ fun SettingsScreen(
     onOpenDiag: () -> Unit = {},
     onBackup: () -> Unit = {},
     onRestore: () -> Unit = {},
-    onCopyCrashLog: () -> Unit = {}
+    onOpenCrashReport: () -> Unit = {},
+    onClearCrashLog: () -> Unit = {}
 ) {
     val context = LocalContext.current
     var showLockSetupDialog by remember { mutableStateOf(false) }
     var showDnsDialog by remember { mutableStateOf(false) }
     var showMtuDialog by remember { mutableStateOf(false) }
     var showClearDialog by remember { mutableStateOf(false) }
+    var showClearCrashDialog by remember { mutableStateOf(false) }
     var showAutomationWarning by remember { mutableStateOf(false) }
 
     LazyColumn(
@@ -120,8 +122,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "فرگمنت هوشمند (ضد فیلترینگ)",
-                subtitle = "تکه‌تکه کردن بسته‌های TLS برای عبور از سیستم‌های DPI",
+                title = "فرگمنت TLS",
+                subtitle = "تکه‌تکه‌سازی TLS؛ ممکن است روی برخی شبکه‌ها مؤثر باشد",
                 checked = settings.fragment
             ) { value -> onChange { it.copy(fragment = value) } }
         }
@@ -179,7 +181,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "بررسی عمیق شبکه پیش از اتصال",
-                subtitle = "سنجش DNS، تشخیص DPI، تأخیر و لرزش شبکه‌ی اپراتور و انتخاب خودکار فرگمنت مناسب",
+                subtitle = "نمونه‌های DNS و TCP/TLS مستقیم بررسی می‌شوند؛ مقصدها ممکن است IP شبکه را ببینند و علت اختلال قطعی نیست",
                 checked = settings.deepProbe
             ) { value -> onChange { it.copy(deepProbe = value) } }
         }
@@ -198,7 +200,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "تنظیم خودکار شدت فرگمنت",
-                subtitle = "پروفایل مناسب بر اساس شبکه‌ی اپراتور انتخاب و در صورت نیاز خودکار اصلاح می‌شود",
+                subtitle = "پیشنهاد بر اساس تست نمونهٔ شبکه؛ موفقیت اتصال تضمین نمی‌شود",
                 checked = settings.autoTuneFragment
             ) { value -> onChange { it.copy(autoTuneFragment = value) } }
         }
@@ -252,11 +254,19 @@ fun SettingsScreen(
         }
 
         item {
+            SettingSwitch(
+                title = "پاک‌سازی کانفیگ‌های بی‌پاسخ اشتراک",
+                subtitle = "فقط پس از سنجش کامل و موفقیت سروری دیگر؛ خطاهای نامشخص حذف نمی‌شوند",
+                checked = settings.dropDeadServers
+            ) { value -> onChange { it.copy(dropDeadServers = value) } }
+        }
+
+        item {
             GlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Text("محافظت از کانفیگ‌ها", style = MaterialTheme.typography.titleSmall, color = V2.TextPrimary)
                     Spacer(Modifier.height(3.dp))
-                    Text("ناموفق بودن تست می‌تواند موقتی باشد؛ کانفیگ‌ها به‌خاطر خطای تست خودکار حذف نمی‌شوند.",
+                    Text("با فعال‌بودن پاک‌سازی، کانفیگ‌های اشتراک که در تست واقعی پاسخ ندهند فقط با موفقیت سروری دیگر در همان نوبت کنار گذاشته می‌شوند. موارد مستقل، انتخاب‌شده، فعال، علاقه‌مندی و در حال ویرایش حفظ می‌شوند. در شکست همگانی یا تست ناقص، پاک‌سازی بر اساس تست انجام نمی‌شود.",
                         style = MaterialTheme.typography.bodySmall, color = V2.TextMuted)
                 }
             }
@@ -265,7 +275,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "به‌روزرسانی خودکار در شروع",
-                subtitle = "اشتراک‌ها در شروع و به‌صورت دوره‌ای (حدود هر ۱۲ ساعت) به‌روزرسانی می‌شوند",
+                subtitle = "در هر شروع، دریافت و پینگ واقعی انجام می‌شود؛ دریافت دوره‌ای حدود هر ۱۲ ساعت است",
                 checked = settings.autoRefreshOnOpen
             ) { value -> onChange { it.copy(autoRefreshOnOpen = value) } }
         }
@@ -281,7 +291,7 @@ fun SettingsScreen(
         item {
             SettingSwitch(
                 title = "اتصال خودکار هنگام باز شدن برنامه",
-                subtitle = "به محض ورود به V2max، اتصال برقرار می‌شود",
+                subtitle = "پس از آماده‌سازی اشتراک‌ها و پایان همهٔ تست‌های فعال، اتصال بررسی می‌شود",
                 checked = settings.autoConnectOnOpen
             ) { value -> onChange { it.copy(autoConnectOnOpen = value) } }
         }
@@ -306,7 +316,7 @@ fun SettingsScreen(
             SettingValue(
                 title = "پروکسی برنامه‌به‌برنامه",
                 subtitle = when (settings.perAppMode) {
-                    ir.v2max.app.data.PerAppMode.OFF -> "همه‌ی برنامه‌ها از تانل عبور می‌کنند"
+                    ir.v2max.app.data.PerAppMode.OFF -> "همهٔ برنامه‌ها به‌جز خود V2max"
                     ir.v2max.app.data.PerAppMode.ONLY_SELECTED -> "فقط برنامه‌های انتخاب‌شده"
                     ir.v2max.app.data.PerAppMode.EXCEPT_SELECTED -> "به‌جز برنامه‌های انتخاب‌شده"
                 },
@@ -400,10 +410,18 @@ fun SettingsScreen(
 
         item {
             SettingValue(
-                title = "گزارش آخرین خطا",
-                subtitle = "اگر برنامه بسته شد، متن خطا اینجا کپی می‌شود تا برای رفع مشکل بفرستید",
-                value = "کپی"
-            ) { onCopyCrashLog() }
+                title = "خلاصهٔ خصوصی خطا",
+                subtitle = "پیش‌نمایش پیش از کپی؛ متن خام خطا و مشخصات سرور فرستاده نمی‌شود",
+                value = "پیش‌نمایش"
+            ) { onOpenCrashReport() }
+        }
+
+        item {
+            SettingValue(
+                title = "حذف گزارش محلی خطا",
+                subtitle = "گزارش‌های قدیمی ممکن است اطلاعات حساس داشته باشند؛ حذف از این دستگاه انجام می‌شود",
+                value = "حذف"
+            ) { showClearCrashDialog = true }
         }
 
         item {
@@ -442,8 +460,8 @@ fun SettingsScreen(
 
         item {
             SettingSwitch(
-                title = "مسیریابی دقیق ایران (geoip/geosite)",
-                subtitle = "دانلود خودکار فایل‌های رسمی؛ دامنه و IPهای ایرانی مستقیم و بدون تانل باز می‌شوند",
+                title = "فایل‌های مسیریابی ایران (geoip/geosite)",
+                subtitle = "دریافت از GitHub خارج از تونل این برنامه است؛ در حالت هوشمند برخی مقصدها مستقیم‌اند",
                 checked = settings.geoAssets
             ) { value -> onChange { it.copy(geoAssets = value) } }
         }
@@ -518,7 +536,7 @@ fun SettingsScreen(
         item {
             SettingValue(
                 title = "عیب‌یابی و گزارش",
-                subtitle = "لاگ زنده‌ی هسته، IP و کشور خروجی، بررسی DNS و ارسال گزارش",
+                subtitle = "وضعیت محلی، محدودیت بررسی IP و DNS، و گزارش با پیش‌نمایش",
                 value = "باز کردن"
             ) { onOpenDiag() }
         }
@@ -689,6 +707,21 @@ fun SettingsScreen(
             dismissButton = {
                 TextButton(onClick = { showDnsDialog = false }) { Text("انصراف", color = V2.TextMuted) }
             }
+        )
+    }
+
+    if (showClearCrashDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearCrashDialog = false },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("حذف گزارش محلی خطا", color = V2.TextPrimary) },
+            text = { Text("گزارش‌های خطای این دستگاه، از جمله گزارش‌های نسخه‌های قبلی، حذف شوند؟", color = V2.TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = { onClearCrashLog(); showClearCrashDialog = false }) { Text("حذف", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearCrashDialog = false }) { Text("انصراف", color = V2.TextMuted) }
+            },
         )
     }
 

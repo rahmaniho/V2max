@@ -80,6 +80,47 @@ class SubscriptionBootstrapTest {
         assertEquals(public.maxConfigs, SubscriptionPolicy.candidates(Subscription(builtIn = true, url = public.url), invalidFirst).size)
     }
 
+    @Test fun `completeness requires a fully parsed and unfiltered successful feed`() {
+        val sub = Subscription(url = "https://example.org/sub")
+        val valid = ServerConfig(address = "valid.example.org")
+        val invalid = ServerConfig(address = "127.0.0.1")
+        val complete = SubscriptionFetcher.Result(configs = listOf(valid))
+        assertTrue(SubscriptionPolicy.isComplete(complete, SubscriptionPolicy.candidates(sub, complete.configs)))
+        val filtered = SubscriptionFetcher.Result(configs = listOf(valid, invalid))
+        assertFalse(SubscriptionPolicy.isComplete(filtered, SubscriptionPolicy.candidates(sub, filtered.configs)))
+        assertFalse(SubscriptionPolicy.isComplete(complete.copy(fullyParsed = false), listOf(valid)))
+        assertFalse(SubscriptionPolicy.isComplete(complete.copy(error = "failed"), listOf(valid)))
+
+        val public = PublicSources.DEFAULT.first()
+        val capped = SubscriptionFetcher.Result(configs = (0..public.maxConfigs).map {
+            ServerConfig(address = "host$it.example.org")
+        })
+        val builtIn = Subscription(builtIn = true, url = public.url)
+        assertFalse(SubscriptionPolicy.isComplete(capped, SubscriptionPolicy.candidates(builtIn, capped.configs)))
+    }
+
+    @Test fun `requested feeds use bounded public policy and only exact public mirror URLs`() {
+        val feeds = listOf(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix" to
+                "https://cdn.jsdelivr.net/gh/iboxz/free-v2ray-collector@main/main/mix",
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt" to
+                "https://cdn.jsdelivr.net/gh/ThomasJasperthecat/sub@main/sublist1.txt"
+        )
+        val profiles = (0..150).map { ServerConfig(address = "host$it.example.org") }
+        feeds.forEach { (url, cdn) ->
+            val builtIn = Subscription(url = url, builtIn = true)
+            val personal = Subscription(url = url, builtIn = false)
+            assertTrue(SubscriptionPolicy.allowPublicMirrors(builtIn))
+            assertEquals(listOf(url, cdn, "https://ghproxy.net/$url"), SubscriptionFetcher.mirrorsFor(url, true))
+            assertFalse(SubscriptionPolicy.allowPublicMirrors(personal))
+            assertFalse(SubscriptionPolicy.allowPublicMirrors(builtIn.copy(url = "$url?private=token")))
+            assertEquals(150, SubscriptionPolicy.candidates(builtIn, profiles).size)
+            assertEquals(151, SubscriptionPolicy.candidates(personal, profiles).size)
+            val result = SubscriptionFetcher.Result(configs = profiles)
+            assertFalse(SubscriptionPolicy.isComplete(result, SubscriptionPolicy.candidates(builtIn, profiles)))
+        }
+    }
+
     @Test fun `personal subscriptions and unknown URLs never go to third party mirrors`() {
         val known = PublicSources.DEFAULT.first().url
         val privateUrl = "https://raw.githubusercontent.com/me/private/main/secret-token/sub.txt?token=secret"
@@ -158,12 +199,45 @@ class SubscriptionBootstrapTest {
             }
             assertTrue(result.error, result.ok)
             assertEquals(550, result.configs.size)
+            assertTrue("A complete personal feed must not be marked truncated", result.fullyParsed)
             assertEquals("سرور", result.configs.first().name)
             assertEquals("My Subscription", result.title)
             assertEquals(12L, result.upload)
             assertEquals(34L, result.download)
             assertEquals(100L, result.total)
             assertEquals(1893456000L, result.expireAt)
+        } finally {
+            server.close()
+            serverThread.join(1_000)
+        }
+    }
+
+    @Test fun `HTTP fetch exposes an actually truncated source`() = runBlocking {
+        val body = (0..2).joinToString("\n") { "vless://u@host$it.example.org:443?security=tls" }
+            .toByteArray(Charsets.UTF_8)
+        val server = ServerSocket(0)
+        val serverThread = thread(isDaemon = true) {
+            server.use {
+                it.accept().use { socket ->
+                    socket.soTimeout = 5_000
+                    val input = socket.getInputStream().bufferedReader()
+                    while (!input.readLine().isNullOrEmpty()) { }
+                    socket.getOutputStream().write(
+                        "HTTP/1.1 200 OK\r\nContent-Length: ${body.size}\r\nConnection: close\r\n\r\n"
+                            .toByteArray(Charsets.US_ASCII)
+                    )
+                    socket.getOutputStream().write(body)
+                    socket.getOutputStream().flush()
+                }
+            }
+        }
+        try {
+            val result = withTimeout(5_000) {
+                SubscriptionFetcher.fetch("http://127.0.0.1:${server.localPort}/source", maxConfigs = 2)
+            }
+            assertTrue(result.error, result.ok)
+            assertEquals(2, result.configs.size)
+            assertFalse(result.fullyParsed)
         } finally {
             server.close()
             serverThread.join(1_000)

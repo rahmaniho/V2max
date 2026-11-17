@@ -63,6 +63,142 @@ class RepoConcurrencyTest {
         assertEquals(0, Repo.ensureBuiltInSources(includeAll = true))
     }
 
+    @Test fun `new default feeds are added once without replacing an existing subscription`() {
+        val iboxz = "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        val thomas = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        // Simulate an existing installation with the old defaults and an
+        // explicitly added Thomas subscription, including a saved profile.
+        PublicSources.DEFAULT.take(6).forEachIndexed { index, source ->
+            assertTrue(Repo.addSubscription(Subscription(id = "old-$index", url = source.url, builtIn = true)))
+        }
+        val previous = Subscription(id = "existing-thomas", name = "نام من", url = thomas, builtIn = true, updatedAt = 42)
+        assertTrue(Repo.addSubscription(previous))
+        val saved = server("saved", previous.id)
+        Repo.updateServer(saved)
+
+        assertEquals(1, Repo.ensureBuiltInSources(requireEnabled = true))
+        assertEquals(previous, Repo.subById(previous.id))
+        assertEquals(saved, Repo.serverById(saved.id))
+        assertEquals(1, Repo.subs.value.count { PublicSources.normalize(it.url) == thomas })
+        assertTrue(Repo.subs.value.single { it.url == iboxz }.builtIn)
+        assertEquals(0, Repo.ensureBuiltInSources(requireEnabled = true))
+    }
+
+    @Test fun `new defaults respect free source opt out personal imports and explicit deletion`() {
+        val iboxz = "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        val thomas = "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        assertTrue(Repo.updateSettings { it.copy(useFreeSources = false) })
+        assertEquals(0, Repo.ensureBuiltInSources(requireEnabled = true))
+        assertTrue(Repo.subs.value.isEmpty())
+
+        val personal = Subscription(id = "personal-thomas", url = "$thomas/", builtIn = false)
+        assertTrue(Repo.addSubscription(personal))
+        assertTrue(Repo.updateSettings { it.copy(useFreeSources = true) })
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertEquals(personal, Repo.subById(personal.id))
+        assertEquals(1, Repo.subs.value.count { PublicSources.normalize(it.url) == thomas })
+        val removed = Repo.subs.value.single { it.url == iboxz }
+        Repo.removeSubscription(removed.id)
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertFalse("A source explicitly removed by the user must stay removed", Repo.subs.value.any { it.url == iboxz })
+        assertNotNull("The source picker can deliberately restore it", Repo.addBuiltInSource(iboxz))
+        assertEquals(1, Repo.subs.value.count { it.url == iboxz })
+
+        // Removing a personal subscription with the exact catalogue address is
+        // also an explicit removal; startup must not recreate it as public.
+        Repo.removeSubscription(personal.id)
+        Repo.ensureBuiltInSources(requireEnabled = true)
+        assertFalse("A deleted personal copy must not reappear as a default", Repo.subs.value.any {
+            PublicSources.normalize(it.url) == thomas
+        })
+        val restored = requireNotNull(Repo.addBuiltInSource(thomas))
+        val private = Subscription(id = "private-query", url = "$thomas?token=private-fixture", builtIn = false)
+        assertTrue(Repo.addSubscription(private))
+        Repo.removeSubscription(private.id)
+        assertNotNull(Repo.subById(restored.id))
+        assertFalse("Private URL parameters must not enter the public opt-out list",
+            Repo.settings.value.disabledBuiltInSources.any { "private-fixture" in it })
+    }
+
+    @Test fun `full public catalogue does not starve newly refreshed requested feeds`() {
+        val previous = Subscription(id = "old", url = PublicSources.DEFAULT.first().url, builtIn = true)
+        assertTrue(Repo.addSubscription(previous))
+        val old = (0 until 700).map { server("old-$it", previous.id) }
+        Repo.replaceSubscriptionServers(previous.id, old)
+        Repo.setSelected("old-1")
+        Repo.setFavorite("old-699", true)
+        Repo.tunnel.value = TunnelUiState(status = TunnelStatus.CONNECTED, serverId = "old-2")
+        val iboxz = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        ))
+        val thomas = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        ))
+        assertTrue(Repo.commitSubscriptionRefresh(iboxz, (0 until 150).map { server("ibox-$it", iboxz.id) }, 0, 0, 0, 0))
+        assertTrue(Repo.commitSubscriptionRefresh(thomas, (0 until 17).map { server("thomas-$it", thomas.id) }, 0, 0, 0, 0))
+
+        assertEquals(700, Repo.servers.value.size)
+        assertEquals("A full catalogue must leave a usable sample from the newly added feed", 50,
+            Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+        assertNotNull(Repo.serverById("old-1"))
+        assertNotNull(Repo.serverById("old-2"))
+        assertTrue(requireNotNull(Repo.serverById("old-699")).favorite)
+    }
+
+    @Test fun `all default sources retain a sample regardless of refresh order`() {
+        listOf(false, true).forEach { reverse ->
+            assertTrue(Repo.resetEverything(revokeConsent = { true }, persist = { true }))
+            val sources = PublicSources.DEFAULT.mapIndexed { index, item ->
+                Subscription(id = "source-$index", url = item.url, builtIn = true).also {
+                    assertTrue(Repo.addSubscription(it))
+                }
+            }
+            val order = if (reverse) sources.reversed() else sources
+            order.forEach { sub ->
+                val incoming = (0 until 150).map { server("${sub.id}-$it", sub.id) }
+                assertTrue(Repo.commitSubscriptionRefresh(sub, incoming, 0, 0, 0, 0))
+            }
+            assertEquals(700, Repo.servers.value.size)
+            sources.forEach { sub ->
+                assertTrue("Source ${sub.id} lost its sample with reverse=$reverse",
+                    Repo.servers.value.count { it.subId == sub.id } >= 50)
+            }
+        }
+    }
+
+    @Test fun `capacity keeps measured servers and public source samples beside a large personal list`() {
+        val previous = Subscription(id = "old", url = PublicSources.DEFAULT.first().url, builtIn = true)
+        assertTrue(Repo.addSubscription(previous))
+        val measured = (0 until 700).map {
+            server("healthy-$it", previous.id).copy(realPing = 40, testedUrl = "https://example.org/probe")
+        }
+        Repo.replaceSubscriptionServers(previous.id, measured)
+        val iboxz = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix"
+        ))
+        val thomas = requireNotNull(Repo.addBuiltInSource(
+            "https://raw.githubusercontent.com/ThomasJasperthecat/sub/main/sublist1.txt"
+        ))
+        assertTrue(Repo.commitSubscriptionRefresh(iboxz, (0 until 150).map { server("ibox-$it", iboxz.id) }, 0, 0, 0, 0))
+        assertTrue(Repo.commitSubscriptionRefresh(thomas, (0 until 17).map { server("thomas-$it", thomas.id) }, 0, 0, 0, 0))
+        assertEquals("Recorded real successes must survive the soft ceiling", 700,
+            Repo.servers.value.count { it.subId == previous.id })
+        assertEquals(50, Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+
+        // Personal imports do not consume the public sources' capacity, even
+        // when the separate total-size cleanup is triggered.
+        val personal = (0 until 3001).map { server("personal-$it", "") }
+        assertEquals(personal.size, Repo.addServers(personal))
+        repeat(40) { Repo.updateServer(server("extra-$it", previous.id)) }
+        assertEquals(40, Repo.trimBuiltInServers())
+        assertEquals(3001, Repo.servers.value.count { it.subId.isBlank() })
+        assertEquals(700, Repo.servers.value.count { it.subId == previous.id })
+        assertEquals(50, Repo.servers.value.count { it.subId == iboxz.id })
+        assertEquals(17, Repo.servers.value.count { it.subId == thomas.id })
+    }
+
     @Test fun `editor preserves newer health on rename and clears it for a different connection`() {
         val original = server("edit", "personal").copy(
             tcpPing = 20, realPing = 30, googlePing = 30, instagramPing = 40, youtubePing = 50,

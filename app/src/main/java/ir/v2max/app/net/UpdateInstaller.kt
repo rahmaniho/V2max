@@ -99,9 +99,9 @@ object UpdateInstaller {
         } catch (e: CancellationException) {
             target?.delete()
             throw e
-        } catch (t: Exception) {
+        } catch (_: Exception) {
             target?.delete()
-            Log.w(TAG, "download failed", t)
+            Log.w(TAG, "download failed")
             Result.Failure("دریافت به‌روزرسانی ناموفق بود")
         }
     }
@@ -141,9 +141,9 @@ object UpdateInstaller {
                 session.commit(pending.intentSender)
             }
             true
-        } catch (t: Exception) {
+        } catch (_: Exception) {
             sessionId?.let { id -> runCatching { installer?.abandonSession(id) } }
-            Log.w(TAG, "install failed", t)
+            Log.w(TAG, "install failed")
             false
         } finally {
             // PackageInstaller has its own session copy; remove our private APK copy.

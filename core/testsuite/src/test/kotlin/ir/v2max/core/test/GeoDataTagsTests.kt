@@ -1,8 +1,12 @@
 package ir.v2max.core.test
 
+import ir.v2max.core.geo.GeoAssetInstaller
+import ir.v2max.core.geo.GeoAssetStatus
 import ir.v2max.core.geo.GeoDataTags
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 
 /**
  * Tests for the GeoIP/GeoSite protobuf reader.
@@ -140,6 +144,84 @@ object GeoDataTagsTests {
         withTempFile { file ->
             file.writeBytes("this is not protobuf at all".toByteArray())
             T.eq("garbage input returns null", null, GeoDataTags.find(file, listOf("ir")))
+            T.ok("diagnostic inspection preserves the read error", GeoDataTags.inspect(file, listOf("ir")).isFailure)
+        }
+
+        T.group("Geo asset evidence and safe refresh")
+        val dir = Files.createTempDirectory("v2max-geo-test").toFile()
+        try {
+            val target = File(dir, "geoip.dat")
+            val temporary = File(dir, "geoip.dat.part")
+            val site = File(dir, "geosite.dat")
+            val candidate = listOf("ir")
+            val ready = Result.success<String?>("ir")
+            val missing = Result.success<String?>(null)
+            val unknown = Result.failure<String?>(IOException("fixture"))
+            T.eq("two tags are ready", true, GeoAssetStatus.readiness(ready, ready))
+            T.eq("a confirmed absence makes the pair incomplete", false, GeoAssetStatus.readiness(unknown, missing))
+            T.eq("a failed read is unknown when the other tag exists", null, GeoAssetStatus.readiness(ready, unknown))
+            T.eq("two failed reads are unknown", null, GeoAssetStatus.readiness(unknown, unknown))
+
+            val absent = GeoAssetStatus.inspect(target, candidate)
+            T.ok("a readable directory confirms a missing file", absent.isSuccess && absent.getOrNull() == null)
+            target.writeText("small")
+            val small = GeoAssetStatus.inspect(target, candidate)
+            T.ok("a readable but too-small file is incomplete", small.isSuccess && small.getOrNull() == null)
+            target.writeBytes(entry("US", "x".repeat(1200)))
+            val noTag = GeoAssetStatus.inspect(target, candidate)
+            T.ok("a valid file without the tag is incomplete", noTag.isSuccess && noTag.getOrNull() == null)
+            target.writeBytes(entry("IR", "x".repeat(1200)))
+            T.eq("a valid tag is found", "ir", GeoAssetStatus.inspect(target, candidate).getOrNull())
+            target.appendBytes(byteArrayOf(10, 100))
+            T.ok("a truncated existing file is unknown", GeoAssetStatus.inspect(target, candidate).isFailure)
+            val notFile = File(dir, "not-a-file").apply { mkdir() }
+            T.ok("a directory is not silently treated as an absent file", GeoAssetStatus.inspect(notFile, candidate).isFailure)
+            val inaccessibleParent = File(dir, "missing-parent/geosite.dat")
+            T.ok("an unreadable or missing parent leaves absence unknown", GeoAssetStatus.inspect(inaccessibleParent, candidate).isFailure)
+
+            val old = "previous-working-file".toByteArray()
+            target.writeBytes(old)
+            temporary.writeBytes(entry("IR", "x".repeat(1200)))
+            T.ok("a short download is rejected", !GeoAssetInstaller.install(temporary, target, candidate))
+            T.ok("short download preserves the old file", target.readBytes().contentEquals(old))
+            temporary.writeBytes(ByteArray(100_100) { 0x7f })
+            T.ok("malformed download is rejected", !GeoAssetInstaller.install(temporary, target, candidate))
+            T.ok("malformed download preserves the old file", target.readBytes().contentEquals(old))
+            temporary.writeBytes(entry("US", "x".repeat(100_100)))
+            T.ok("download without the required tag is rejected", !GeoAssetInstaller.install(temporary, target, candidate))
+            T.ok("missing tag preserves the old file", target.readBytes().contentEquals(old))
+            val valid = entry("IR", "x".repeat(100_100))
+            temporary.writeBytes(valid + byteArrayOf(10, 100))
+            T.ok("truncated download is rejected even with a tag", !GeoAssetInstaller.install(temporary, target, candidate))
+            T.ok("truncated download preserves the old file", target.readBytes().contentEquals(old))
+            temporary.writeBytes(valid)
+            T.ok("a validated sibling download replaces the old file", GeoAssetInstaller.install(temporary, target, candidate))
+            T.ok("replacement has the exact validated content", target.readBytes().contentEquals(valid) && !temporary.exists())
+            T.ok("a target cannot be its own temporary file", !GeoAssetInstaller.install(target, target, candidate))
+            val otherDir = File(dir, "other").apply { mkdir() }
+            val foreign = File(otherDir, "other.part").apply { writeBytes(valid) }
+            T.ok("cross-directory replacement is refused", !GeoAssetInstaller.install(foreign, target, candidate))
+            T.ok("refused replacement leaves the installed file intact", target.readBytes().contentEquals(valid))
+            temporary.writeBytes(valid)
+            T.ok("a refused rename leaves the destination directory intact",
+                !GeoAssetInstaller.install(temporary, notFile, candidate) && notFile.isDirectory && temporary.exists())
+
+            site.writeBytes(valid)
+            val now = System.currentTimeMillis()
+            val maxAge = 10_000L
+            T.ok("set stale geoip timestamp", target.setLastModified(now - 20_000L))
+            T.ok("set recent geosite timestamp", site.setLastModified(now - 1_000L))
+            T.ok("a newer geosite does not hide stale geoip", GeoAssetStatus.needsRefresh(target, site, now, maxAge))
+            T.ok("set recent geoip timestamp", target.setLastModified(now - 2_000L))
+            T.ok("both recent files do not trigger refresh", !GeoAssetStatus.needsRefresh(target, site, now, maxAge))
+            T.ok("set future timestamp", site.setLastModified(now + 20_000L))
+            T.ok("future timestamps do not appear fresh", GeoAssetStatus.needsRefresh(target, site, now, maxAge))
+            site.writeText("too short")
+            T.ok("a short asset requires refresh", GeoAssetStatus.needsRefresh(target, site, now, maxAge))
+            site.delete()
+            T.ok("a missing asset requires refresh", GeoAssetStatus.needsRefresh(target, site, now, maxAge))
+        } finally {
+            dir.deleteRecursively()
         }
     }
 }

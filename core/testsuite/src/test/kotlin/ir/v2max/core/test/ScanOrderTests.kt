@@ -40,6 +40,13 @@ object ScanOrderTests {
         )
         T.eq("best real ping within a source", listOf("fast", "other", "slow"),
             ScanOrder.prioritize(history, { it }, now).map { it.id })
+        val fastOrder = ScanOrder.prioritize(history + candidate("favorite2", "C", favorite = true), { it }, now,
+            fastestRecentFirst = true)
+        T.eq("fast mode ranks recent real pings globally before untested favorites",
+            listOf("fast", "other", "slow", "favorite2"), fastOrder.map { it.id })
+        T.eq("explicit choice remains first even in fast mode", "favorite2",
+            ScanOrder.prioritize(history + candidate("favorite2", "C", favorite = true), { it }, now,
+                preferredId = "favorite2", fastestRecentFirst = true).first().id)
         T.eq("empty list", emptyList<ScanHint>(), ScanOrder.prioritize(emptyList<ScanHint>(), { it }, now))
     }
 }

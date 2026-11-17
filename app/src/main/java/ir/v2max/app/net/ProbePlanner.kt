@@ -1,5 +1,6 @@
 package ir.v2max.app.net
 
+import ir.v2max.app.core.NativeDelay
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.FragmentProfile
 import ir.v2max.app.data.Proto
@@ -15,6 +16,9 @@ data class ProbeResult(
     val fragment: Boolean,
     val profile: FragmentProfile
 )
+
+/** A setup/unknown failure must not be mistaken for a tested no-response. */
+internal data class ProbeAssessment(val result: ProbeResult?, val indeterminate: Boolean)
 
 /**
  * Plans and runs the probes for a server.
@@ -53,7 +57,14 @@ object ProbePlanner {
         server: ServerConfig,
         settings: AppSettings,
         measure: suspend (ServerConfig, AppSettings, String) -> Int
-    ): ProbeResult? {
+    ): ProbeResult? = assess(server, settings, measure).result
+
+    internal suspend fun assess(
+        server: ServerConfig,
+        settings: AppSettings,
+        measure: suspend (ServerConfig, AppSettings, String) -> Int
+    ): ProbeAssessment {
+        var indeterminate = false
         val variants = variants(server, settings)
         val urls = testUrls(settings)
         // A recent success only changes the order of NEW tests. It is never reused as
@@ -74,10 +85,11 @@ object ProbePlanner {
                 coroutineContext.ensureActive()
                 val delay = measure(server, variant, url)
                 coroutineContext.ensureActive()
-                if (delay > 0) return ProbeResult(delay, url, variant.fragment, variant.fragmentProfile)
+                if (delay > 0) return ProbeAssessment(ProbeResult(delay, url, variant.fragment, variant.fragmentProfile), false)
+                if (delay != NativeDelay.NO_RESPONSE.toInt()) indeterminate = true
             }
         }
-        return null
+        return ProbeAssessment(null, indeterminate)
     }
 
     /** Ignore persisted download measurements when ranking a NEW scan by latency. */

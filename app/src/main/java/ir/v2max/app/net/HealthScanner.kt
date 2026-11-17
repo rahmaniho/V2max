@@ -2,6 +2,8 @@ package ir.v2max.app.net
 
 import android.content.Context
 import ir.v2max.app.core.ConfigBuilder
+import ir.v2max.app.core.ConnectionTestBarrier
+import ir.v2max.app.core.NativeDelay
 import ir.v2max.app.core.XrayCore
 import ir.v2max.app.data.AppSettings
 import ir.v2max.app.data.PingTargets
@@ -29,10 +31,6 @@ object HealthScanner {
     internal const val PRECHECK_WINDOW = 24
     internal const val REAL_BATCH_SIZE = 6
     private const val MULTI_CONCURRENCY = 4
-    // UI tests and service failover may otherwise publish conflicting results or
-    // run multiple temporary speed cores concurrently.
-    private val scanMutex = Mutex()
-
     data class Outcome(
         val best: ServerConfig? = null,
         val aliveCount: Int = 0,
@@ -47,6 +45,8 @@ object HealthScanner {
         /** IDs for which a download was actually attempted, including failures. */
         val speedTestedIds: Set<String> = emptySet(),
         val qualified: List<ServerConfig> = emptyList(),
+        /** Failed setup or an unclassified native error is not a dead server. */
+        val indeterminateIds: Set<String> = emptySet(),
         val message: String = ""
     )
 
@@ -67,15 +67,17 @@ object HealthScanner {
         rememberedId: String? = null,
         limit: Int = 0,
         exhaustive: Boolean = false,
+        fastestRecentFirst: Boolean = false,
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
+        onIndeterminate: suspend (ServerConfig) -> Unit = { _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
         onSpeed: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> },
         onAlive: suspend (Int) -> Unit = {}
     ): Outcome = withContext(Dispatchers.IO) {
         if (servers.isEmpty()) return@withContext Outcome(message = "کانفیگی برای تست وجود ندارد")
-        scanMutex.withLock {
+        ConnectionTestBarrier.tests {
             XrayCore.init(context)
             XrayCore.clearProbeProblem()
             scanPrepared(
@@ -91,8 +93,10 @@ object HealthScanner {
                 rememberedId = rememberedId,
                 limit = limit,
                 exhaustive = exhaustive,
+                fastestRecentFirst = fastestRecentFirst,
                 onTcp = onTcp,
                 onReal = onReal,
+                onIndeterminate = onIndeterminate,
                 onMulti = onMulti,
                 onSpeed = onSpeed,
                 onPhase = onPhase,
@@ -114,8 +118,10 @@ object HealthScanner {
         rememberedId: String? = null,
         limit: Int = 0,
         exhaustive: Boolean = false,
+        fastestRecentFirst: Boolean = false,
         onTcp: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onReal: suspend (ServerConfig, ProbeResult?) -> Unit = { _, _ -> },
+        onIndeterminate: suspend (ServerConfig) -> Unit = { _ -> },
         onMulti: suspend (ServerConfig) -> Unit = { _ -> },
         onSpeed: suspend (ServerConfig, Int) -> Unit = { _, _ -> },
         onPhase: suspend (String, Int, Int) -> Unit = { _, _, _ -> },
@@ -133,7 +139,8 @@ object HealthScanner {
             },
             nowMs = System.currentTimeMillis(),
             preferredId = preferredId,
-            rememberedId = rememberedId
+            rememberedId = rememberedId,
+            fastestRecentFirst = fastestRecentFirst
         )
         val ordered = if (limit > 0) prioritized.take(limit) else prioritized
         val lock = Mutex()
@@ -142,6 +149,7 @@ object HealthScanner {
         val deferred = ArrayList<ServerConfig>()
         val tested = ArrayList<ServerConfig>()
         val pendingReal = ArrayList<Pair<ServerConfig, ProbeResult?>>()
+        val indeterminateIds = HashSet<String>()
         val pendingMulti = ArrayList<ServerConfig>()
         val pendingSpeed = ArrayList<Pair<ServerConfig, Int>>()
         var prechecked = 0
@@ -185,17 +193,19 @@ object HealthScanner {
             val batchResults = coroutineScope {
                 batch.map { cfg ->
                     async {
-                        val result = ProbePlanner.verify(cfg, settings, operations.real)
+                        val assessment = ProbePlanner.assess(cfg, settings, operations.real)
                         lock.withLock {
                             realDone++
                             onPhase("تست واقعی اتصال با Xray", realDone, ordered.size)
                         }
-                        cfg to result
+                        cfg to assessment
                     }
                 }.awaitAll()
             }
-            pendingReal.addAll(batchResults)
-            batchResults.forEach { (cfg, result) ->
+            batchResults.forEach { (cfg, assessment) ->
+                val result = assessment.result
+                pendingReal.add(cfg to result)
+                if (assessment.indeterminate) indeterminateIds.add(cfg.id)
                 if (result != null) tested.add(
                     cfg.copy(
                         tcpPing = tcpResults[cfg.id] ?: -1,
@@ -216,7 +226,9 @@ object HealthScanner {
         // Publish verified results only after all tests requested for this scan finish.
         suspend fun publishResults() {
             coroutineContext.ensureActive()
-            pendingReal.forEach { (cfg, result) -> onReal(cfg, result) }
+            pendingReal.forEach { (cfg, result) ->
+                if (cfg.id in indeterminateIds) onIndeterminate(cfg) else onReal(cfg, result)
+            }
             pendingMulti.forEach { onMulti(it) }
             pendingSpeed.forEach { (cfg, kbps) -> onSpeed(cfg, kbps) }
         }
@@ -249,6 +261,7 @@ object HealthScanner {
                 precheckedCount = prechecked,
                 tcpConnections = tcpConnections,
                 elapsedMs = elapsed(),
+                indeterminateIds = indeterminateIds.toSet(),
                 message = buildString {
                     append("هیچ کانفیگی تست واقعی را نگذرانْد؛ کانفیگ‌ها حذف نشدند.")
                     val problem = operations.problem()
@@ -302,6 +315,7 @@ object HealthScanner {
                     return Outcome(
                         testedCount = realDone, precheckedCount = prechecked,
                         tcpConnections = tcpConnections, elapsedMs = elapsed(),
+                        indeterminateIds = indeterminateIds.toSet(),
                         message = "آماده‌سازی سنجش سرعت ممکن نشد؛ اتصال جدید آغاز نشد. دوباره تلاش کنید."
                     )
                 }
@@ -318,8 +332,11 @@ object HealthScanner {
         // When speed testing is enabled, only profiles whose download test was
         // actually attempted may be selected or added to the connection pool.
         val connectable = if (settings.speedTest) results.filter { it.id in speedTestedIds } else results
-        val qualified = ProbePlanner.rank(connectable, speeds)
-        val best = ProbePlanner.choose(qualified, preferredId, speeds)
+        val ranked = ProbePlanner.rank(connectable, speeds)
+        // A low-latency switch uses freshly measured real delays, not TCP or a
+        // persisted score. Respect an enabled download comparison and a manual choice.
+        val qualified = if (fastestRecentFirst && !settings.speedTest) ranked.sortedBy { it.realPing } else ranked
+        val best = qualified.firstOrNull { it.id == preferredId } ?: qualified.firstOrNull()
         val speedNote = when {
             settings.speedTest && speeds.isEmpty() -> "سنجش دانلود ناموفق بود؛ انتخاب بر اساس تأخیر انجام شد"
             speeds.isNotEmpty() -> "سرعت دانلود ${speeds.size} سرور سنجیده شد"
@@ -335,6 +352,7 @@ object HealthScanner {
             speedCompared = speeds.isNotEmpty(),
             speedTestedIds = speedTestedIds,
             qualified = qualified,
+            indeterminateIds = indeterminateIds.toSet(),
             message = speedNote
         )
     }
@@ -356,11 +374,15 @@ object HealthScanner {
             try {
                 val config = ConfigBuilder.testConfig(cfg, settings)
                 val delay = XrayCore.measureOutboundDelay(config, url)
-                if (delay in 1..60_000) delay.toInt() else -1
+                when (delay) {
+                    in 1..60_000 -> delay.toInt()
+                    NativeDelay.NO_RESPONSE -> NativeDelay.NO_RESPONSE.toInt()
+                    else -> NativeDelay.INDETERMINATE.toInt()
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
-                -1
+                NativeDelay.INDETERMINATE.toInt()
             }
         }
 

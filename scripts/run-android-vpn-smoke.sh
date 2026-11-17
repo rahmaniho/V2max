@@ -29,9 +29,12 @@ hold_release = threading.Event()
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ('/hold-status', '/hold-release'):
+        if self.path in ('/hold-status', '/hold-release', '/hold-reset'):
             if self.path == '/hold-release':
                 hold_release.set()
+            elif self.path == '/hold-reset':
+                hold_started.clear()
+                hold_release.clear()
             body = b'started' if hold_started.is_set() else b'waiting'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
@@ -51,8 +54,13 @@ class Fixture(BaseHTTPRequestHandler):
                 self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the caller canceled while the slow response was pending
-        elif self.path == '/subscription':
+        elif self.path in ('/subscription', '/subscription-mixed', '/subscription-partial'):
             body = b'vless://22222222-3333-4444-5555-666666666666@10.0.2.2:18080?type=tcp&security=none#QR-fixture'
+            if self.path == '/subscription-mixed':
+                body += b'\nvless://11111111-2222-3333-4444-555555555555@10.0.2.2:18080?type=tcp&security=none&encryption=invalid-fixture-encryption#Unknown-fixture'
+                body += b'\nvless://11111111-2222-3333-4444-555555555555@10.0.2.2:18082?type=tcp&security=none#No-response-fixture'
+            elif self.path == '/subscription-partial':
+                body += b'\nopaque unsupported profile'
             self.send_response(200)
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
@@ -126,8 +134,18 @@ status=$?
 printf '\nNC_EXIT=%s\n' "$status"
 SH
 adb push "$work/direct-probe.sh" /data/local/tmp/v2max-direct-probe.sh
+if [[ "${V2MAX_UI_ONLY:-false}" != true ]]; then
 if gradle --no-daemon connectedDebugAndroidTest 2>&1 | tee "$work/android-test.log"; then
   echo 'Android VPN smoke test passed.'
+  # Require evidence that the selected-profile test reached its per-app checks;
+  # an accidentally excluded/skipped instrumentation case must not pass CI.
+  per_app_log="$(adb logcat -d -v raw -s V2maxPerAppTest:I '*:S' 2>/dev/null || true)"
+  per_app_marker='V2MAX_PER_APP_ROUTING invalid=refused live=preserved only=passed except=passed disconnected=refused'
+  if [[ "$per_app_log" != *"$per_app_marker"* ]]; then
+    echo '::error title=Per-app VPN smoke::The per-app routing assertions did not complete.'
+    exit 1
+  fi
+  echo "::notice title=Per-app VPN smoke::$per_app_marker"
   # Report all handovers together: GitHub limits annotations per step. Any
   # retry is still surfaced as a warning rather than concealed by eventual success.
   mapfile -t handovers < <(adb logcat -d -v raw -s V2maxTunTest:I '*:S' 2>/dev/null | grep 'V2MAX_TUN_READY' || true)
@@ -171,6 +189,21 @@ annotate('Android VPN network state', network or '(no VPN or UID details)')
 PY
   echo '::endgroup::'
   exit 1
+fi
+fi
+
+# connectedDebugAndroidTest may uninstall its target and test APKs after the
+# suite. Reinstall them before invoking the independent, opt-in UI runner.
+gradle --no-daemon installDebug installDebugAndroidTest
+# Use the actual activity, first-time Android consent and selected server on
+# both ordinary and UI-only emulator runs; this is separate from the direct API smoke.
+bash scripts/run-android-ui-connect-smoke.sh debug
+
+# Only a manually requested preview run installs and tests the separate preview
+# APK. The same local fixtures remain alive, and the exact tested APK is later
+# checksum-verified before it can be uploaded for a prerelease.
+if [[ "${V2MAX_PREVIEW_SMOKE:-false}" == true ]]; then
+  bash scripts/run-android-preview-smoke.sh
 fi
 
 # Optional manual visual inspection. The emulator and its fixture data are

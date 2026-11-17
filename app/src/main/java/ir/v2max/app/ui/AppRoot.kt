@@ -61,6 +61,8 @@ fun AppRoot(vm: AppViewModel) {
     val poolSize by Repo.poolSize.collectAsStateWithLifecycle()
     val busy by vm.busy.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
+    val vpnPermission by vm.vpnPermissionState.collectAsStateWithLifecycle()
+    val notificationPermissionInFlight by vm.notificationPermissionInFlight.collectAsStateWithLifecycle()
     val recoveryWarning by Repo.recoveryWarning.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
@@ -70,6 +72,8 @@ fun AppRoot(vm: AppViewModel) {
     var qrDialogContent by remember { mutableStateOf("") }
     var showRouting by rememberSaveable { mutableStateOf(false) }
     var showDiag by rememberSaveable { mutableStateOf(false) }
+    var geoSyncPending by remember { mutableStateOf(false) }
+    var crashReportPreview by remember { mutableStateOf<String?>(null) }
     var editingId by rememberSaveable { mutableStateOf("") }
     var backupPassword by remember { mutableStateOf("") }
     var showBackupDialog by remember { mutableStateOf(false) }
@@ -80,6 +84,42 @@ fun AppRoot(vm: AppViewModel) {
     var deferredInstall by remember { mutableStateOf<InstallConfirmation.Request?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // Restore the editor lease after process/activity recreation as well.
+    LaunchedEffect(editingId) {
+        if (editingId.isNotBlank() && !vm.beginServerEdit(editingId)) editingId = ""
+    }
+
+    val canSuggestRemoval = !sync.running && !scan.running && !notificationPermissionInFlight &&
+        vpnPermission.pendingId == null && vpnPermission.inFlightId == null &&
+        !showPerApp && !showQr && !showRouting && !showDiag && editingId.isBlank() &&
+        !showBackupDialog && !showRestoreDialog && !showPlainRestoreDialog && crashReportPreview == null &&
+        pendingInstall == null && recoveryWarning.isBlank() && !Repo.isStorageReadOnly()
+    val removalSuggestion = if (canSuggestRemoval) subs.firstOrNull { sub ->
+        sub.lastError.isBlank() && ir.v2max.core.domain.SubscriptionHealthPolicy.shouldSuggest(
+            sub.healthEvidence(), sub.updatedAt, System.currentTimeMillis()
+        ) && servers.none { it.subId == sub.id && tunnel.isActive && it.id == tunnel.serverId }
+    } else null
+    removalSuggestion?.let { sub ->
+        AlertDialog(
+            onDismissRequest = { vm.deferUnhealthySubscription(sub) },
+            containerColor = V2.SurfaceHigh,
+            title = { Text("بررسی حذف اشتراک", color = V2.TextPrimary) },
+            text = {
+                Text(
+                    "سرورهای دریافت‌شده از «${sub.name.ifBlank { "اشتراک" }}» در دو بررسی با فاصلهٔ دست‌کم یک روز پاسخ ندادند. " +
+                        "مشکل ممکن است از شبکه یا مقصد تست باشد. اشتراک و کانفیگ‌هایش حذف شوند؟",
+                    color = V2.TextSecondary
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.removeUnhealthySubscription(sub) }) { Text("حذف اشتراک", color = V2.Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.deferUnhealthySubscription(sub) }) { Text("بعداً", color = V2.TextMuted) }
+            }
+        )
+    }
 
     if (recoveryWarning.isNotBlank()) {
         AlertDialog(
@@ -99,29 +139,33 @@ fun AppRoot(vm: AppViewModel) {
     fun handleDiagAction(action: String) {
         when (action) {
             ir.v2max.core.domain.ConnectionAdvice.Action.SMART_CONNECT -> vm.requestSmartConnect(null)
-            ir.v2max.core.domain.ConnectionAdvice.Action.AGGRESSIVE_FRAGMENT -> {
-                if (vm.updateSettings {
-                    it.copy(
-                        fragmentProfile = ir.v2max.app.data.FragmentProfile.AGGRESSIVE,
-                        autoTuneFragment = false,
-                        fragment = true
-                    )
-                }) vm.showMessage("پروفایل فرگمنت قوی اعمال شد؛ دوباره وصل شوید")
-            }
-            ir.v2max.core.domain.ConnectionAdvice.Action.REFRESH_SUBS -> vm.refreshAllSubscriptions()
+            ir.v2max.core.domain.ConnectionAdvice.Action.TEST_SERVERS -> vm.testAll()
             ir.v2max.core.domain.ConnectionAdvice.Action.SYNC_GEO -> {
-                scope.launch {
-                    vm.showMessage("در حال دانلود فایل‌های مسیریابی…")
-                    val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        ir.v2max.app.core.GeoAssets.syncIfNeeded(context, force = true)
+                if (!geoSyncPending) {
+                    geoSyncPending = true
+                    scope.launch {
+                        vm.showMessage("در حال بررسی فایل‌های مسیریابی…")
+                        try {
+                            // Reuse a successful refresh already in progress;
+                            // retry if the files are still stale or unknown.
+                            ir.v2max.app.core.GeoAssets.syncIfNeeded(context)
+                            val message = when (ir.v2max.app.core.GeoAssets.diagnosticReadiness.value) {
+                                true -> "برچسب‌های لازم فایل‌های مسیریابی پیدا شدند"
+                                false -> "برچسب‌های لازم همهٔ فایل‌های مسیریابی پیدا نشدند"
+                                null -> "وضعیت فایل‌های مسیریابی مشخص نشد؛ دوباره تلاش کنید"
+                            }
+                            vm.showMessage(message)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            vm.showMessage("بررسی فایل‌های مسیریابی کامل نشد؛ دوباره تلاش کنید")
+                        } finally {
+                            geoSyncPending = false
+                        }
                     }
-                    vm.showMessage(if (ok) "فایل‌های مسیریابی به‌روز شد" else "دانلود ناموفق بود؛ اتصال اینترنت را بررسی کنید")
                 }
             }
             ir.v2max.core.domain.ConnectionAdvice.Action.UNBLOCK -> vm.disconnectTunnel()
-            ir.v2max.core.domain.ConnectionAdvice.Action.DISABLE_BALANCER -> {
-                if (vm.updateSettings { it.copy(balancer = false) }) vm.showMessage("استخر خودکار خاموش شد")
-            }
         }
     }
 
@@ -220,6 +264,22 @@ fun AppRoot(vm: AppViewModel) {
                 }
             )
         }
+    }
+
+    crashReportPreview?.let { report ->
+        ReportPreviewDialog(
+            report = report,
+            confirmLabel = "کپی خلاصه",
+            onDismiss = { crashReportPreview = null },
+            onConfirm = { text ->
+                val copied = runCatching {
+                    val clipboard = requireNotNull(context.getSystemService(android.content.ClipboardManager::class.java))
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("V2max private report", text))
+                }.isSuccess
+                vm.showMessage(if (copied) "خلاصهٔ خصوصی کپی شد" else "کپی گزارش ممکن نشد")
+                crashReportPreview = null
+            },
+        )
     }
 
     if (qrDialogContent.isNotBlank()) {
@@ -400,17 +460,22 @@ fun AppRoot(vm: AppViewModel) {
                 if (editingId.isNotBlank()) {
                     val server = servers.firstOrNull { it.id == editingId }
                     if (server == null) {
+                        vm.endServerEdit()
                         editingId = ""
                     } else {
                         ConfigEditorScreen(
                             server = server,
                             dataEpoch = Repo.currentDataEpoch(),
-                            onBack = { editingId = "" },
+                            onBack = { vm.endServerEdit(); editingId = "" },
                             onSave = { edited, fingerprint, epoch ->
-                                if (vm.saveEditedServer(edited, fingerprint, epoch)) editingId = ""
+                                if (vm.saveEditedServer(edited, fingerprint, epoch)) {
+                                    vm.endServerEdit(); editingId = ""
+                                }
                             },
                             onClone = { copy, fingerprint, epoch ->
-                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) editingId = ""
+                                if (vm.cloneServer(copy, server.id, fingerprint, epoch)) {
+                                    vm.endServerEdit(); editingId = ""
+                                }
                             }
                         )
                     }
@@ -482,7 +547,10 @@ fun AppRoot(vm: AppViewModel) {
                         onDelete = { vm.deleteServer(it) },
                         showFlags = settings.showFlags,
                         onQrContent = { id -> vm.shareLink(id).orEmpty() },
-                        onEdit = { id -> editingId = id },
+                        onEdit = { id ->
+                            if (vm.beginServerEdit(id)) editingId = id
+                            else vm.showMessage("سرور دیگر در فهرست نیست؛ دوباره انتخاب کنید")
+                        },
                         onBulkDelete = { ids -> vm.deleteServers(ids) },
                         onBulkFavorite = { ids, fav -> vm.setFavorite(ids, fav) },
                         onCopyLink = { id ->
@@ -534,18 +602,24 @@ fun AppRoot(vm: AppViewModel) {
                         onScanQr = { showQr = true },
                         onOpenRouting = { showRouting = true },
                         onOpenDiag = { showDiag = true },
-                        onCopyCrashLog = {
-                            val log = ir.v2max.app.util.CrashLog.last()
-                            if (log.isBlank()) {
-                                vm.showMessage("گزارش خطایی ثبت نشده است")
-                            } else {
-                                val text = log.take(3000)
-                                val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
-                                clipboard?.setPrimaryClip(
-                                    android.content.ClipData.newPlainText("V2max crash", text)
-                                )
-                                vm.showMessage("گزارش خطا کپی شد؛ برای بررسی بفرستید")
-                            }
+                        onOpenCrashReport = {
+                            val errorSummary = ir.v2max.app.util.CrashLog.latestSummary()
+                            if (errorSummary == null) vm.showMessage("گزارش خطایی ثبت نشده است")
+                            else crashReportPreview = ir.v2max.app.net.LocalDiagnostics.report(
+                                appVersion = BuildConfig.VERSION_NAME,
+                                coreVersion = vm.coreVersion(),
+                                androidApi = android.os.Build.VERSION.SDK_INT,
+                                tunnel = tunnel,
+                                settings = settings,
+                                servers = servers,
+                                scan = scan,
+                                geoReady = ir.v2max.app.core.GeoAssets.diagnosticReadiness.value,
+                                localError = errorSummary,
+                            )
+                        },
+                        onClearCrashLog = {
+                            val cleared = ir.v2max.app.util.CrashLog.clear()
+                            vm.showMessage(if (cleared) "گزارش محلی خطا حذف شد" else "حذف گزارش محلی ممکن نشد")
                         }
                     )
                 }

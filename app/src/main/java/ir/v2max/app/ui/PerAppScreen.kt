@@ -61,6 +61,7 @@ fun PerAppScreen(
     val context = LocalContext.current
     var apps by remember { mutableStateOf<List<AppEntry>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var loadFailed by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     val selected = settings.perAppPackages
 
@@ -82,12 +83,21 @@ fun PerAppScreen(
                     }
                     .sortedBy { it.label }
                     .toList()
-            }.getOrDefault(emptyList())
+            }
         }
-        apps = loaded
+        apps = loaded.getOrDefault(emptyList())
+        loadFailed = loaded.isFailure
         loading = false
     }
 
+    // A previously selected package may have been uninstalled, or may not have
+    // a launcher icon. Keep it visible so a rejected VPN rule can be corrected.
+    val unlistedSelected = remember(apps, selected, loading, loadFailed) {
+        if (loading || loadFailed) emptyList() else {
+            val listed = apps.map { it.pkg }.toSet()
+            selected.distinct().filter { it !in listed }
+        }
+    }
     val filtered = remember(apps, query) {
         if (query.isBlank()) apps else apps.filter {
             it.label.contains(query, true) || it.pkg.contains(query, true)
@@ -148,10 +158,16 @@ fun PerAppScreen(
                     Spacer(Modifier.height(8.dp))
                     Text(
                         when (settings.perAppMode) {
-                            PerAppMode.OFF -> "همه‌ی برنامه‌ها از تانل V2max عبور می‌کنند."
-                            PerAppMode.ONLY_SELECTED -> "فقط برنامه‌های انتخاب‌شده از تانل عبور می‌کنند (بقیه با اینترنت معمولی)."
-                            PerAppMode.EXCEPT_SELECTED -> "برنامه‌های انتخاب‌شده از تانل خارج می‌شوند (مثلاً بانک‌ها و اپ‌های ایرانی)."
+                            PerAppMode.OFF -> "همهٔ برنامه‌ها به‌جز خود V2max در VPN قرار می‌گیرند."
+                            PerAppMode.ONLY_SELECTED -> "فقط برنامه‌های انتخاب‌شده در VPN قرار می‌گیرند؛ بقیه ممکن است مستقیم وصل شوند. دست‌کم یک برنامه لازم است."
+                            PerAppMode.EXCEPT_SELECTED -> "برنامه‌های انتخاب‌شده خارج از VPN هستند و ممکن است مستقیم وصل شوند."
                         },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = V2.TextMuted
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "تغییرها در اتصال بعدی اعمال می‌شوند؛ تا آن زمان اتصال فعلی از تنظیمات قبلی استفاده می‌کند. برنامه‌های دارای UID مشترک ممکن است با هم مشمول شوند.",
                         style = MaterialTheme.typography.bodySmall,
                         color = V2.TextMuted
                     )
@@ -196,6 +212,55 @@ fun PerAppScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator(color = V2.Mint, strokeWidth = 2.dp)
+                }
+            }
+        }
+
+        if (!loading && loadFailed) {
+            item {
+                Text(
+                    "دریافت فهرست برنامه‌ها ممکن نشد؛ دوباره این صفحه را باز کنید.",
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = V2.TextMuted
+                )
+            }
+        }
+
+        if (unlistedSelected.isNotEmpty()) {
+            item {
+                Text(
+                    "انتخاب‌های خارج از فهرست برنامه‌ها؛ ممکن است حذف شده یا بدون آیکون باشند. برای حذف از انتخاب لمس کنید.",
+                    modifier = Modifier.padding(top = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = V2.TextMuted
+                )
+            }
+            items(unlistedSelected, key = { "unlisted:$it" }) { pkg ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(V2.Surface.copy(alpha = 0.75f))
+                        .clickable {
+                            onChange { current ->
+                                current.copy(perAppPackages = current.perAppPackages.filterNot { it == pkg })
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        pkg.ifBlank { "نام بستهٔ خالی" },
+                        modifier = Modifier.weight(1f),
+                        color = V2.TextPrimary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text("حذف از انتخاب", color = V2.TextMuted, fontSize = 11.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Icon(Icons.Filled.Clear, contentDescription = null, tint = V2.TextMuted, modifier = Modifier.size(18.dp))
                 }
             }
         }
