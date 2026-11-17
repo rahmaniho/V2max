@@ -133,7 +133,7 @@ class V2maxVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + serviceErrorHandler)
     private val serviceInstance = nextServiceInstance.incrementAndGet()
-    @Volatile private var connectedSound: ConnectionCue? = null
+    @Volatile private var connectedSound: AndroidConnectionCue? = null
     @Volatile private var latestStartId = 0
 
     @Volatile private var tun: ParcelFileDescriptor? = null
@@ -177,7 +177,7 @@ class V2maxVpnService : VpnService() {
         Repo.init(this)
         Notifier.ensureChannel(this)
         // Audio is optional: even creating its dispatcher must not affect VPN setup.
-        connectedSound = runCatching { connectionCue(applicationContext) }
+        connectedSound = runCatching { AndroidConnectionCue(applicationContext) }
             .onFailure { Log.w(TAG, "connection sound unavailable") }.getOrNull()
         scope.launch {
             Repo.settings.collect { settings ->
@@ -187,16 +187,23 @@ class V2maxVpnService : VpnService() {
         registerNetworkWatcher()
     }
 
-    private fun cancelConnectedSound() {
-        runCatching { connectedSound?.cancel() }
-        if (BuildConfig.DEBUG) runCatching { connectionCueForTest?.cancel() }
+    private fun cancelConnectedSound(cancelTestCue: Boolean = true) {
+        runCatching { connectedSound?.cue?.cancel() }
+        if (BuildConfig.DEBUG && cancelTestCue) runCatching { connectionCueForTest?.cancel() }
+    }
+
+    private fun closeConnectedSound(cancelTestCue: Boolean) {
+        val sound = connectedSound
+        connectedSound = null
+        runCatching { sound?.close() }
+        if (BuildConfig.DEBUG && cancelTestCue) runCatching { connectionCueForTest?.cancel() }
     }
 
     /** Called only after post-start verification, not for CONNECTED state updates. */
     private fun announceConnected(generation: Int, serverId: String) {
         if (!Repo.settings.value.connectionVoice) return
         runCatching {
-            val cue = if (BuildConfig.DEBUG) connectionCueForTest ?: connectedSound else connectedSound
+            val cue = if (BuildConfig.DEBUG) connectionCueForTest ?: connectedSound?.cue else connectedSound?.cue
             cue?.announce {
                 synchronized(coreStartStopLock) {
                     serviceOwner.isOwner(serviceInstance) && connectToken.get() == generation &&
@@ -489,14 +496,15 @@ class V2maxVpnService : VpnService() {
 
     override fun onDestroy() {
         Log.i(TAG, "service destroyed")
-        cancelConnectedSound()
         unregisterNetworkWatcher()
         preflightJob?.cancel()
         actionJob?.cancel()
         monitorJob?.cancel()
         connectJob?.cancel()
-        synchronized(coreStartStopLock) {
-            if (serviceOwner.release(serviceInstance)) {
+        val wasOwner = synchronized(coreStartStopLock) {
+            val ownsService = serviceOwner.release(serviceInstance)
+            cancelConnectedSound(cancelTestCue = ownsService)
+            if (ownsService) {
                 connectToken.incrementAndGet()
                 resourceOwner.clear()
                 XrayCore.stop()
@@ -520,7 +528,11 @@ class V2maxVpnService : VpnService() {
                 // instance may close only its own descriptor, never the new VPN.
                 closeTun()
             }
+            ownsService
         }
+        // Ownership is invalidated before closing audio, so a last successful
+        // worker cannot enqueue a new sound after teardown has started.
+        closeConnectedSound(cancelTestCue = wasOwner)
         scope.cancel()
         super.onDestroy()
     }

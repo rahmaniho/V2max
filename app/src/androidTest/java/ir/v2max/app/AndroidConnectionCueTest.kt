@@ -1,12 +1,11 @@
 package ir.v2max.app
 
 import android.media.MediaMetadataRetriever
-import android.os.Handler
 import android.os.Looper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import ir.v2max.app.service.AndroidConnectionCue
 import ir.v2max.app.service.AndroidConnectionCuePlayer
-import ir.v2max.app.service.ConnectionCue
 import ir.v2max.app.service.ConnectionCuePlayer
 import org.junit.Assert.*
 import org.junit.Test
@@ -14,6 +13,7 @@ import org.junit.runner.RunWith
 import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /** Exercises the real bundled recording and Android media API on an emulator. */
@@ -39,15 +39,12 @@ class AndroidConnectionCueTest {
             metadata.release()
         }
 
-        val handler = Handler(Looper.getMainLooper())
         val started = CountDownLatch(1)
         val completed = CountDownLatch(1)
         val released = CountDownLatch(1)
         val failure = AtomicReference<String?>(null)
-        val cue = ConnectionCue(
-            dispatch = { delay, task ->
-                if (delay == 0L) handler.post { task() } else handler.postDelayed({ task() }, delay)
-            },
+        val sound = AndroidConnectionCue(
+            context,
             createPlayer = {
                 val real = AndroidConnectionCuePlayer(context)
                 object : ConnectionCuePlayer {
@@ -63,6 +60,7 @@ class AndroidConnectionCueTest {
                         })
                     }
                     override fun start() {
+                        check(Looper.myLooper() != null && Looper.myLooper() != Looper.getMainLooper())
                         real.start()
                         started.countDown()
                     }
@@ -78,14 +76,52 @@ class AndroidConnectionCueTest {
             }
         )
         try {
-            cue.announce { true }
+            sound.cue.announce { true }
             assertTrue("Audio did not start in time", started.await(15, TimeUnit.SECONDS))
             assertNull(failure.get())
             assertTrue("Audio did not finish in time", completed.await(15, TimeUnit.SECONDS))
             assertNull(failure.get())
             assertTrue("MediaPlayer was not released", released.await(5, TimeUnit.SECONDS))
         } finally {
-            cue.cancel()
+            sound.close()
+            sound.worker.join(5_000)
         }
+        assertFalse("Audio worker did not stop", sound.worker.isAlive)
+    }
+
+    @Test fun stoppingWorkerReleasesAnUnpreparedPlayer() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val preparationStarted = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val starts = AtomicInteger()
+        val releases = AtomicInteger()
+        val failures = AtomicInteger()
+        val sound = AndroidConnectionCue(
+            context,
+            createPlayer = {
+                object : ConnectionCuePlayer {
+                    override fun prepare(onPrepared: () -> Unit, onCompletion: () -> Unit, onError: () -> Unit) {
+                        // Simulate a media service that never reports preparation.
+                        preparationStarted.countDown()
+                    }
+                    override fun start() { starts.incrementAndGet() }
+                    override fun release() { releases.incrementAndGet(); released.countDown() }
+                }
+            },
+            onFailure = { failures.incrementAndGet() }
+        )
+        try {
+            sound.cue.announce { true }
+            assertTrue("Player was not created", preparationStarted.await(10, TimeUnit.SECONDS))
+        } finally {
+            sound.close()
+            sound.close() // teardown is idempotent
+            sound.worker.join(5_000)
+        }
+        assertTrue("Pending player was not released", released.await(5, TimeUnit.SECONDS))
+        assertEquals(0, starts.get())
+        assertEquals(1, releases.get())
+        assertEquals(0, failures.get())
+        assertFalse("Audio worker did not stop", sound.worker.isAlive)
     }
 }
